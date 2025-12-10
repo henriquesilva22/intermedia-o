@@ -15,8 +15,15 @@ return new class extends Migration
             $table->id();
             $table->string('name');
             $table->string('email')->unique();
+            $table->string('phone')->nullable();
+            $table->string('role', 32)->default('buyer');
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
+            $table->string('api_token', 80)->nullable()->unique();
+            $table->timestamp('last_login_at')->nullable();
+            $table->string('confirmation_code', 12)->nullable();
+            $table->timestamp('confirmation_code_expires_at')->nullable();
+            $table->timestamp('confirmation_code_last_sent_at')->nullable();
             $table->rememberToken();
             $table->timestamps();
         });
