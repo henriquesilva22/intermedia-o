@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Negotiation;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 
 class IntermediationController extends Controller
@@ -437,7 +438,7 @@ class IntermediationController extends Controller
         $newPhotos = [];
         if ($request->hasFile('photos')) {
             foreach ($request->file('photos') as $photo) {
-                $path = $photo->store('inspections', 'public');
+                $path = $photo->store("negotiations/{$negotiation->id}/intermediary", 'public');
                 $newPhotos[] = $path;
             }
         }
@@ -448,6 +449,7 @@ class IntermediationController extends Controller
             $existingPhotos = json_decode($existingPhotos, true) ?: [];
         }
         $allPhotos = array_merge($existingPhotos, $newPhotos);
+        $allPhotos = array_values(array_unique($allPhotos));
         $allPhotos = array_slice($allPhotos, 0, 3); // Máximo 3 fotos
 
         $negotiation->update([
@@ -585,30 +587,54 @@ class IntermediationController extends Controller
      */
     protected function transform(Negotiation $negotiation, $currentUser): array
     {
-        // Build product photos URLs
-        $productPhotos = [];
-        if ($negotiation->product_photos) {
-            $photos = is_array($negotiation->product_photos) 
-                ? $negotiation->product_photos 
-                : json_decode($negotiation->product_photos, true);
-            if (is_array($photos)) {
-                foreach ($photos as $photo) {
-                    $productPhotos[] = asset('storage/' . $photo);
+        $publicDisk = Storage::disk('public');
+
+        $buildPhotoUrls = static function ($value) use ($publicDisk): array {
+            $items = [];
+            if (is_array($value)) {
+                $items = $value;
+            } elseif (is_string($value) && $value !== '') {
+                $decoded = json_decode($value, true);
+                if (is_array($decoded)) {
+                    $items = $decoded;
                 }
+            }
+
+            $items = array_filter($items, static fn ($path) => is_string($path) && $path !== '');
+
+            $urls = [];
+            foreach ($items as $path) {
+                if ($publicDisk->exists($path)) {
+                    $urls[] = $publicDisk->url($path);
+                }
+            }
+
+            return $urls;
+        };
+
+        $productPhotos = $buildPhotoUrls($negotiation->product_photos);
+        $intermediaryPhotos = $buildPhotoUrls($negotiation->intermediary_photos);
+
+        $checklist = $negotiation->intermediary_checklist;
+        if (is_string($checklist) && $checklist !== '') {
+            $decoded = json_decode($checklist, true);
+            if (is_array($decoded)) {
+                $checklist = $decoded;
             }
         }
+        if (! is_array($checklist)) {
+            $checklist = [];
+        }
 
-        // Build intermediary photos URLs
-        $intermediaryPhotos = [];
-        if ($negotiation->intermediary_photos) {
-            $photos = is_array($negotiation->intermediary_photos) 
-                ? $negotiation->intermediary_photos 
-                : json_decode($negotiation->intermediary_photos, true);
-            if (is_array($photos)) {
-                foreach ($photos as $photo) {
-                    $intermediaryPhotos[] = asset('storage/' . $photo);
-                }
+        $internalLogs = $negotiation->internal_logs;
+        if (is_string($internalLogs) && $internalLogs !== '') {
+            $decoded = json_decode($internalLogs, true);
+            if (is_array($decoded)) {
+                $internalLogs = $decoded;
             }
+        }
+        if (! is_array($internalLogs)) {
+            $internalLogs = [];
         }
 
         return [
@@ -639,11 +665,11 @@ class IntermediationController extends Controller
             'buyer_rejection_reason' => $negotiation->buyer_rejection_reason,
             'buyer_rejection_details' => $negotiation->buyer_rejection_details,
             'product_photos' => $productPhotos,
-            'intermediary_checklist' => $negotiation->intermediary_checklist,
+            'intermediary_checklist' => $checklist,
             'intermediary_notes' => $negotiation->intermediary_notes,
             'intermediary_photos' => $intermediaryPhotos,
             'inspection_saved_at' => $negotiation->inspection_saved_at?->toIso8601String(),
-            'internal_logs' => $negotiation->internal_logs ?? [],
+            'internal_logs' => $internalLogs,
             'pix_code' => $negotiation->pix_code,
             'pix_generated_at' => $negotiation->pix_generated_at?->toIso8601String(),
             'accepted_at' => $negotiation->accepted_at?->toIso8601String(),

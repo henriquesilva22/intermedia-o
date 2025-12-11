@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\BrevoSmsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -13,6 +14,10 @@ use Illuminate\Validation\Rule;
 
 class AuthController extends Controller
 {
+    public function __construct(private BrevoSmsService $brevoSms)
+    {
+    }
+
     /**
      * Handle user registration requests.
      */
@@ -22,22 +27,45 @@ class AuthController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'email', 'max:255', Rule::unique('users', 'email')],
             'phone' => ['nullable', 'string', 'max:32'],
+            'city' => ['nullable', 'string', 'max:100'],
             'password' => ['required', 'string', 'min:8', 'confirmed'],
         ])->validate();
+
+        $phone = isset($data['phone']) ? preg_replace('/\D+/', '', $data['phone']) : null;
+
+        if ($phone === '') {
+            $phone = null;
+        }
 
         $user = User::create([
             'name' => $data['name'],
             'email' => $data['email'],
-            'phone' => $data['phone'] ?? null,
+            'phone' => $phone,
+            'city' => $data['city'] ?? null,
             'role' => 'buyer',
             'password' => $data['password'],
         ]);
+
+        $smsSent = false;
+
+        if ($phone) {
+            $code = (string) random_int(100000, 999999);
+
+            $user->forceFill([
+                'confirmation_code' => $code,
+                'confirmation_code_expires_at' => now()->addMinutes(15),
+                'confirmation_code_last_sent_at' => now(),
+            ])->save();
+
+            $smsSent = $this->brevoSms->sendVerificationCode($phone, $code);
+        }
 
         return response()->json([
             'message' => 'Conta criada com sucesso.',
             'data' => [
                 'id' => $user->id,
                 'email' => $user->email,
+                'sms_sent' => $smsSent,
             ],
         ], 201);
     }
@@ -141,6 +169,7 @@ class AuthController extends Controller
             'name' => $user->name,
             'email' => $user->email,
             'phone' => $user->phone,
+            'city' => $user->city,
             'role' => $user->role,
         ];
     }

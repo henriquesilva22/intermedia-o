@@ -4,38 +4,43 @@
   const API_BASE = 'http://127.0.0.1:8000/api';
   const STORAGE_KEYS = { token: 'token', user: 'user' };
   const AUTH_PAGES = new Set(['login', 'register', 'forgot-password', 'reset-password', 'confirm-email']);
+  
+  // Design Update: Labels mais descritivas
   const STATUS_LABELS = {
-    awaiting_admin_approval: 'Aguardando intermediadora',
-    pending_acceptance: 'Aguardando aceite do comprador',
-    waiting_payment: 'Aguardando pagamento',
-    waiting_shipment: 'Aguardando envio',
-    shipped: 'Enviado para intermediadora',
-    at_intermediary: 'Na intermediadora',
-    approved: 'Aguardando confirmação do comprador',
+    awaiting_admin_approval: 'Aguardando Aprovação',
+    pending_acceptance: 'Convite Pendente',
+    waiting_payment: 'Pagamento Pendente',
+    waiting_shipment: 'Aguardando Envio',
+    shipped: 'Em Trânsito',
+    at_intermediary: 'Em Análise (Intermediadora)',
+    approved: 'Aprovado para Entrega',
     delivered: 'Entregue',
     rejected_by_admin: 'Reprovado',
     cancelled: 'Cancelado',
     expired: 'Expirado'
   };
+
+  // Design Update: Cores ajustadas para melhor contraste e semântica
   const STATUS_BADGE_COLORS = {
-    awaiting_admin_approval: 'bg-purple-600',
-    pending_acceptance: 'bg-indigo-600',
-    waiting_payment: 'bg-amber-500',
-    waiting_shipment: 'bg-slate-500',
-    shipped: 'bg-blue-600',
-    at_intermediary: 'bg-cyan-600',
-    approved: 'bg-teal-600',
-    delivered: 'bg-green-600',
-    rejected_by_admin: 'bg-red-600',
-    cancelled: 'bg-red-600',
-    expired: 'bg-gray-600'
+    awaiting_admin_approval: 'bg-purple-100 text-purple-700 border border-purple-200',
+    pending_acceptance: 'bg-indigo-100 text-indigo-700 border border-indigo-200',
+    waiting_payment: 'bg-amber-100 text-amber-700 border border-amber-200',
+    waiting_shipment: 'bg-slate-100 text-slate-700 border border-slate-200',
+    shipped: 'bg-blue-100 text-blue-700 border border-blue-200',
+    at_intermediary: 'bg-cyan-100 text-cyan-700 border border-cyan-200',
+    approved: 'bg-teal-100 text-teal-700 border border-teal-200',
+    delivered: 'bg-green-100 text-green-700 border border-green-200',
+    rejected_by_admin: 'bg-red-100 text-red-700 border border-red-200',
+    cancelled: 'bg-red-50 text-red-600 border border-red-100',
+    expired: 'bg-gray-100 text-gray-600 border border-gray-200'
   };
+
   const STATUS_ORDER = Object.keys(STATUS_LABELS);
   const ROLE_LABELS = {
     buyer: 'Comprador',
     seller: 'Vendedor',
     admin: 'Administrador',
-    inspector: 'Inspetor'
+    inspector: 'Inspetor Técnico'
   };
 
   const initialToken = localStorage.getItem(STORAGE_KEYS.token) || null;
@@ -78,6 +83,10 @@
     confirmationCooldownRemaining: 0,
     showCreateNegotiationModal: false,
     filtersExpanded: false,
+    registerCityFilter: '',
+    registerSelectedCity: '',
+    saoPauloCities: [],
+    saoPauloCitiesLoading: false,
     // Estado para criação de negociação
     createNegForm: {
       buyerFound: null,
@@ -101,38 +110,41 @@
 
   // Constantes do sistema
   const INTERMEDIARY_ADDRESS = {
-    street: 'Rua Intermediação, 123',
-    city: 'São Paulo - SP',
-    cep: '00000-000'
+    street: 'Av. Paulista', // Endereço mais realista para SP
+    number: '1000',
+    district: 'Bela Vista',
+    city: 'São Paulo',
+    state: 'SP',
+    cep: '01310-100'
   };
 
   const PRODUCT_CATEGORIES = [
-    'Eletrônicos',
-    'Smartphones',
-    'Computadores',
-    'Games',
-    'Acessórios',
-    'Roupas',
-    'Calçados',
-    'Relógios',
-    'Joias',
+    'Eletrônicos & Gadgets',
+    'Smartphones & Tablets',
+    'Computadores & Notebooks',
+    'Games & Consoles',
+    'Áudio & Vídeo',
+    'Câmeras & Drones',
+    'Relógios de Luxo',
+    'Instrumentos Musicais',
+    'Colecionáveis',
     'Veículos',
-    'Móveis',
     'Outros'
   ];
 
   const INSPECTION_CHECKLIST = [
-    { id: 'original', label: 'Produto é original/autêntico' },
-    { id: 'functional', label: 'Funcionamento verificado' },
-    { id: 'condition_match', label: 'Condição conforme descrito' },
-    { id: 'accessories', label: 'Acessórios inclusos verificados' },
-    { id: 'no_damage', label: 'Sem danos não declarados' },
-    { id: 'packaging', label: 'Embalagem adequada' }
+    { id: 'original', label: 'Autenticidade Verificada' },
+    { id: 'functional', label: 'Funcionamento Operacional' },
+    { id: 'condition_match', label: 'Estética conforme descrito' },
+    { id: 'accessories', label: 'Todos acessórios presentes' },
+    { id: 'no_damage', label: 'Livre de danos estruturais' },
+    { id: 'packaging', label: 'Embalagem Segura' }
   ];
 
   let pendingPollingHandle = null;
   let confirmationIntervalHandle = null;
   let toastTimer = null;
+  let saoPauloCitiesPromise = null;
 
   document.addEventListener('DOMContentLoaded', () => {
     injectBaseStyles();
@@ -154,44 +166,259 @@
     }
   }
 
+  // MODERNIZAÇÃO DO CSS
   function injectBaseStyles() {
-    if (document.getElementById('twind-script')) return;
-    
-    // Load Tailwind CSS from CDN
-    const tailwindScript = document.createElement('script');
-    tailwindScript.id = 'twind-script';
-    tailwindScript.src = 'https://cdn.tailwindcss.com';
-    document.head.appendChild(tailwindScript);
+    if (!document.getElementById('app-critical-css')) {
+      const criticalStyle = document.createElement('style');
+      criticalStyle.id = 'app-critical-css';
+      criticalStyle.textContent = `
+        /* RESET & BASE */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+        html { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif; line-height: 1.5; font-size: 14px; background-color: #f8fafc; color: #0f172a; height: 100%; }
+        body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; }
+        
+        /* TYPOGRAPHY */
+        h1, h2, h3, h4, h5, h6 { font-weight: 700; color: #1e293b; letter-spacing: -0.025em; }
+        p { color: #475569; }
+        a { color: inherit; text-decoration: none; transition: color 0.2s; }
+        
+        /* IMAGES & MEDIA */
+        img, video { max-width: 100%; height: auto; display: block; }
+        
+        /* FORM ELEMENTS */
+        button, input, select, textarea { font-family: inherit; font-size: 100%; outline: none; }
+        button { cursor: pointer; border: none; background: none; }
+        [hidden] { display: none !important; }
 
-    // Load Google Fonts - Inter
-    const fontLink = document.createElement('link');
-    fontLink.rel = 'stylesheet';
-    fontLink.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap';
-    document.head.appendChild(fontLink);
+        /* --- UTILITY CLASSES (TAILWIND-ALIKE) --- */
+        
+        /* Layout & Flexbox */
+        .flex { display: flex; }
+        .flex-col { flex-direction: column; }
+        .flex-wrap { flex-wrap: wrap; }
+        .items-center { align-items: center; }
+        .items-start { align-items: flex-start; }
+        .justify-center { justify-content: center; }
+        .justify-between { justify-content: space-between; }
+        .justify-end { justify-content: flex-end; }
+        .flex-1 { flex: 1 1 0%; }
+        .flex-shrink-0 { flex-shrink: 0; }
+        .grow { flex-grow: 1; }
+        .gap-1 { gap: 0.25rem; }
+        .gap-2 { gap: 0.5rem; }
+        .gap-3 { gap: 0.75rem; }
+        .gap-4 { gap: 1rem; }
+        .gap-6 { gap: 1.5rem; }
+        .gap-8 { gap: 2rem; }
 
-    // Load Font Awesome
-    const faLink = document.createElement('link');
-    faLink.rel = 'stylesheet';
-    faLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css';
-    document.head.appendChild(faLink);
+        /* Grid */
+        .grid { display: grid; }
+        .grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+        .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .grid-cols-12 { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+        .col-span-1 { grid-column: span 1 / span 1; }
+        .col-span-2 { grid-column: span 2 / span 2; }
+        
+        /* Spacing (Padding/Margin) */
+        .p-0 { padding: 0; }
+        .p-2 { padding: 0.5rem; }
+        .p-3 { padding: 0.75rem; }
+        .p-4 { padding: 1rem; }
+        .p-5 { padding: 1.25rem; }
+        .p-6 { padding: 1.5rem; }
+        .p-8 { padding: 2rem; }
+        .px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
+        .px-4 { padding-left: 1rem; padding-right: 1rem; }
+        .px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
+        .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+        .py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+        .py-4 { padding-top: 1rem; padding-bottom: 1rem; }
+        .m-0 { margin: 0; }
+        .mt-1 { margin-top: 0.25rem; }
+        .mt-2 { margin-top: 0.5rem; }
+        .mt-4 { margin-top: 1rem; }
+        .mt-6 { margin-top: 1.5rem; }
+        .mt-8 { margin-top: 2rem; }
+        .mb-2 { margin-bottom: 0.5rem; }
+        .mb-4 { margin-bottom: 1rem; }
+        .mb-6 { margin-bottom: 1.5rem; }
+        .mr-2 { margin-right: 0.5rem; }
+        .ml-auto { margin-left: auto; }
+        .mx-auto { margin-left: auto; margin-right: auto; }
+        .space-y-2 > * + * { margin-top: 0.5rem; }
+        .space-y-4 > * + * { margin-top: 1rem; }
+        .space-y-6 > * + * { margin-top: 1.5rem; }
 
-    // Add base styles with gradients
-    const style = document.createElement('style');
-    style.id = 'app-styles';
-    style.textContent = `
-      * { box-sizing: border-box; font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
-      body { margin: 0; }
-      img { max-width: 100%; height: auto; }
-      [hidden] { display: none !important; }
-      .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
-      .gradient-text { background: linear-gradient(90deg, #667eea, #764ba2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-      .card-hover { transition: transform 0.3s ease, box-shadow 0.3s ease; }
-      .card-hover:hover { transform: translateY(-4px); box-shadow: 0 12px 30px rgba(102, 126, 234, 0.15); }
-      .btn-gradient { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); transition: all 0.3s ease; }
-      .btn-gradient:hover { box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4); transform: translateY(-1px); }
-      .glass-card { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
-    `;
-    document.head.appendChild(style);
+        /* Sizing */
+        .w-full { width: 100%; }
+        .w-auto { width: auto; }
+        .w-6 { width: 1.5rem; }
+        .w-12 { width: 3rem; }
+        .w-48 { width: 12rem; }
+        .w-72 { width: 18rem; }
+        .h-6 { height: 1.5rem; }
+        .h-12 { height: 3rem; }
+        .h-full { height: 100%; }
+        .h-screen { height: 100vh; }
+        .min-h-screen { min-height: 100vh; }
+        .max-w-md { max-width: 28rem; }
+        .max-w-lg { max-width: 32rem; }
+        .max-w-2xl { max-width: 42rem; }
+        .max-w-4xl { max-width: 56rem; }
+        .max-w-7xl { max-width: 80rem; }
+
+        /* Borders & Radius */
+        .border { border: 1px solid #e2e8f0; }
+        .border-t { border-top: 1px solid #e2e8f0; }
+        .border-b { border-bottom: 1px solid #e2e8f0; }
+        .border-dashed { border-style: dashed; }
+        .border-transparent { border-color: transparent; }
+        .rounded { border-radius: 0.25rem; }
+        .rounded-lg { border-radius: 0.5rem; }
+        .rounded-xl { border-radius: 0.75rem; }
+        .rounded-2xl { border-radius: 1rem; }
+        .rounded-3xl { border-radius: 1.5rem; }
+        .rounded-full { border-radius: 9999px; }
+
+        /* Backgrounds & Colors */
+        .bg-white { background-color: #ffffff; }
+        .bg-gray-50 { background-color: #f8fafc; }
+        .bg-gray-100 { background-color: #f1f5f9; }
+        .bg-purple-600 { background-color: #7c3aed; }
+        .bg-purple-50 { background-color: #f5f3ff; }
+        .bg-red-50 { background-color: #fef2f2; }
+        
+        .text-white { color: #ffffff; }
+        .text-gray-400 { color: #94a3b8; }
+        .text-gray-500 { color: #64748b; }
+        .text-gray-700 { color: #334155; }
+        .text-gray-900 { color: #0f172a; }
+        .text-purple-600 { color: #7c3aed; }
+        .text-purple-700 { color: #6d28d9; }
+        .text-red-600 { color: #dc2626; }
+        .text-center { text-align: center; }
+        .text-right { text-align: right; }
+        .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+        .text-base { font-size: 1rem; line-height: 1.5rem; }
+        .text-lg { font-size: 1.125rem; line-height: 1.75rem; }
+        .text-xl { font-size: 1.25rem; line-height: 1.75rem; }
+        .text-2xl { font-size: 1.5rem; line-height: 2rem; }
+        .text-3xl { font-size: 1.875rem; line-height: 2.25rem; }
+        .font-medium { font-weight: 500; }
+        .font-semibold { font-weight: 600; }
+        .font-bold { font-weight: 700; }
+        .font-extrabold { font-weight: 800; }
+        
+        /* Modern Elements */
+        .shadow-sm { box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); }
+        .shadow-md { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+        .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+        .shadow-xl { box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04); }
+        .shadow-inner { box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06); }
+        
+        .backdrop-blur-sm { backdrop-filter: blur(4px); }
+        .backdrop-blur-md { backdrop-filter: blur(12px); }
+        
+        /* Positioning */
+        .relative { position: relative; }
+        .absolute { position: absolute; }
+        .fixed { position: fixed; }
+        .sticky { position: sticky; }
+        .top-0 { top: 0; }
+        .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
+        .z-10 { z-index: 10; }
+        .z-20 { z-index: 20; }
+        .z-50 { z-index: 50; }
+
+        /* Custom Components */
+        .btn-gradient {
+            background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+            color: white;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .btn-gradient:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+        }
+        .btn-gradient:active { transform: translateY(0); }
+        
+        .card-hover {
+            transition: all 0.3s ease;
+        }
+        .card-hover:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 24px -10px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Form Inputs Modern */
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #8b5cf6;
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
+        }
+
+        /* Utilities extras */
+        .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cursor-pointer { cursor: pointer; }
+        .cursor-not-allowed { cursor: not-allowed; }
+        .opacity-50 { opacity: 0.5; }
+        .transition { transition-property: all; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 200ms; }
+        .overflow-hidden { overflow: hidden; }
+        .overflow-y-auto { overflow-y: auto; }
+        
+        /* Loading Spinner */
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .animate-spin { animation: spin 1s linear infinite; }
+        
+        /* Responsive */
+        @media (min-width: 640px) {
+            .sm\\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .sm\\:flex-row { flex-direction: row; }
+            .sm\\:w-auto { width: auto; }
+        }
+        @media (min-width: 768px) {
+            .md\\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .md\\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .md\\:flex-row { flex-direction: row; }
+        }
+        @media (min-width: 1024px) {
+            .lg\\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        }
+      `;
+      document.head.insertBefore(criticalStyle, document.head.firstChild);
+    }
+
+    // Google Fonts - Inter (preconnect for faster loading)
+    if (!document.getElementById('font-preconnect')) {
+      const preconnect = document.createElement('link');
+      preconnect.id = 'font-preconnect';
+      preconnect.rel = 'preconnect';
+      preconnect.href = 'https://fonts.googleapis.com';
+      document.head.appendChild(preconnect);
+      
+      const preconnect2 = document.createElement('link');
+      preconnect2.rel = 'preconnect';
+      preconnect2.href = 'https://fonts.gstatic.com';
+      preconnect2.crossOrigin = 'anonymous';
+      document.head.appendChild(preconnect2);
+    }
+
+    if (!document.getElementById('app-font-inter')) {
+      const fontLink = document.createElement('link');
+      fontLink.id = 'app-font-inter';
+      fontLink.rel = 'stylesheet';
+      fontLink.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap';
+      document.head.appendChild(fontLink);
+    }
+
+    // Font Awesome icons
+    if (!document.getElementById('fa-icons')) {
+      const faLink = document.createElement('link');
+      faLink.id = 'fa-icons';
+      faLink.rel = 'stylesheet';
+      faLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css';
+      document.head.appendChild(faLink);
+    }
   }
 
   function safeParse(raw) {
@@ -260,7 +487,6 @@
 
   function renderHeader(isAuthenticated) {
     const userName = state.user?.name || 'Visitante';
-    const roleLabel = state.user?.role ? ROLE_LABELS[state.user.role] || state.user.role : '';
     return `
       <header class="sticky top-0 z-50 bg-white shadow-md">
         <div class="container mx-auto px-4 py-3 flex items-center justify-between">
@@ -288,7 +514,6 @@
             <div class="flex items-center gap-4">
               <div class="hidden md:block text-right">
                 <span class="block font-semibold text-gray-800">${escapeHtml(userName)}</span>
-                <small class="text-gray-500 text-xs">${escapeHtml(roleLabel)}</small>
               </div>
               <button class="btn-gradient text-white px-5 py-2 rounded-lg font-medium" data-action="logout">
                 <i class="fas fa-sign-out-alt mr-1"></i> Sair
@@ -374,8 +599,21 @@
   }
 
   function renderRegisterPage() {
+    ensureSaoPauloCitiesLoaded();
+    const cities = Array.isArray(state.saoPauloCities) ? state.saoPauloCities : [];
+    const selectedCity = state.registerSelectedCity || '';
+    const cityFilterRaw = state.registerCityFilter || '';
+    const cityFilter = normalizeText(cityFilterRaw);
+    const filteredCities = cityFilter
+      ? cities.filter((city) => normalizeText(city).includes(cityFilter))
+      : cities;
+    const optionsHtml = filteredCities.map((city) => `
+      <option value="${escapeAttr(city)}" ${city === selectedCity ? 'selected' : ''}>${escapeHtml(city)}</option>
+    `).join('');
+    const hasCityResults = Boolean(optionsHtml);
+
     return `
-      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-2xl card-hover">
+      <section class="w-full max-w-2xl bg-white rounded-2xl p-8 shadow-2xl card-hover">
         <div class="text-center mb-6">
           <div class="w-16 h-16 bg-gradient-to-r from-green-400 to-blue-500 rounded-xl flex items-center justify-center mx-auto mb-4">
             <i class="fas fa-user-plus text-white text-2xl"></i>
@@ -383,34 +621,115 @@
           <h1 class="text-2xl font-bold text-gray-800">Criar conta</h1>
           <p class="text-gray-600 mt-2">Cadastre-se para negociar com segurança.</p>
         </div>
-        <form data-action="register" class="flex flex-col gap-4">
+        <form data-action="register" class="flex flex-col gap-5">
+          <div class="grid sm:grid-cols-2 gap-4">
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-gray-700 font-medium">Nome completo</span>
+              <input type="text" name="name" required autocomplete="name" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-gray-700 font-medium">E-mail</span>
+              <input type="email" name="email" required autocomplete="email" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            </label>
+          </div>
+
+          <div class="grid sm:grid-cols-2 gap-4">
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-gray-700 font-medium">Telefone celular</span>
+              <input type="tel" name="phone" required maxlength="15" placeholder="(11) 90000-0000" data-action="formatPhoneInput" inputmode="tel" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-gray-700 font-medium">CEP</span>
+              <input type="text" name="zip_code" required maxlength="9" placeholder="00000-000" data-action="formatCepInput" inputmode="numeric" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            </label>
+          </div>
+
           <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">Nome completo</span>
-            <input type="text" name="name" required autocomplete="name" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            <span class="text-sm text-gray-700 font-medium">Endereço</span>
+            <input type="text" name="address" required placeholder="Rua, avenida ou travessa" autocomplete="address-line1" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
           </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">E-mail</span>
-            <input type="email" name="email" required autocomplete="email" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">Telefone</span>
-            <input type="tel" name="phone" placeholder="(00) 00000-0000" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">Senha</span>
-            <input type="password" name="password" required minlength="8" autocomplete="new-password" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">Confirmar senha</span>
-            <input type="password" name="password_confirmation" required minlength="8" autocomplete="new-password" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <button type="submit" class="w-full py-3 btn-gradient rounded-lg font-bold text-white mt-2">Cadastrar</button>
+
+          <div class="grid sm:grid-cols-3 gap-4">
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-gray-700 font-medium">Número</span>
+              <input type="text" name="address_number" required inputmode="numeric" pattern="[0-9A-Za-z-]+" placeholder="123" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-gray-700 font-medium">Complemento</span>
+              <input type="text" name="address_complement" placeholder="Apartamento, bloco, referência" autocomplete="address-line2" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-gray-700 font-medium">Bairro</span>
+              <input type="text" name="district" required placeholder="Bairro" autocomplete="address-level2" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            </label>
+          </div>
+
+          <div class="flex flex-col gap-2">
+            <span class="text-sm text-gray-700 font-medium">Cidade (São Paulo)</span>
+            <input type="search" placeholder="Filtrar cidade" value="${escapeAttr(cityFilterRaw)}" data-action="filterRegisterCity" class="px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            <label class="flex flex-col gap-1">
+              <span class="text-xs text-gray-500">Selecione uma cidade disponível</span>
+              <select name="city" required data-action="selectRegisterCity" class="px-4 py-2.5 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                <option value="" ${selectedCity ? '' : 'selected'} disabled hidden>Escolha a cidade</option>
+                ${hasCityResults ? optionsHtml : '<option value="" disabled>Nenhuma cidade encontrada</option>'}
+              </select>
+            </label>
+            ${state.saoPauloCitiesLoading && !cities.length ? '<p class="text-xs text-gray-500">Carregando cidades de São Paulo...</p>' : ''}
+            ${!state.saoPauloCitiesLoading && !cities.length ? '<p class="text-xs text-red-500">Não foi possível carregar a lista de cidades. Tente novamente mais tarde.</p>' : ''}
+          </div>
+
+          <input type="hidden" name="state" value="SP">
+
+          <div class="grid sm:grid-cols-2 gap-4">
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-gray-700 font-medium">Senha</span>
+              <input type="password" name="password" required minlength="8" autocomplete="new-password" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-gray-700 font-medium">Confirmar senha</span>
+              <input type="password" name="password_confirmation" required minlength="8" autocomplete="new-password" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+            </label>
+          </div>
+
+          <button type="submit" class="w-full py-3 btn-gradient rounded-lg font-bold text-white">Cadastrar</button>
         </form>
         <div class="flex justify-center mt-6 text-sm">
           <button class="text-purple-600 hover:text-purple-800 font-medium transition" data-action="navigate" data-page="login">Já tenho conta</button>
         </div>
       </section>
     `;
+  }
+
+  function ensureSaoPauloCitiesLoaded() {
+    if (state.saoPauloCitiesLoading || (Array.isArray(state.saoPauloCities) && state.saoPauloCities.length) || saoPauloCitiesPromise) {
+      return;
+    }
+    setState({ saoPauloCitiesLoading: true });
+    const endpoint = 'https://servicodados.ibge.gov.br/api/v1/localidades/estados/35/municipios';
+    saoPauloCitiesPromise = fetch(endpoint)
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error('Falha ao carregar cidades de São Paulo.');
+        }
+        return response.json();
+      })
+      .then((data) => {
+        const cities = Array.isArray(data)
+          ? data
+              .map((item) => item?.nome)
+              .filter(Boolean)
+              .map((name) => String(name))
+              .sort((a, b) => normalizeText(a).localeCompare(normalizeText(b)))
+          : [];
+        setState({ saoPauloCities: cities, saoPauloCitiesLoading: false });
+      })
+      .catch((error) => {
+        console.error('Erro ao buscar cidades do estado de São Paulo', error);
+        setState({ saoPauloCitiesLoading: false });
+      })
+      .finally(() => {
+        saoPauloCitiesPromise = null;
+      });
   }
 
   function renderForgotPasswordPage() {
@@ -509,97 +828,132 @@
   function renderDashboardPage() {
     const negotiations = getFilteredNegotiations();
     return `
-      <section class="space-y-0">
+      <section>
         <!-- Header principal -->
-        <header class="flex flex-wrap items-center justify-between gap-4 mb-6">
-          <div>
-            <h1 class="text-2xl font-bold text-gray-800">Minhas negociações</h1>
-            <p class="text-gray-500">Gerencie cada etapa do processo de intermediação.</p>
-          </div>
-          <div class="flex gap-2">
-            <button class="px-4 py-2 btn-gradient rounded-lg text-white font-medium flex items-center gap-2" data-action="openCreateNegotiation"><i class="fas fa-plus"></i> Nova negociação</button>
-            <button class="px-4 py-2 bg-white border border-gray-200 hover:border-purple-400 rounded-lg text-gray-700 transition shadow-sm" data-action="dashboardRefresh"><i class="fas fa-sync-alt"></i></button>
-            ${isAdmin() ? '<button class="px-4 py-2 bg-white border border-gray-200 hover:border-purple-400 rounded-lg text-gray-700 transition shadow-sm" data-action="navigate" data-page="admin">Ir para admin</button>' : ''}
-          </div>
-        </header>
+      <header class="flex flex-wrap items-center justify-between gap-4 mb-8">
+  <div>
+    <h1 class="text-3xl font-extrabold text-gray-900 tracking-tight">Minhas Negociações</h1>
+    <p class="text-base text-gray-500 mt-1">Gerencie cada etapa do processo de intermediação.</p>
+  </div>
+  <div class="flex gap-3">
+    <button class="px-6 py-3 bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white font-semibold rounded-xl shadow-lg shadow-purple-500/50 transition duration-300 ease-in-out flex items-center gap-2" data-action="openCreateNegotiation">
+      <i class="fas fa-plus"></i> Nova Negociação
+    </button>
+    <button class="w-12 h-12 bg-white border border-gray-200 hover:border-purple-500 rounded-xl text-gray-700 hover:text-purple-600 transition shadow-sm flex items-center justify-center" data-action="dashboardRefresh">
+      <i class="fas fa-sync-alt"></i>
+    </button>
+    ${isAdmin() ? '<button class="w-12 h-12 bg-white border border-gray-200 hover:border-purple-500 rounded-xl text-gray-700 hover:text-purple-600 transition shadow-sm flex items-center justify-center" data-action="navigate" data-page="admin"><i class="fas fa-cog"></i></button>' : ''}
+  </div>
+</header>
+        <!-- Layout com 2 colunas: Filtros à esquerda | Cards + Tabela à direita -->
+        <div class="flex flex-wrap gap-6 items-start">
+          <!-- COLUNA ESQUERDA: Filtros -->
+          ${renderFilterSidebar()}
 
-        <!-- Barra de filtros estilo Mercado Livre -->
-        ${renderFilterBar()}
-
-        <!-- Cards de resumo -->
-        <div class="mb-6">
-          ${renderDashboardSummary()}
+          <!-- COLUNA DIREITA: Cards de resumo + Tabela -->
+          <div class="flex-1 min-w-0 space-y-6">
+            ${renderDashboardSummary()}
+            ${renderNegotiationsTable(negotiations)}
+          </div>
         </div>
-
-        <!-- Tabela de negociações -->
-        ${renderNegotiationsTable(negotiations)}
       </section>
       ${state.showCreateNegotiationModal ? renderCreateNegotiationModal() : ''}
     `;
   }
 
-  function renderFilterBar() {
-    const { status, query, mineOnly } = state.negotiationFilters;
-    const statusOptions = [
-      { key: 'all', label: 'Todos', icon: 'fa-list' },
-      { key: 'awaiting_admin_approval', label: 'Aguardando Análise', icon: 'fa-hourglass-half' },
-      { key: 'pending_acceptance', label: 'Aguardando Aceite', icon: 'fa-user-check' },
-      { key: 'waiting_payment', label: 'Aguardando Pagamento', icon: 'fa-credit-card' },
-      { key: 'waiting_shipment', label: 'Aguardando Envio', icon: 'fa-box' },
-      { key: 'shipped', label: 'Em Trânsito', icon: 'fa-truck' },
-      { key: 'at_intermediary', label: 'Na Intermediadora', icon: 'fa-warehouse' },
-      { key: 'approved', label: 'Aprovado', icon: 'fa-check-circle' },
-      { key: 'delivered', label: 'Entregue', icon: 'fa-flag-checkered' },
-      { key: 'cancelled', label: 'Cancelado', icon: 'fa-times-circle' }
-    ];
+  function renderFilterSidebar() {
+  const { status, query, mineOnly } = state.negotiationFilters;
+  // ... (statusOptions remains the same)
+  const statusOptions = [
+    { key: 'all', label: 'Todos', icon: 'fa-th-list', color: 'text-gray-600' },
+    { key: 'awaiting_admin_approval', label: 'Aguardando revisão', icon: 'fa-hourglass-half', color: 'text-purple-600' },
+    { key: 'pending_acceptance', label: 'Convites pendentes', icon: 'fa-user-plus', color: 'text-indigo-600' },
+    { key: 'waiting_payment', label: 'Pagamento pendente', icon: 'fa-credit-card', color: 'text-amber-600' },
+    { key: 'waiting_shipment', label: 'Aguardando envio', icon: 'fa-box', color: 'text-slate-600' },
+    { key: 'shipped', label: 'Em trânsito', icon: 'fa-truck', color: 'text-blue-600' },
+    { key: 'at_intermediary', label: 'Na intermediadora', icon: 'fa-warehouse', color: 'text-cyan-600' },
+    { key: 'approved', label: 'Inspeção aprovada', icon: 'fa-check-circle', color: 'text-teal-600' },
+    { key: 'delivered', label: 'Entregues', icon: 'fa-flag-checkered', color: 'text-green-600' },
+    { key: 'cancelled', label: 'Canceladas', icon: 'fa-times-circle', color: 'text-red-600' }
+  ];
+  const expanded = Boolean(state.filtersExpanded);
+  const activeStatus = statusOptions.find((opt) => opt.key === status) || statusOptions[0];
+  const activeLabel = activeStatus ? activeStatus.label : 'Todos';
+  const filterPanelId = 'dashboard-filter-panel';
 
-    const activeFilter = statusOptions.find(o => o.key === status) || statusOptions[0];
+  return `
+    <aside class="w-72 flex-shrink-0 sticky top-28 self-start">
+      <div class="bg-white border border-gray-100 rounded-3xl shadow-xl p-6">
+        <button
+          type="button"
+          class="w-full flex lg:hidden items-center justify-between gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50 hover:border-purple-500 transition mb-4"
+          data-action="toggleFilters"
+          aria-expanded="${expanded}"
+          aria-controls="${filterPanelId}"
+        >
+          <span class="flex items-center gap-2 text-base font-bold text-gray-800">
+            <i class="fas fa-filter text-purple-600"></i>
+            Filtros
+          </span>
+          <span class="flex-1 text-right text-sm text-gray-500 truncate">${escapeHtml(activeLabel)}</span>
+          <i class="fas ${expanded ? 'fa-chevron-up' : 'fa-chevron-down'} text-gray-400"></i>
+        </button>
 
-    return `
-      <div class="bg-white border-y border-gray-200 -mx-6 px-6 py-3 mb-6 sticky top-16 z-30 shadow-sm">
-        <div class="flex items-center gap-4 flex-wrap">
-          <!-- Filtros à esquerda -->
-          <div class="flex items-center gap-2">
+        <div id="${filterPanelId}" class="lg:block ${expanded ? 'block' : 'hidden'} space-y-6">
+          <div>
+            <span class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Buscar negociação</span>
             <div class="relative">
-              <button class="flex items-center gap-2 px-4 py-2.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-medium transition text-sm" data-action="toggleFilters">
-                <i class="fas ${activeFilter.icon} text-purple-500"></i>
-                <span>${escapeHtml(activeFilter.label)}</span>
-                <i class="fas fa-chevron-down text-gray-400 text-xs ml-1"></i>
-              </button>
-              ${state.filtersExpanded ? `
-                <div class="absolute top-full left-0 mt-1 w-64 bg-white rounded-xl shadow-xl border border-gray-200 py-2 z-50">
-                  ${statusOptions.map((opt) => `
-                    <button
-                      class="w-full px-4 py-2.5 text-left text-sm transition flex items-center gap-3 ${status === opt.key ? 'bg-purple-50 text-purple-700 font-medium' : 'text-gray-600 hover:bg-gray-50'}"
-                      data-action="dashboardStatusFilter"
-                      data-status="${opt.key}"
-                    >
-                      <i class="fas ${opt.icon} w-4 ${status === opt.key ? 'text-purple-500' : 'text-gray-400'}"></i>
-                      ${escapeHtml(opt.label)}
-                      ${status === opt.key ? '<i class="fas fa-check text-purple-500 ml-auto"></i>' : ''}
-                    </button>
-                  `).join('')}
-                </div>
-              ` : ''}
+              <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+              <input 
+                type="search" 
+                placeholder="Filtrar por título, comprador ou vendedor" 
+                value="${escapeAttr(query)}" 
+                data-action="dashboardSearch" 
+                class="w-full pl-9 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-4 focus:ring-purple-100 focus:border-purple-500 transition duration-150"
+              >
             </div>
-
-            <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer px-3 py-2.5 rounded-lg hover:bg-gray-100 transition">
-              <input type="checkbox" ${mineOnly ? 'checked' : ''} data-action="dashboardMine" class="w-4 h-4 rounded bg-gray-50 border-gray-300 text-purple-600 focus:ring-purple-500">
-              <span>Apenas minhas</span>
-            </label>
           </div>
 
-          <!-- Espaço flexível -->
-          <div class="flex-1"></div>
+          <div class="space-y-2">
+            <span class="block text-xs font-bold text-gray-500 uppercase tracking-wider">Status</span>
+            <nav class="flex flex-col gap-1.5">
+              ${statusOptions.map((opt) => {
+                const isActive = status === opt.key;
+                return `
+                  <button
+                    type="button"
+                    class="w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl text-sm transition duration-150 ${isActive 
+                      ? 'bg-purple-600 text-white font-semibold shadow-md shadow-purple-500/20' 
+                      : 'bg-white text-gray-700 hover:bg-purple-50 hover:text-purple-600'}"
+                    data-action="dashboardStatusFilter"
+                    data-status="${opt.key}"
+                  >
+                    <span class="flex items-center gap-3">
+                      <i class="fas ${opt.icon} ${isActive ? 'text-white' : opt.color}"></i>
+                      <span class="truncate">${escapeHtml(opt.label)}</span>
+                    </span>
+                    ${isActive ? '<i class="fas fa-check text-xs"></i>' : ''}
+                  </button>
+                `;
+              }).join('')}
+            </nav>
+          </div>
 
-          <!-- Busca à direita -->
-          <div class="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-2 min-w-[280px]">
-            <i class="fas fa-search text-gray-400"></i>
-            <input type="search" placeholder="Buscar negociação..." value="${escapeAttr(query)}" data-action="dashboardSearch" class="bg-transparent text-gray-800 placeholder-gray-400 focus:outline-none flex-1 text-sm">
+          <div class="pt-5 border-t border-gray-100">
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input 
+                type="checkbox" 
+                ${mineOnly ? 'checked' : ''} 
+                data-action="dashboardMine" 
+                class="w-5 h-5 rounded border-gray-300 text-purple-600 focus:ring-purple-500 transition duration-150"
+              >
+              <span class="text-sm font-medium text-gray-700 select-none">Mostrar apenas as minhas</span>
+            </label>
           </div>
         </div>
       </div>
-    `;
+    </aside>
+  `;
   }
 
   function renderCreateNegotiationModal() {
@@ -708,9 +1062,10 @@
               <h3 class="text-sm font-bold text-purple-800 mb-2 flex items-center gap-2">
                 <i class="fas fa-map-marker-alt"></i> Endereço para envio
               </h3>
-              <p class="text-purple-700 font-medium">${INTERMEDIARY_ADDRESS.street}</p>
-              <p class="text-purple-700">${INTERMEDIARY_ADDRESS.city}</p>
-              <p class="text-purple-700">CEP: ${INTERMEDIARY_ADDRESS.cep}</p>
+              <p class="text-purple-700 font-medium">${escapeHtml([INTERMEDIARY_ADDRESS.street, INTERMEDIARY_ADDRESS.number].filter(Boolean).join(', '))}</p>
+              ${INTERMEDIARY_ADDRESS.district ? `<p class="text-purple-700">Bairro: ${escapeHtml(INTERMEDIARY_ADDRESS.district)}</p>` : ''}
+              <p class="text-purple-700">${escapeHtml([INTERMEDIARY_ADDRESS.city, INTERMEDIARY_ADDRESS.state].filter(Boolean).join(' - '))}</p>
+              <p class="text-purple-700">CEP: ${escapeHtml(formatCep(INTERMEDIARY_ADDRESS.cep))}</p>
               <p class="text-xs text-purple-600 mt-2 italic">
                 <i class="fas fa-info-circle mr-1"></i>
                 Você deve enviar o produto em até 2 dias úteis após aprovar a venda.
@@ -756,28 +1111,28 @@
     const delivered = list.filter((item) => item?.status === 'delivered').length;
 
     return `
-      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        ${renderSummaryCard('Total', total, 'fa-chart-bar', 'from-purple-500 to-indigo-600', 'Resumo de negociações registradas')}
-        ${renderSummaryCard('Em andamento', active, 'fa-clock', 'from-blue-500 to-cyan-500', 'Negociações ainda não finalizadas')}
-        ${renderSummaryCard('Aguardando aprovação', awaiting, 'fa-hourglass-half', 'from-amber-500 to-orange-500', 'Necessitam análise da intermediadora')}
-        ${renderSummaryCard('Entregues', delivered, 'fa-check-circle', 'from-green-500 to-emerald-500', 'Finalizadas com sucesso')}
+      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        ${renderSummaryCard('Total', total, 'fa-chart-bar', 'Resumo de negociações registradas')}
+        ${renderSummaryCard('Em andamento', active, 'fa-clock', 'Negociações ainda não finalizadas')}
+        ${renderSummaryCard('Aguardando aprovação', awaiting, 'fa-hourglass-half', 'Necessitam análise da intermediadora')}
+        ${renderSummaryCard('Entregues', delivered, 'fa-check-circle', 'Finalizadas com sucesso')}
       </section>
     `;
   }
 
-  function renderSummaryCard(label, value, icon, gradient, description) {
+  function renderSummaryCard(label, value, icon, description) {
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-lg card-hover border border-gray-100">
-        <div class="flex items-center gap-4">
-          <div class="w-14 h-14 bg-gradient-to-r ${gradient} rounded-xl flex items-center justify-center">
-            <i class="fas ${icon} text-white text-xl"></i>
+      <article class="bg-white rounded-xl p-5 shadow-sm border border-gray-200">
+        <div class="flex items-center gap-3 mb-3">
+          <div class="w-12 h-12 rounded-lg bg-gray-100 text-gray-500 flex items-center justify-center">
+            <i class="fas ${icon} text-lg"></i>
           </div>
           <div>
-            <span class="text-gray-500 text-sm">${escapeHtml(label)}</span>
-            <div class="text-3xl font-bold text-gray-800">${Number(value) || 0}</div>
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wide">${escapeHtml(label)}</span>
+            <div class="text-2xl font-semibold text-gray-800">${Number(value) || 0}</div>
           </div>
         </div>
-        <footer class="text-xs text-gray-400 mt-3">${escapeHtml(description)}</footer>
+        <p class="text-xs text-gray-500 leading-snug">${escapeHtml(description)}</p>
       </article>
     `;
   }
@@ -785,28 +1140,43 @@
   function renderNegotiationsTable(negotiations) {
     if (!negotiations.length) {
       return `
-        <div class="text-center py-12">
-          <div class="w-16 h-16 bg-gradient-to-r from-gray-300 to-gray-400 rounded-xl flex items-center justify-center mx-auto mb-4">
-            <i class="fas fa-inbox text-white text-2xl"></i>
+        <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-12 text-center">
+          <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <i class="fas fa-inbox text-gray-400 text-2xl"></i>
           </div>
-          <p class="mb-4 text-gray-500">Nenhum resultado para os filtros atuais.</p>
-          <button class="px-6 py-3 bg-white border border-gray-200 hover:border-purple-400 rounded-lg text-gray-700 font-medium transition shadow-sm" data-action="dashboardRefresh">Recarregar</button>
+          <p class="text-gray-500 mb-4">Nenhuma negociação encontrada.</p>
+          <button class="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-white text-sm font-medium transition" data-action="dashboardRefresh">
+            <i class="fas fa-sync-alt mr-2"></i>Atualizar
+          </button>
         </div>
       `;
     }
     const rows = negotiations.map((neg) => renderNegotiationRow(neg)).join('');
+    const totalLabel = negotiations.length === 1 ? '1 negociação' : `${negotiations.length} negociações`;
     return `
-      <section class="bg-white rounded-2xl shadow-lg overflow-hidden border border-gray-100">
-        <div class="grid grid-cols-12 gap-2 px-6 py-4 bg-gradient-to-r from-gray-50 to-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-200">
-          <span class="col-span-1">ID</span>
-          <span class="col-span-3">Produto</span>
-          <span class="col-span-2">Comprador</span>
-          <span class="col-span-2">Vendedor</span>
-          <span class="col-span-2">Status</span>
-          <span class="col-span-2">Atualização</span>
+      <div class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+        <div class="px-5 py-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+          <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Negociações</h2>
+          <span class="text-xs text-gray-500">${totalLabel}</span>
         </div>
-        ${rows}
-      </section>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="bg-white">
+                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">#</th>
+                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Produto</th>
+                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Comprador</th>
+                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendedor</th>
+                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Atualizado</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100 bg-white">
+              ${rows}
+            </tbody>
+          </table>
+        </div>
+      </div>
     `;
   }
 
@@ -817,26 +1187,51 @@
     const status = neg?.status || 'unknown';
     const priority = getStatusPriority(status, neg);
     const needsAction = priority <= 2;
-    
-    const baseClasses = 'grid grid-cols-12 gap-2 px-6 py-5 border-t border-gray-100 items-center transition cursor-pointer';
-    const hoverClass = 'hover:bg-purple-50';
-    const actionClasses = needsAction ? 'bg-gradient-to-r from-amber-50 to-orange-50 border-l-4 border-l-orange-400' : '';
-    const rowClasses = `${baseClasses} ${hoverClass} ${actionClasses}`;
-    
-    const actionBadge = needsAction ? '<span class="ml-1 inline-block w-2 h-2 bg-orange-500 rounded-full animate-pulse" title="Ação necessária"></span>' : '';
+    const idLabel = neg?.id != null ? `#${neg.id}` : '—';
+    const updatedRaw = neg?.updated_at || neg?.created_at;
+    const updatedRelative = formatRelativeTime(updatedRaw);
+    const updatedAbsolute = updatedRaw ? formatDateTime(updatedRaw) : '';
+    const actionBadge = needsAction
+      ? `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-600 border border-amber-200"><i class="fas fa-exclamation-triangle"></i>Ação necessária</span>`
+      : '';
     
     return `
-      <div class="${rowClasses}" data-action="openNegotiation" data-id="${neg?.id}">
-        <span class="col-span-1 text-gray-500 font-semibold text-sm flex items-center">#${neg?.id ?? '—'}${actionBadge}</span>
-        <span class="col-span-3 text-gray-800 font-medium truncate pr-2">${escapeHtml(productTitle)}</span>
-        <span class="col-span-2 text-gray-600 truncate text-sm">${escapeHtml(buyerName)}</span>
-        <span class="col-span-2 text-gray-600 truncate text-sm">${escapeHtml(sellerName)}</span>
-        <span class="col-span-2">${renderStatusBadge(status)}</span>
-        <span class="col-span-2 text-gray-500 text-sm flex items-center gap-2">
-          <i class="fas fa-clock text-gray-400 text-xs"></i>
-          ${formatRelativeTime(neg?.updated_at || neg?.created_at)}
-        </span>
-      </div>
+      <tr class="hover:bg-gray-50 transition cursor-pointer ${needsAction ? 'bg-orange-50' : ''}" data-action="openNegotiation" data-id="${neg?.id}">
+        <td class="px-4 py-3">
+          <div class="w-12 h-12 rounded-lg bg-gray-100 text-gray-600 font-semibold flex items-center justify-center">${escapeHtml(idLabel)}</div>
+        </td>
+        <td class="px-4 py-3">
+          <div class="font-semibold text-gray-800">${escapeHtml(productTitle)}</div>
+          ${actionBadge ? `<div class="mt-2">${actionBadge}</div>` : ''}
+        </td>
+        <td class="px-4 py-3">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-full bg-gray-100 text-gray-600 font-semibold flex items-center justify-center uppercase">${escapeHtml(getInitials(buyerName))}</div>
+            <div>
+              <div class="font-medium text-gray-800">${escapeHtml(buyerName)}</div>
+              <span class="text-xs text-gray-500">Comprador</span>
+            </div>
+          </div>
+        </td>
+        <td class="px-4 py-3">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-full bg-gray-100 text-gray-600 font-semibold flex items-center justify-center uppercase">${escapeHtml(getInitials(sellerName))}</div>
+            <div>
+              <div class="font-medium text-gray-800">${escapeHtml(sellerName)}</div>
+              <span class="text-xs text-gray-500">Vendedor</span>
+            </div>
+          </div>
+        </td>
+        <td class="px-4 py-3">
+          ${renderStatusBadgeEnhanced(status)}
+        </td>
+        <td class="px-4 py-3">
+          <div class="flex items-center gap-2 text-sm text-gray-600">
+            <i class="fas fa-clock text-gray-400"></i>
+            <span${updatedAbsolute ? ` title="${escapeAttr(updatedAbsolute)}"` : ''}>${escapeHtml(updatedRelative)}</span>
+          </div>
+        </td>
+      </tr>
     `;
   }
 
@@ -844,6 +1239,47 @@
     const label = STATUS_LABELS[status] || status || '—';
     const colorClass = STATUS_BADGE_COLORS[status] || 'bg-gray-600';
     return `<span class="inline-block px-2 py-1 rounded-full text-xs font-medium text-white ${colorClass}">${escapeHtml(label)}</span>`;
+  }
+
+  function renderStatusBadgeEnhanced(status) {
+    const label = STATUS_LABELS[status] || status || '—';
+    const statusConfig = {
+      awaiting_admin_approval: { bg: 'bg-purple-100', text: 'text-purple-700', border: 'border-purple-200', icon: 'fa-hourglass-half' },
+      pending_acceptance: { bg: 'bg-indigo-100', text: 'text-indigo-700', border: 'border-indigo-200', icon: 'fa-user-plus' },
+      waiting_payment: { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200', icon: 'fa-credit-card' },
+      waiting_shipment: { bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-200', icon: 'fa-box' },
+      shipped: { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-200', icon: 'fa-truck' },
+      at_intermediary: { bg: 'bg-cyan-100', text: 'text-cyan-700', border: 'border-cyan-200', icon: 'fa-warehouse' },
+      approved: { bg: 'bg-teal-100', text: 'text-teal-700', border: 'border-teal-200', icon: 'fa-check-circle' },
+      delivered: { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-200', icon: 'fa-flag-checkered' },
+      rejected_by_admin: { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200', icon: 'fa-times-circle' },
+      cancelled: { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200', icon: 'fa-ban' },
+      expired: { bg: 'bg-gray-100', text: 'text-gray-600', border: 'border-gray-200', icon: 'fa-clock' }
+    };
+    const config = statusConfig[status] || { bg: 'bg-gray-100', text: 'text-gray-600', border: 'border-gray-200', icon: 'fa-question' };
+    return `
+      <div class="flex flex-col gap-1">
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold ${config.bg} ${config.text} border ${config.border}">
+          <i class="fas ${config.icon}"></i>
+          <span class="truncate">${escapeHtml(label)}</span>
+        </span>
+      </div>
+    `;
+  }
+
+  function getInitials(name) {
+    if (!name) {
+      return '?';
+    }
+    const normalized = String(name).trim();
+    if (!normalized || normalized === '—') {
+      return '?';
+    }
+    const parts = normalized.split(/\s+/).filter(Boolean);
+    if (!parts.length) {
+      return '?';
+    }
+    return parts.slice(0, 2).map((part) => part.charAt(0).toUpperCase()).join('');
   }
 
   function renderNegotiationDetailPage() {
@@ -909,33 +1345,44 @@
             ` : ''}
           </article>
 
-          <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 card-hover">
-            <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-users text-blue-500"></i> Participantes</h2>
-            <div class="space-y-4">
-              <div class="p-4 bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl border border-amber-200">
+          <article class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-users text-blue-500"></i> Participantes</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
                 <header class="flex items-center gap-2 mb-2">
                   <span class="px-2 py-0.5 bg-amber-500 text-white text-xs rounded-full font-medium">Vendedor</span>
-                  ${isSellerRole ? '<span class="px-2 py-0.5 gradient-bg text-white text-xs rounded-full font-medium">Você</span>' : ''}
+                  ${isSellerRole ? '<span class="px-2 py-0.5 bg-gray-900 text-white text-xs rounded-full font-medium">Você</span>' : ''}
                 </header>
                 <strong class="block text-gray-800">${escapeHtml(seller.name || '—')}</strong>
                 <span class="block text-gray-500 text-sm">${escapeHtml(seller.email || '—')}</span>
                 <span class="block text-gray-500 text-sm">${formatPhone(seller.phone)}</span>
+                ${renderAddressDetails(seller)}
               </div>
-              <div class="p-4 bg-gradient-to-r from-cyan-50 to-blue-50 rounded-xl border border-cyan-200">
+              <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
                 <header class="flex items-center gap-2 mb-2">
                   <span class="px-2 py-0.5 bg-cyan-500 text-white text-xs rounded-full font-medium">Comprador</span>
-                  ${isBuyerRole ? '<span class="px-2 py-0.5 gradient-bg text-white text-xs rounded-full font-medium">Você</span>' : ''}
+                  ${isBuyerRole ? '<span class="px-2 py-0.5 bg-gray-900 text-white text-xs rounded-full font-medium">Você</span>' : ''}
                 </header>
                 <strong class="block text-gray-800">${escapeHtml(buyer.name || '—')}</strong>
                 <span class="block text-gray-500 text-sm">${escapeHtml(buyer.email || '—')}</span>
                 <span class="block text-gray-500 text-sm">${formatPhone(buyer.phone)}</span>
+                ${renderAddressDetails(buyer)}
+              </div>
+              <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
+                <header class="flex items-center gap-2 mb-2">
+                  <span class="px-2 py-0.5 bg-purple-500 text-white text-xs rounded-full font-medium">Intermediadora</span>
+                </header>
+                <strong class="block text-gray-800">IntermediaçãoPro</strong>
+                <span class="block text-gray-500 text-sm">contato@intermediacaopro.com</span>
+                <span class="block text-gray-500 text-sm">${formatPhone('(11) 99999-9999')}</span>
+                ${renderAddressDetails(INTERMEDIARY_ADDRESS, 'Endereço não informado.')}
               </div>
             </div>
           </article>
         </div>
 
         ${renderLogisticsSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
-        ${renderBuyerAcceptSection(negotiation, { isBuyer: isBuyerRole })}
+        ${renderBuyerAcceptSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
         ${renderPaymentSection(negotiation, { isBuyer: isBuyerRole })}
         ${renderPaymentsSection(negotiation)}
         ${renderAdminActionsSection(negotiation)}
@@ -952,18 +1399,18 @@
     const trackSeller = neg.tracking_to_intermediary || neg.tracking_code || '';
     const trackBuyer = neg.tracking_to_buyer || neg.buyer_tracking_code || '';
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 card-hover">
-        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-truck text-green-500"></i> Logística</h2>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div class="p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200">
+      <article class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
+        <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-truck text-green-500"></i> Logística</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
             <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para intermediadora</h3>
-            <p class="text-gray-800 font-medium">${trackSeller ? escapeHtml(trackSeller) : 'Não informado'}</p>
-            ${neg.sent_to_intermediary_at || neg.shipped_at ? `<small class="text-gray-500">Postado em ${formatDate(neg.sent_to_intermediary_at || neg.shipped_at)}</small>` : ''}
+            <p class="text-sm text-gray-800 font-medium">${trackSeller ? escapeHtml(trackSeller) : 'Não informado'}</p>
+            ${neg.sent_to_intermediary_at || neg.shipped_at ? `<small class="text-xs text-gray-500">Postado em ${formatDate(neg.sent_to_intermediary_at || neg.shipped_at)}</small>` : ''}
           </div>
-          <div class="p-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl border border-green-200">
+          <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
             <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para comprador</h3>
-            <p class="text-gray-800 font-medium">${trackBuyer ? escapeHtml(trackBuyer) : 'Não informado'}</p>
-            ${neg.sent_to_buyer_at ? `<small class="text-gray-500">Despachado em ${formatDate(neg.sent_to_buyer_at)}</small>` : ''}
+            <p class="text-sm text-gray-800 font-medium">${trackBuyer ? escapeHtml(trackBuyer) : 'Não informado'}</p>
+            ${neg.sent_to_buyer_at ? `<small class="text-xs text-gray-500">Despachado em ${formatDate(neg.sent_to_buyer_at)}</small>` : ''}
           </div>
         </div>
         ${renderTrackingForms(neg, { isBuyer, isSeller })}
@@ -971,19 +1418,21 @@
     `;
   }
 
-  function renderBuyerAcceptSection(neg, { isBuyer }) {
-    // Mostra apenas se o status for pending_acceptance e o usuário for comprador ou não tiver comprador ainda
-    const canAccept = neg.status === 'pending_acceptance' && (isBuyer || !neg.buyer_id);
+  function renderBuyerAcceptSection(neg, { isBuyer, isSeller }) {
+    // Mostra apenas se o status for pending_acceptance e o usuário for comprador válido ou um interessado que não seja o vendedor
+    const canAcceptPendingBuyer = neg.status === 'pending_acceptance' && Boolean(neg.buyer_id) && isBuyer;
+    const canAcceptAsInterested = neg.status === 'pending_acceptance' && !neg.buyer_id && !isSeller;
+    const canAccept = canAcceptPendingBuyer || canAcceptAsInterested;
     if (!canAccept) return '';
 
     return `
-      <article class="bg-gradient-to-r from-green-50 to-emerald-50 rounded-2xl p-6 shadow-lg border-2 border-green-300">
-        <h2 class="text-lg font-bold text-green-800 mb-4 flex items-center gap-2"><i class="fas fa-handshake text-green-600"></i> Aceite da Negociação</h2>
-        <p class="text-green-700 mb-4">Esta negociação está aguardando o aceite do comprador. Revise os detalhes acima e confirme sua participação.</p>
+      <article class="bg-white rounded-2xl p-6 shadow-sm border border-green-200">
+        <h2 class="text-lg font-semibold text-green-700 mb-3 flex items-center gap-2"><i class="fas fa-handshake text-green-600"></i> Aceite da negociação</h2>
+        <p class="text-sm text-gray-600 mb-4">Esta negociação está aguardando o aceite do comprador. Revise os detalhes acima e confirme sua participação.</p>
         
         <!-- Endereço de envio informativo -->
-        <div class="p-4 bg-white rounded-xl border border-green-200 mb-4">
-          <h3 class="text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+        <div class="p-4 rounded-xl border border-gray-200 bg-gray-50 mb-4">
+          <h3 class="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
             <i class="fas fa-info-circle text-blue-500"></i> Informações importantes
           </h3>
           <p class="text-sm text-gray-600 mb-2">O vendedor deve enviar o produto em até <strong>2 dias úteis</strong> após você aceitar.</p>
@@ -991,10 +1440,10 @@
         </div>
         
         <div class="flex flex-wrap gap-3">
-          <button class="px-6 py-3 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 rounded-lg text-white font-bold transition shadow-md flex items-center gap-2" data-action="acceptNegotiation" data-id="${neg.id}">
+          <button class="px-5 py-2.5 bg-green-600 hover:bg-green-700 rounded-lg text-white font-semibold transition flex items-center gap-2" data-action="acceptNegotiation" data-id="${neg.id}">
             <i class="fas fa-check"></i> Aceitar e participar
           </button>
-          <button class="px-6 py-3 bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 rounded-lg text-white font-medium transition shadow-md flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
+          <button class="px-5 py-2.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg font-medium transition flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
             <i class="fas fa-times"></i> Recusar
           </button>
         </div>
@@ -1015,14 +1464,14 @@
     const pixCode = `00020126580014br.gov.bcb.pix0136${pixKey}5204000053039865406${total.toFixed(2)}5802BR5925INTERMEDIACAO PRO LTDA6009SAO PAULO62070503***6304`;
 
     return `
-      <article class="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl p-6 shadow-lg border-2 border-blue-300">
-        <h2 class="text-lg font-bold text-blue-800 mb-4 flex items-center gap-2"><i class="fas fa-qrcode text-blue-600"></i> Pagamento via Pix</h2>
+      <article class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
+        <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-qrcode text-blue-600"></i> Pagamento via Pix</h2>
         
-        <div class="grid md:grid-cols-2 gap-6">
+        <div class="grid md:grid-cols-2 gap-4">
           <div>
-            <div class="bg-white p-4 rounded-xl border border-blue-200 mb-4">
+            <div class="bg-gray-50 p-4 rounded-xl border border-gray-200 mb-4">
               <h3 class="text-sm font-medium text-gray-700 mb-3">Resumo do pagamento</h3>
-              <div class="space-y-2 text-sm">
+              <div class="space-y-2 text-sm text-gray-700">
                 <div class="flex justify-between">
                   <span class="text-gray-600">Valor do produto</span>
                   <span class="text-gray-800 font-medium">${formatCurrency(amount)}</span>
@@ -1052,6 +1501,7 @@
               <button class="w-full px-4 py-3 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 rounded-lg text-white font-bold transition shadow-md" data-action="confirmPayment" data-id="${neg.id}">
                 <i class="fas fa-check mr-2"></i>Já realizei o pagamento
               </button>
+              <p class="text-xs text-gray-500 text-center">Pagamento confirmado em até 1 hora útil.</p>
             </div>
           </div>
           
@@ -1890,49 +2340,76 @@
 
   function renderFooter() {
     return `
-      <footer class="bg-gray-900 text-white py-12">
-        <div class="container mx-auto px-4">
-          <div class="grid md:grid-cols-4 gap-8">
-            <div>
-              <div class="flex items-center gap-2 mb-6">
-                <div class="w-10 h-10 gradient-bg rounded-lg flex items-center justify-center">
-                  <i class="fas fa-handshake text-white text-xl"></i>
+      <footer class="bg-gray-900 text-white py-10">
+        <div class="container mx-auto px-6">
+          <!-- Grid de 3 colunas -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-8 lg:gap-12">
+            <!-- Coluna 1: Logo e descrição -->
+            <div class="space-y-4">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 gradient-bg rounded-lg flex items-center justify-center flex-shrink-0">
+                  <i class="fas fa-handshake text-white text-lg"></i>
                 </div>
-                <span class="text-2xl font-bold">Intermediação<span class="gradient-text">Pro</span></span>
+                <span class="text-xl font-bold">Intermediação<span class="gradient-text">Pro</span></span>
               </div>
-              <p class="text-gray-400">Conectando pessoas e oportunidades com segurança e eficiência.</p>
-            </div>
-            <div>
-              <h4 class="text-xl font-bold mb-6">Links Rápidos</h4>
-              <ul class="space-y-3">
-                <li><a href="#" class="text-gray-400 hover:text-white transition">Início</a></li>
-                <li><a href="#" class="text-gray-400 hover:text-white transition">Serviços</a></li>
-                <li><a href="#" class="text-gray-400 hover:text-white transition">Como Funciona</a></li>
-              </ul>
-            </div>
-            <div>
-              <h4 class="text-xl font-bold mb-6">Legal</h4>
-              <ul class="space-y-3">
-                <li><a href="#" class="text-gray-400 hover:text-white transition">Termos de Uso</a></li>
-                <li><a href="#" class="text-gray-400 hover:text-white transition">Privacidade</a></li>
-                <li><a href="#" class="text-gray-400 hover:text-white transition">FAQ</a></li>
-              </ul>
-            </div>
-            <div>
-              <h4 class="text-xl font-bold mb-6">Contato</h4>
-              <ul class="space-y-3 text-gray-400">
-                <li class="flex items-center"><i class="fas fa-envelope mr-3"></i> contato@intermediacaopro.com</li>
-                <li class="flex items-center"><i class="fas fa-phone mr-3"></i> (11) 99999-9999</li>
-              </ul>
-              <div class="flex gap-3 mt-6">
-                <a href="#" class="w-10 h-10 gradient-bg rounded-full flex items-center justify-center hover:opacity-90 transition"><i class="fab fa-facebook-f"></i></a>
-                <a href="#" class="w-10 h-10 bg-gradient-to-r from-blue-400 to-cyan-400 rounded-full flex items-center justify-center hover:opacity-90 transition"><i class="fab fa-twitter"></i></a>
-                <a href="#" class="w-10 h-10 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center hover:opacity-90 transition"><i class="fab fa-instagram"></i></a>
+              <p class="text-gray-400 text-sm leading-relaxed">Conectando pessoas e oportunidades com segurança e eficiência.</p>
+              <div class="flex gap-3 pt-2">
+                <a href="#" class="w-9 h-9 gradient-bg rounded-full flex items-center justify-center hover:opacity-80 transition"><i class="fab fa-facebook-f text-sm"></i></a>
+                <a href="#" class="w-9 h-9 bg-gradient-to-r from-blue-400 to-cyan-400 rounded-full flex items-center justify-center hover:opacity-80 transition"><i class="fab fa-twitter text-sm"></i></a>
+                <a href="#" class="w-9 h-9 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center hover:opacity-80 transition"><i class="fab fa-instagram text-sm"></i></a>
               </div>
+            </div>
+
+            <!-- Coluna 2: Links -->
+            <div class="grid grid-cols-2 gap-6">
+              <div>
+                <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-4">Navegação</h4>
+                <ul class="space-y-2">
+                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">Início</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">Serviços</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">Como Funciona</a></li>
+                </ul>
+              </div>
+              <div>
+                <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-4">Legal</h4>
+                <ul class="space-y-2">
+                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">Termos de Uso</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">Privacidade</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">FAQ</a></li>
+                </ul>
+              </div>
+            </div>
+
+            <!-- Coluna 3: Contato -->
+            <div>
+              <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-4">Contato</h4>
+              <ul class="space-y-3">
+                <li class="flex items-center gap-3 text-gray-400 text-sm">
+                  <div class="w-8 h-8 rounded-lg bg-gray-800 flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-envelope text-purple-400 text-xs"></i>
+                  </div>
+                  <span>contato@intermediacaopro.com</span>
+                </li>
+                <li class="flex items-center gap-3 text-gray-400 text-sm">
+                  <div class="w-8 h-8 rounded-lg bg-gray-800 flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-phone text-purple-400 text-xs"></i>
+                  </div>
+                  <span>(11) 99999-9999</span>
+                </li>
+                <li class="flex items-center gap-3 text-gray-400 text-sm">
+                  <div class="w-8 h-8 rounded-lg bg-gray-800 flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-map-marker-alt text-purple-400 text-xs"></i>
+                  </div>
+                  <span>São Paulo, SP</span>
+                </li>
+              </ul>
             </div>
           </div>
-          <div class="border-t border-gray-800 mt-10 pt-6 text-center text-gray-500">
-            <p>© ${new Date().getFullYear()} IntermediaçãoPro. Todos os direitos reservados.</p>
+
+          <!-- Linha divisória e copyright -->
+          <div class="border-t border-gray-800 mt-8 pt-6 flex flex-col md:flex-row items-center justify-between gap-4">
+            <p class="text-gray-500 text-sm">© ${new Date().getFullYear()} IntermediaçãoPro. Todos os direitos reservados.</p>
+            <p class="text-gray-600 text-xs">Feito com <i class="fas fa-heart text-red-500"></i> no Brasil</p>
           </div>
         </div>
       </footer>
@@ -2335,6 +2812,65 @@
     return phone;
   }
 
+  function formatCep(value) {
+    const digits = onlyDigits(value);
+    if (digits.length === 8) {
+      return `${digits.slice(0, 5)}-${digits.slice(5)}`;
+    }
+    return value || '—';
+  }
+
+  function onlyDigits(value) {
+    return value ? String(value).replace(/\D/g, '') : '';
+  }
+
+  function normalizeText(value) {
+    if (!value) return '';
+    return String(value)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+  }
+
+  function renderAddressDetails(entity, emptyMessage = 'Endereço não informado.') {
+    if (!entity) {
+      return `<p class="text-xs text-gray-500 mt-3">${escapeHtml(emptyMessage)}</p>`;
+    }
+    const street = entity.address || entity.street || '';
+    const number = entity.address_number || entity.number || '';
+    const complement = entity.address_complement || entity.complement || '';
+    const district = entity.district || entity.neighborhood || '';
+    const city = entity.city || entity.city_name || '';
+    const stateValue = entity.state || entity.state_code || '';
+    const zip = entity.zip_code || entity.cep || entity.postal_code || '';
+    const lines = [];
+    const streetLine = [street, number].filter(Boolean).join(', ');
+    if (streetLine) {
+      lines.push(streetLine);
+    }
+    if (complement) {
+      lines.push(`Complemento: ${complement}`);
+    }
+    if (district) {
+      lines.push(`Bairro: ${district}`);
+    }
+    const cityLine = [city, stateValue].filter(Boolean).join(' - ');
+    if (cityLine) {
+      lines.push(`Cidade: ${cityLine}`);
+    }
+    if (zip) {
+      lines.push(`CEP: ${formatCep(zip)}`);
+    }
+    if (!lines.length) {
+      return `<p class="text-xs text-gray-500 mt-3">${escapeHtml(emptyMessage)}</p>`;
+    }
+    return `
+      <ul class="mt-3 space-y-1 text-xs text-gray-500">
+        ${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}
+      </ul>
+    `;
+  }
+
   function formatISODate(date) {
     return date.toISOString().split('T')[0];
   }
@@ -2718,6 +3254,36 @@
       if (!dataset || !dataset.page) return;
       navigate(dataset.page, dataset);
     },
+    formatPhoneInput({ element }) {
+      if (!(element instanceof HTMLInputElement)) return;
+      const digits = onlyDigits(element.value).slice(0, 11);
+      if (digits.length >= 11) {
+        element.value = `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7, 11)}`;
+      } else if (digits.length >= 7) {
+        element.value = `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+      } else if (digits.length > 2) {
+        element.value = `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+      } else if (digits.length) {
+        element.value = `(${digits}`;
+      } else {
+        element.value = '';
+      }
+    },
+    formatCepInput({ element }) {
+      if (!(element instanceof HTMLInputElement)) return;
+      const digits = onlyDigits(element.value).slice(0, 8);
+      if (digits.length > 5) {
+        element.value = `${digits.slice(0, 5)}-${digits.slice(5)}`;
+      } else {
+        element.value = digits;
+      }
+    },
+    filterRegisterCity({ value }) {
+      setState({ registerCityFilter: value || '' });
+    },
+    selectRegisterCity({ value }) {
+      setState({ registerSelectedCity: value || '' });
+    },
     logout() {
       logout();
     },
@@ -2747,21 +3313,39 @@
         handleError(new Error('As senhas não coincidem.'));
         return;
       }
+      const sanitize = (value) => (value ? String(value).trim() : '');
+      const phoneDigits = onlyDigits(values.phone);
+      const zipDigits = onlyDigits(values.zip_code);
+      const payload = {
+        name: sanitize(values.name),
+        email: sanitize(values.email),
+        phone: phoneDigits,
+        phone_formatted: sanitize(values.phone),
+        zip_code: zipDigits,
+        address: sanitize(values.address),
+        address_number: sanitize(values.address_number),
+        address_complement: sanitize(values.address_complement) || null,
+        district: sanitize(values.district),
+        city: sanitize(values.city),
+        state: sanitize(values.state) || 'SP',
+        password: values.password,
+        password_confirmation: values.password_confirmation
+      };
       await withLoader(async () => {
-        await apiCall('/register', {
+        const result = await apiCall('/register', {
           method: 'POST',
-          body: {
-            name: values.name,
-            email: values.email,
-            phone: values.phone,
-            password: values.password,
-            password_confirmation: values.password_confirmation
-          }
+          body: payload
         });
-        notify({ type: 'success', message: 'Conta criada! Faça login para continuar.' });
+        const smsSent = Boolean(result?.data?.sms_sent ?? result?.sms_sent);
+        const successMessage = smsSent
+          ? 'Conta criada! Enviamos um SMS com o codigo de verificacao. Faca login para continuar.'
+          : 'Conta criada! Faca login para continuar.';
+        notify({ type: 'success', message: successMessage });
         setState({
           currentPage: 'login',
-          confirmationEmail: values.email
+          confirmationEmail: values.email,
+          registerCityFilter: '',
+          registerSelectedCity: ''
         });
       }, 'Criando conta...');
     },
