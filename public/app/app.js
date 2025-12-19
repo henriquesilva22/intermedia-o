@@ -22,16 +22,16 @@
 
   // Design Update: Cores ajustadas para melhor contraste e semântica
   const STATUS_BADGE_COLORS = {
-    awaiting_admin_approval: 'bg-purple-100 text-purple-700 border border-purple-200',
-    pending_acceptance: 'bg-indigo-100 text-indigo-700 border border-indigo-200',
-    waiting_payment: 'bg-amber-100 text-amber-700 border border-amber-200',
-    waiting_shipment: 'bg-slate-100 text-slate-700 border border-slate-200',
-    shipped: 'bg-blue-100 text-blue-700 border border-blue-200',
-    at_intermediary: 'bg-cyan-100 text-cyan-700 border border-cyan-200',
-    approved: 'bg-teal-100 text-teal-700 border border-teal-200',
-    delivered: 'bg-green-100 text-green-700 border border-green-200',
-    rejected_by_admin: 'bg-red-100 text-red-700 border border-red-200',
-    cancelled: 'bg-red-50 text-red-600 border border-red-100',
+    awaiting_admin_approval: 'bg-primary-100 text-primary-700 border border-primary-200',
+    pending_acceptance: 'bg-secondary-100 text-secondary-700 border border-secondary-200',
+    waiting_payment: 'bg-warning-100 text-warning-700 border border-warning-200',
+    waiting_shipment: 'bg-gray-100 text-gray-700 border border-gray-200',
+    shipped: 'bg-secondary-100 text-secondary-700 border border-secondary-200',
+    at_intermediary: 'bg-secondary-100 text-secondary-700 border border-secondary-200',
+    approved: 'bg-success-100 text-success-700 border border-success-200',
+    delivered: 'bg-success-100 text-success-700 border border-success-200',
+    rejected_by_admin: 'bg-danger-100 text-danger-700 border border-danger-200',
+    cancelled: 'bg-danger-50 text-danger-600 border border-danger-100',
     expired: 'bg-gray-100 text-gray-600 border border-gray-200'
   };
 
@@ -82,6 +82,7 @@
     confirmationEmail: null,
     confirmationCooldownRemaining: 0,
     showCreateNegotiationModal: false,
+    showCreateTerms: false,
     filtersExpanded: false,
     registerCityFilter: '',
     registerSelectedCity: '',
@@ -92,7 +93,13 @@
       buyerFound: null,
       buyerSearching: false,
       productPhotos: [],
-      photoError: null
+      photoError: null,
+      // Campos do formulário para preservar durante re-render
+      title: '',
+      category: '',
+      description: '',
+      price: '',
+      buyerEmail: ''
     },
     // Estado para relatório do intermediador
     inspectionReport: {
@@ -145,15 +152,46 @@
   let confirmationIntervalHandle = null;
   let toastTimer = null;
   let saoPauloCitiesPromise = null;
+  let deferredRenderHandle = null;
+  let saoPauloCitiesLastAttemptAt = 0;
 
   document.addEventListener('DOMContentLoaded', () => {
     injectBaseStyles();
     attachGlobalHandlers();
+    handleVerificationLink(); // Check for email verification link
     render();
     if (state.token && state.user) {
       bootstrapAuthenticated().catch((error) => handleError(error));
     }
   });
+
+  // Handle email verification link from URL hash
+  async function handleVerificationLink() {
+    const hash = window.location.hash;
+    const match = hash.match(/^#\/verify-email\/(\d+)\/([a-zA-Z0-9]+)$/);
+    if (match) {
+      const [, userId, token] = match;
+      // Clear the hash to prevent re-processing
+      window.location.hash = '';
+      
+      try {
+        setState({ isLoading: true });
+        const response = await apiCall(`/email/verify/${userId}/${token}`, { method: 'GET' });
+        
+        if (response.verified || response.already_verified) {
+          notify({ type: 'success', message: response.message || 'Email verificado com sucesso!' });
+          // Update user state if logged in
+          if (state.user && state.user.id === parseInt(userId)) {
+            setState({ user: { ...state.user, email_verified: true } });
+          }
+        }
+      } catch (error) {
+        notify({ type: 'error', message: error.message || 'Erro ao verificar email.' });
+      } finally {
+        setState({ isLoading: false });
+      }
+    }
+  }
 
   async function bootstrapAuthenticated() {
     try {
@@ -166,258 +204,63 @@
     }
   }
 
-  // MODERNIZAÇÃO DO CSS
+  // CSS Complementar (Twind CSS é carregado via CDN no blade)
   function injectBaseStyles() {
+    // Estilos complementares que não existem no Twind padrão
     if (!document.getElementById('app-critical-css')) {
       const criticalStyle = document.createElement('style');
       criticalStyle.id = 'app-critical-css';
       criticalStyle.textContent = `
-        /* RESET & BASE */
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-        html { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif; line-height: 1.5; font-size: 14px; background-color: #f8fafc; color: #0f172a; height: 100%; }
-        body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; }
+        /* Gradient utilities */
+        .gradient-bg { background: linear-gradient(135deg, #7c3aed 0%, #06b6d4 100%); }
+        .gradient-text { background: linear-gradient(135deg, #7c3aed 0%, #06b6d4 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
         
-        /* TYPOGRAPHY */
-        h1, h2, h3, h4, h5, h6 { font-weight: 700; color: #1e293b; letter-spacing: -0.025em; }
-        p { color: #475569; }
-        a { color: inherit; text-decoration: none; transition: color 0.2s; }
-        
-        /* IMAGES & MEDIA */
-        img, video { max-width: 100%; height: auto; display: block; }
-        
-        /* FORM ELEMENTS */
-        button, input, select, textarea { font-family: inherit; font-size: 100%; outline: none; }
-        button { cursor: pointer; border: none; background: none; }
-        [hidden] { display: none !important; }
-
-        /* --- UTILITY CLASSES (TAILWIND-ALIKE) --- */
-        
-        /* Layout & Flexbox */
-        .flex { display: flex; }
-        .flex-col { flex-direction: column; }
-        .flex-wrap { flex-wrap: wrap; }
-        .items-center { align-items: center; }
-        .items-start { align-items: flex-start; }
-        .justify-center { justify-content: center; }
-        .justify-between { justify-content: space-between; }
-        .justify-end { justify-content: flex-end; }
-        .flex-1 { flex: 1 1 0%; }
-        .flex-shrink-0 { flex-shrink: 0; }
-        .grow { flex-grow: 1; }
-        .gap-1 { gap: 0.25rem; }
-        .gap-2 { gap: 0.5rem; }
-        .gap-3 { gap: 0.75rem; }
-        .gap-4 { gap: 1rem; }
-        .gap-6 { gap: 1.5rem; }
-        .gap-8 { gap: 2rem; }
-
-        /* Grid */
-        .grid { display: grid; }
-        .grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
-        .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .grid-cols-12 { grid-template-columns: repeat(12, minmax(0, 1fr)); }
-        .col-span-1 { grid-column: span 1 / span 1; }
-        .col-span-2 { grid-column: span 2 / span 2; }
-        
-        /* Spacing (Padding/Margin) */
-        .p-0 { padding: 0; }
-        .p-2 { padding: 0.5rem; }
-        .p-3 { padding: 0.75rem; }
-        .p-4 { padding: 1rem; }
-        .p-5 { padding: 1.25rem; }
-        .p-6 { padding: 1.5rem; }
-        .p-8 { padding: 2rem; }
-        .px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
-        .px-4 { padding-left: 1rem; padding-right: 1rem; }
-        .px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
-        .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
-        .py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
-        .py-4 { padding-top: 1rem; padding-bottom: 1rem; }
-        .m-0 { margin: 0; }
-        .mt-1 { margin-top: 0.25rem; }
-        .mt-2 { margin-top: 0.5rem; }
-        .mt-4 { margin-top: 1rem; }
-        .mt-6 { margin-top: 1.5rem; }
-        .mt-8 { margin-top: 2rem; }
-        .mb-2 { margin-bottom: 0.5rem; }
-        .mb-4 { margin-bottom: 1rem; }
-        .mb-6 { margin-bottom: 1.5rem; }
-        .mr-2 { margin-right: 0.5rem; }
-        .ml-auto { margin-left: auto; }
-        .mx-auto { margin-left: auto; margin-right: auto; }
-        .space-y-2 > * + * { margin-top: 0.5rem; }
-        .space-y-4 > * + * { margin-top: 1rem; }
-        .space-y-6 > * + * { margin-top: 1.5rem; }
-
-        /* Sizing */
-        .w-full { width: 100%; }
-        .w-auto { width: auto; }
-        .w-6 { width: 1.5rem; }
-        .w-12 { width: 3rem; }
-        .w-48 { width: 12rem; }
-        .w-72 { width: 18rem; }
-        .h-6 { height: 1.5rem; }
-        .h-12 { height: 3rem; }
-        .h-full { height: 100%; }
-        .h-screen { height: 100vh; }
-        .min-h-screen { min-height: 100vh; }
-        .max-w-md { max-width: 28rem; }
-        .max-w-lg { max-width: 32rem; }
-        .max-w-2xl { max-width: 42rem; }
-        .max-w-4xl { max-width: 56rem; }
-        .max-w-7xl { max-width: 80rem; }
-
-        /* Borders & Radius */
-        .border { border: 1px solid #e2e8f0; }
-        .border-t { border-top: 1px solid #e2e8f0; }
-        .border-b { border-bottom: 1px solid #e2e8f0; }
-        .border-dashed { border-style: dashed; }
-        .border-transparent { border-color: transparent; }
-        .rounded { border-radius: 0.25rem; }
-        .rounded-lg { border-radius: 0.5rem; }
-        .rounded-xl { border-radius: 0.75rem; }
-        .rounded-2xl { border-radius: 1rem; }
-        .rounded-3xl { border-radius: 1.5rem; }
-        .rounded-full { border-radius: 9999px; }
-
-        /* Backgrounds & Colors */
-        .bg-white { background-color: #ffffff; }
-        .bg-gray-50 { background-color: #f8fafc; }
-        .bg-gray-100 { background-color: #f1f5f9; }
-        .bg-purple-600 { background-color: #7c3aed; }
-        .bg-purple-50 { background-color: #f5f3ff; }
-        .bg-red-50 { background-color: #fef2f2; }
-        
-        .text-white { color: #ffffff; }
-        .text-gray-400 { color: #94a3b8; }
-        .text-gray-500 { color: #64748b; }
-        .text-gray-700 { color: #334155; }
-        .text-gray-900 { color: #0f172a; }
-        .text-purple-600 { color: #7c3aed; }
-        .text-purple-700 { color: #6d28d9; }
-        .text-red-600 { color: #dc2626; }
-        .text-center { text-align: center; }
-        .text-right { text-align: right; }
-        .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
-        .text-base { font-size: 1rem; line-height: 1.5rem; }
-        .text-lg { font-size: 1.125rem; line-height: 1.75rem; }
-        .text-xl { font-size: 1.25rem; line-height: 1.75rem; }
-        .text-2xl { font-size: 1.5rem; line-height: 2rem; }
-        .text-3xl { font-size: 1.875rem; line-height: 2.25rem; }
-        .font-medium { font-weight: 500; }
-        .font-semibold { font-weight: 600; }
-        .font-bold { font-weight: 700; }
-        .font-extrabold { font-weight: 800; }
-        
-        /* Modern Elements */
-        .shadow-sm { box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); }
-        .shadow-md { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
-        .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
-        .shadow-xl { box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04); }
-        .shadow-inner { box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06); }
-        
-        .backdrop-blur-sm { backdrop-filter: blur(4px); }
-        .backdrop-blur-md { backdrop-filter: blur(12px); }
-        
-        /* Positioning */
-        .relative { position: relative; }
-        .absolute { position: absolute; }
-        .fixed { position: fixed; }
-        .sticky { position: sticky; }
-        .top-0 { top: 0; }
-        .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
-        .z-10 { z-index: 10; }
-        .z-20 { z-index: 20; }
-        .z-50 { z-index: 50; }
-
-        /* Custom Components */
-        .btn-gradient {
-            background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
-            color: white;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .btn-gradient:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
-        }
+        /* Button gradients */
+        .btn-gradient { background: linear-gradient(135deg, #7c3aed 0%, #6366f1 100%); color: white; transition: all 0.3s ease; }
+        .btn-gradient:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4); }
         .btn-gradient:active { transform: translateY(0); }
         
-        .card-hover {
-            transition: all 0.3s ease;
-        }
-        .card-hover:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 12px 24px -10px rgba(0, 0, 0, 0.1);
-        }
-
-        /* Form Inputs Modern */
-        input:focus, select:focus, textarea:focus {
-            outline: none;
-            border-color: #8b5cf6;
-            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
-        }
-
-        /* Utilities extras */
-        .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .cursor-pointer { cursor: pointer; }
-        .cursor-not-allowed { cursor: not-allowed; }
-        .opacity-50 { opacity: 0.5; }
-        .transition { transition-property: all; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 200ms; }
-        .overflow-hidden { overflow: hidden; }
-        .overflow-y-auto { overflow-y: auto; }
+        /* Card hover effects */
+        .card-hover { transition: all 0.3s ease; }
+        .card-hover:hover { transform: translateY(-2px); box-shadow: 0 12px 24px -10px rgba(0, 0, 0, 0.15); }
         
-        /* Loading Spinner */
+        /* Form focus states */
+        input:focus, select:focus, textarea:focus { outline: none; border-color: #7c3aed !important; box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1) !important; }
+        
+        /* Status badge animations */
+        .status-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
+        
+        /* Smooth page transitions */
+        .fade-in { animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Filter panel animation */
+        .filter-panel { max-height: 0; overflow: hidden; transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease; opacity: 0; }
+        .filter-panel.expanded { max-height: 600px; opacity: 1; }
+        .filter-toggle-icon { transition: transform 0.3s ease; }
+        .filter-toggle-icon.rotated { transform: rotate(180deg); }
+        
+        /* Progress bar gradient */
+        .progress-gradient { background: linear-gradient(90deg, #7c3aed 0%, #06b6d4 100%); }
+        
+        /* Timeline connector */
+        .timeline-connector { position: relative; }
+        .timeline-connector::before { content: ''; position: absolute; left: 1.25rem; top: 2.5rem; bottom: 0; width: 2px; background: #e2e8f0; }
+        .timeline-connector:last-child::before { display: none; }
+        
+        /* Modal backdrop */
+        .modal-backdrop { background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(4px); }
+        
+        /* Loading spinner */
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .animate-spin { animation: spin 1s linear infinite; }
         
-        /* Responsive */
-        @media (min-width: 640px) {
-            .sm\\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .sm\\:flex-row { flex-direction: row; }
-            .sm\\:w-auto { width: auto; }
-        }
-        @media (min-width: 768px) {
-            .md\\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .md\\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-            .md\\:flex-row { flex-direction: row; }
-        }
-        @media (min-width: 1024px) {
-            .lg\\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-        }
+        /* Toast notifications */
+        .toast-enter { animation: slideInRight 0.3s ease-out; }
+        @keyframes slideInRight { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
       `;
       document.head.insertBefore(criticalStyle, document.head.firstChild);
-    }
-
-    // Google Fonts - Inter (preconnect for faster loading)
-    if (!document.getElementById('font-preconnect')) {
-      const preconnect = document.createElement('link');
-      preconnect.id = 'font-preconnect';
-      preconnect.rel = 'preconnect';
-      preconnect.href = 'https://fonts.googleapis.com';
-      document.head.appendChild(preconnect);
-      
-      const preconnect2 = document.createElement('link');
-      preconnect2.rel = 'preconnect';
-      preconnect2.href = 'https://fonts.gstatic.com';
-      preconnect2.crossOrigin = 'anonymous';
-      document.head.appendChild(preconnect2);
-    }
-
-    if (!document.getElementById('app-font-inter')) {
-      const fontLink = document.createElement('link');
-      fontLink.id = 'app-font-inter';
-      fontLink.rel = 'stylesheet';
-      fontLink.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap';
-      document.head.appendChild(fontLink);
-    }
-
-    // Font Awesome icons
-    if (!document.getElementById('fa-icons')) {
-      const faLink = document.createElement('link');
-      faLink.id = 'fa-icons';
-      faLink.rel = 'stylesheet';
-      faLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css';
-      document.head.appendChild(faLink);
     }
   }
 
@@ -444,9 +287,41 @@
     return keysA.every((key) => Object.is(a[key], b[key]));
   }
 
+  function updateConfirmationCooldownUI(seconds) {
+    try {
+      const button = document.querySelector('[data-confirmation-resend]');
+      if (!(button instanceof HTMLButtonElement)) return;
+      const remaining = Math.max(0, Number(seconds) || 0);
+      const label = button.querySelector('[data-confirmation-resend-label]');
+      if (label) {
+        label.innerHTML = remaining
+          ? `<i class="fas fa-clock mr-2"></i>Aguarde ${remaining}s`
+          : '<i class="fas fa-paper-plane mr-2"></i>Reenviar código';
+      }
+      button.disabled = remaining > 0;
+    } catch {
+      // ignore
+    }
+  }
+
   function setState(updater) {
     const updates = typeof updater === 'function' ? updater({ ...state }) : updater;
     if (!updates || typeof updates !== 'object') return;
+
+    // Evita "piscar" no confirm-email: countdown é atualizado no DOM, sem re-render completo.
+    const updateKeys = Object.keys(updates);
+    if (
+      updateKeys.length === 1 &&
+      updateKeys[0] === 'confirmationCooldownRemaining' &&
+      state.currentPage === 'confirm-email'
+    ) {
+      const next = Number(updates.confirmationCooldownRemaining) || 0;
+      if (state.confirmationCooldownRemaining !== next) {
+        state.confirmationCooldownRemaining = next;
+        updateConfirmationCooldownUI(next);
+      }
+      return;
+    }
 
     let changed = false;
     for (const [key, value] of Object.entries(updates)) {
@@ -463,14 +338,83 @@
     }
 
     if (changed) {
+      if (shouldDeferRender(updates)) {
+        scheduleDeferredRender();
+      } else {
+        flushRender();
+      }
+    }
+  }
+
+  function flushRender() {
+    if (deferredRenderHandle) {
+      clearTimeout(deferredRenderHandle);
+      deferredRenderHandle = null;
+    }
+    render();
+    updatePendingPolling();
+  }
+
+  function scheduleDeferredRender(delayMs = 160) {
+    if (deferredRenderHandle) {
+      clearTimeout(deferredRenderHandle);
+    }
+    deferredRenderHandle = setTimeout(() => {
+      deferredRenderHandle = null;
       render();
       updatePendingPolling();
+    }, delayMs);
+  }
+
+  function shouldDeferRender(updates) {
+    try {
+      if (!updates || typeof updates !== 'object') return false;
+      if (updates.currentPage) return false;
+      if (state.currentPage !== 'register') return false;
+      const active = document.activeElement;
+      if (!active || !(active instanceof Element)) return false;
+      const inRegisterForm = Boolean(active.closest('form[data-action="register"]'));
+      if (!inRegisterForm) return false;
+
+      const keys = Object.keys(updates);
+      // Defere apenas atualizações que costumam ocorrer durante carregamento de cidades/feedback e derrubam o autofill.
+      return keys.every((k) => [
+        'saoPauloCities',
+        'saoPauloCitiesLoading',
+        'errorMessage',
+        'successMessage',
+        'toast'
+      ].includes(k));
+    } catch {
+      return false;
     }
   }
 
   function render() {
     const root = document.getElementById('app');
     if (!root) return;
+    const preservedValues = captureUncontrolledValues(root);
+    let focusMeta = null;
+    const activeElement = document.activeElement;
+    if (activeElement && activeElement.dataset && activeElement.dataset.focusKey) {
+      focusMeta = {
+        key: activeElement.dataset.focusKey,
+        selectionStart: typeof activeElement.selectionStart === 'number' ? activeElement.selectionStart : null,
+        selectionEnd: typeof activeElement.selectionEnd === 'number' ? activeElement.selectionEnd : null
+      };
+    } else if (activeElement && (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement || activeElement instanceof HTMLSelectElement)) {
+      const name = activeElement.getAttribute('name');
+      if (name) {
+        const form = activeElement.closest('form');
+        const formAction = form && form.dataset ? form.dataset.action : null;
+        focusMeta = {
+          name,
+          formAction,
+          selectionStart: typeof activeElement.selectionStart === 'number' ? activeElement.selectionStart : null,
+          selectionEnd: typeof activeElement.selectionEnd === 'number' ? activeElement.selectionEnd : null
+        };
+      }
+    }
     const isAuthenticated = Boolean(state.token && state.user);
     const content = `
       <div class="min-h-screen bg-gray-50 text-gray-800 flex flex-col">
@@ -483,53 +427,230 @@
       ${renderToast()}
     `;
     root.innerHTML = content;
+
+    restoreUncontrolledValues(root, preservedValues);
+
+    if (focusMeta) {
+      let next = null;
+      if (focusMeta.key) {
+        next = root.querySelector(`[data-focus-key="${focusMeta.key}"]`);
+      } else if (focusMeta.name) {
+        const selector = focusMeta.formAction
+          ? `form[data-action="${cssEscapeAttr(focusMeta.formAction)}"] [name="${cssEscapeAttr(focusMeta.name)}"]`
+          : `[name="${cssEscapeAttr(focusMeta.name)}"]`;
+        next = root.querySelector(selector);
+      }
+      if (next) {
+        next.focus({ preventScroll: true });
+        if (focusMeta.selectionStart !== null && typeof next.setSelectionRange === 'function') {
+          const end = focusMeta.selectionEnd ?? focusMeta.selectionStart;
+          next.setSelectionRange(focusMeta.selectionStart, end);
+        }
+      }
+    }
+
+    hydrateDynamicWidgets();
+  }
+
+  function hydrateDynamicWidgets() {
+    hydratePaymentQrCode();
+  }
+
+  function hydratePaymentQrCode() {
+    if (state.currentPage !== 'negotiation-detail') return;
+    const neg = state.currentNegotiation;
+    if (!neg || neg.status !== 'waiting_payment') return;
+    if (!isBuyer(neg)) return;
+
+    const container = document.getElementById(`qrcode-${neg.id}`);
+    if (!(container instanceof HTMLElement)) return;
+    const pixCode = container.dataset ? container.dataset.pixCode : null;
+    if (!pixCode) return;
+
+    if (!window.QRCode || typeof window.QRCode !== 'function') return;
+    if (container.dataset && container.dataset.qrRendered === '1') return;
+
+    // qrcodejs renderiza dentro do container (img/canvas)
+    container.innerHTML = '';
+    // Some builds expose CorrectLevel; keep it optional.
+    const level = window.QRCode?.CorrectLevel?.M;
+    new window.QRCode(container, {
+      text: pixCode,
+      width: 192,
+      height: 192,
+      correctLevel: level
+    });
+
+    if (container.dataset) {
+      container.dataset.qrRendered = '1';
+    }
+  }
+
+  function cssEscapeAttr(value) {
+    return String(value).replace(/\\/g, '\\\\').replace(/\"/g, '\\"');
+  }
+
+  function captureUncontrolledValues(root) {
+    const snapshot = [];
+    const elements = root.querySelectorAll('input[name], textarea[name], select[name]');
+    const seen = new Map();
+
+    elements.forEach((el) => {
+      if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement)) return;
+      if (el instanceof HTMLInputElement && el.type === 'file') return;
+
+      const name = el.getAttribute('name');
+      if (!name) return;
+
+      const form = el.closest('form');
+      const formAction = form && form.dataset ? form.dataset.action : '';
+      const bucketKey = `${formAction}::${name}`;
+      const idx = (seen.get(bucketKey) || 0);
+      seen.set(bucketKey, idx + 1);
+
+      const hasExplicitValueAttr = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
+        ? el.hasAttribute('value')
+        : false;
+
+      const item = { formAction, name, idx, kind: el.tagName, type: el instanceof HTMLInputElement ? el.type : null, hasExplicitValueAttr };
+
+      if (el instanceof HTMLInputElement) {
+        if (el.type === 'checkbox' || el.type === 'radio') {
+          item.checked = el.checked;
+        } else {
+          item.value = el.value;
+        }
+      } else if (el instanceof HTMLTextAreaElement) {
+        item.value = el.value;
+      } else if (el instanceof HTMLSelectElement) {
+        item.value = el.value;
+      }
+
+      snapshot.push(item);
+    });
+
+    return snapshot;
+  }
+
+  function restoreUncontrolledValues(root, snapshot) {
+    if (!Array.isArray(snapshot) || !snapshot.length) return;
+
+    const counters = new Map();
+    for (const item of snapshot) {
+      const formAction = item.formAction || '';
+      const name = item.name;
+      const selector = formAction
+        ? `form[data-action="${cssEscapeAttr(formAction)}"] [name="${cssEscapeAttr(name)}"]`
+        : `[name="${cssEscapeAttr(name)}"]`;
+      const matches = root.querySelectorAll(selector);
+      if (!matches || !matches.length) continue;
+
+      const bucketKey = `${formAction}::${name}`;
+      const idx = counters.get(bucketKey) || 0;
+      counters.set(bucketKey, idx + 1);
+
+      const el = matches[idx];
+      if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement)) continue;
+      if (el instanceof HTMLInputElement && el.type === 'file') continue;
+
+      // Não sobrescreve campos que são controlados via template (value="...")
+      if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && el.hasAttribute('value')) {
+        continue;
+      }
+
+      if (el instanceof HTMLInputElement) {
+        if (el.type === 'checkbox' || el.type === 'radio') {
+          el.checked = Boolean(item.checked);
+        } else if (typeof item.value === 'string') {
+          el.value = item.value;
+        }
+      } else if (el instanceof HTMLTextAreaElement) {
+        if (typeof item.value === 'string') el.value = item.value;
+      } else if (el instanceof HTMLSelectElement) {
+        if (typeof item.value === 'string') el.value = item.value;
+      }
+    }
+  }
+
+  // Helper para obter iniciais do usuário
+  function getUserInitials(name) {
+    if (!name) return '??';
+    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   }
 
   function renderHeader(isAuthenticated) {
     const userName = state.user?.name || 'Visitante';
+    const userRole = state.user?.role || 'user';
+    const roleLabel = userRole === 'admin' ? 'Administrador' : userRole === 'seller' ? 'Vendedor' : userRole === 'buyer' ? 'Comprador' : 'Usuário';
+    
     return `
       <header class="sticky top-0 z-50 bg-white shadow-md">
-        <div class="container mx-auto px-4 py-3 flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <div class="w-10 h-10 gradient-bg rounded-lg flex items-center justify-center">
-              <i class="fas fa-handshake text-white text-xl"></i>
-            </div>
-            <span class="text-2xl font-bold text-gray-800">Intermediação<span class="gradient-text">Pro</span></span>
-          </div>
-          ${isAuthenticated ? `
-            <nav class="hidden md:flex items-center gap-6">
-              <button class="font-medium transition ${state.currentPage === 'dashboard' ? 'text-purple-600' : 'text-gray-700 hover:text-purple-600'}" data-action="navigate" data-page="dashboard">
-                <i class="fas fa-home mr-1"></i> Dashboard
-              </button>
-              ${isAdmin() ? `
-                <button class="font-medium transition ${state.currentPage === 'admin' ? 'text-purple-600' : 'text-gray-700 hover:text-purple-600'}" data-action="navigate" data-page="admin">
-                  <i class="fas fa-cog mr-1"></i> Admin
-                </button>
-                <button class="relative font-medium text-gray-700 hover:text-purple-600 transition" data-action="openPendingModal">
-                  <i class="fas fa-bell mr-1"></i> Pendências
-                  ${state.pendingCount ? `<span class="absolute -top-2 -right-3 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">${state.pendingCount}</span>` : ''}
-                </button>
-              ` : ''}
-            </nav>
-            <div class="flex items-center gap-4">
-              <div class="hidden md:block text-right">
-                <span class="block font-semibold text-gray-800">${escapeHtml(userName)}</span>
+        <div class="container mx-auto px-4">
+          <div class="flex items-center justify-between h-16">
+            <!-- Logo -->
+            <div class="flex items-center space-x-3 cursor-pointer" data-action="navigate" data-page="${isAuthenticated ? 'dashboard' : 'login'}">
+              <div class="w-10 h-10 bg-gradient-to-br from-primary-600 to-secondary-500 rounded-xl flex items-center justify-center shadow-md">
+                <i class="fas fa-handshake text-white text-lg"></i>
               </div>
-              <button class="btn-gradient text-white px-5 py-2 rounded-lg font-medium" data-action="logout">
-                <i class="fas fa-sign-out-alt mr-1"></i> Sair
-              </button>
+              <div>
+                <h1 class="text-xl font-bold text-gray-900">
+                  Intermediação<span class="text-primary-600">Pro</span>
+                </h1>
+                <p class="text-xs text-gray-500">Sistema Seguro</p>
+              </div>
             </div>
-          ` : `
-            <nav class="hidden md:flex items-center gap-6">
-              <a href="#" class="text-gray-700 hover:text-purple-600 font-medium transition">Início</a>
-              <a href="#" class="text-gray-700 hover:text-purple-600 font-medium transition">Serviços</a>
-              <a href="#" class="text-gray-700 hover:text-purple-600 font-medium transition">Como Funciona</a>
-            </nav>
-            <div class="flex items-center gap-3">
-              <button class="text-gray-700 font-medium hover:text-purple-600 transition hidden md:block" data-action="navigate" data-page="login">Entrar</button>
-              <button class="btn-gradient text-white px-5 py-2 rounded-lg font-medium" data-action="navigate" data-page="register">Cadastre-se</button>
-            </div>
-          `}
+
+            ${isAuthenticated ? `
+              <!-- Navegação Autenticada -->
+              <nav class="hidden md:flex items-center space-x-1">
+                <button class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${state.currentPage === 'dashboard' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:text-primary-600 hover:bg-gray-50'}" data-action="navigate" data-page="dashboard">
+                  <i class="fas fa-th-large mr-2"></i> Dashboard
+                </button>
+                ${isAdmin() ? `
+                  <button class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${state.currentPage === 'admin' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:text-primary-600 hover:bg-gray-50'}" data-action="navigate" data-page="admin">
+                    <i class="fas fa-shield-alt mr-2"></i> Admin
+                  </button>
+                  <button class="relative px-4 py-2 rounded-lg text-sm font-medium text-gray-600 hover:text-primary-600 hover:bg-gray-50 transition-all duration-200" data-action="openPendingModal">
+                    <i class="fas fa-bell mr-2"></i> Pendências
+                    ${state.pendingCount > 0 ? `
+                      <span class="absolute -top-1 -right-1 w-5 h-5 bg-danger-500 text-white text-xs rounded-full flex items-center justify-center animate-pulse">
+                        ${state.pendingCount}
+                      </span>
+                    ` : ''}
+                  </button>
+                ` : ''}
+              </nav>
+
+              <!-- User Menu -->
+              <div class="flex items-center space-x-4">
+                <div class="flex items-center space-x-3">
+                  <div class="w-9 h-9 bg-gradient-to-br from-primary-500 to-secondary-400 rounded-full flex items-center justify-center text-white font-semibold text-sm">
+                    ${getUserInitials(userName)}
+                  </div>
+                  <div class="hidden md:block text-left">
+                    <p class="text-sm font-medium text-gray-900">${escapeHtml(userName)}</p>
+                    <p class="text-xs text-gray-500">${roleLabel}</p>
+                  </div>
+                </div>
+                <button class="px-4 py-2 bg-gray-100 hover:bg-danger-50 text-gray-700 hover:text-danger-600 rounded-lg text-sm font-medium transition-all duration-200" data-action="logout">
+                  <i class="fas fa-sign-out-alt mr-1"></i> Sair
+                </button>
+              </div>
+            ` : `
+              <!-- Navegação Pública -->
+              <nav class="hidden md:flex items-center space-x-6">
+                <a href="#" class="text-gray-700 hover:text-primary-600 font-medium transition">Como Funciona</a>
+                <a href="#" class="text-gray-700 hover:text-primary-600 font-medium transition">Segurança</a>
+                <a href="#" class="text-gray-700 hover:text-primary-600 font-medium transition">Taxas</a>
+              </nav>
+              <div class="flex items-center space-x-3">
+                <button class="text-gray-700 font-medium hover:text-primary-600 transition hidden md:block px-4 py-2" data-action="navigate" data-page="login">Entrar</button>
+                <button class="bg-gradient-to-r from-primary-600 to-secondary-500 text-white px-5 py-2.5 rounded-lg font-medium shadow-md hover:shadow-lg transition-all duration-200" data-action="navigate" data-page="register">
+                  Começar Grátis
+                </button>
+              </div>
+            `}
+          </div>
         </div>
       </header>
     `;
@@ -538,19 +659,29 @@
   function renderNotifications() {
     const banners = [];
     if (state.errorMessage) {
-      banners.push(`<div class="px-4 py-3 bg-red-100 border border-red-300 text-red-700 rounded-lg flex items-center gap-2"><i class="fas fa-exclamation-circle"></i> ${escapeHtml(state.errorMessage)}</div>`);
+      banners.push(`<div class="px-4 py-3 bg-danger-100 border border-danger-300 text-danger-700 rounded-lg flex items-center gap-2"><i class="fas fa-exclamation-circle"></i> ${escapeHtml(state.errorMessage)}</div>`);
     }
     if (state.successMessage) {
-      banners.push(`<div class="px-4 py-3 bg-green-100 border border-green-300 text-green-700 rounded-lg flex items-center gap-2"><i class="fas fa-check-circle"></i> ${escapeHtml(state.successMessage)}</div>`);
+      banners.push(`<div class="px-4 py-3 bg-success-100 border border-success-300 text-success-700 rounded-lg flex items-center gap-2"><i class="fas fa-check-circle"></i> ${escapeHtml(state.successMessage)}</div>`);
     }
     if (state.loadingMessage) {
-      banners.push(`<div class="px-4 py-3 bg-blue-100 border border-blue-300 text-blue-700 rounded-lg flex items-center gap-2"><i class="fas fa-spinner fa-spin"></i> ${escapeHtml(state.loadingMessage)}</div>`);
+      banners.push(`<div class="px-4 py-3 bg-secondary-100 border border-secondary-300 text-secondary-700 rounded-lg flex items-center gap-2"><i class="fas fa-spinner fa-spin"></i> ${escapeHtml(state.loadingMessage)}</div>`);
     }
     return banners.length ? `<section class="container mx-auto px-4 py-3 flex flex-col gap-2">${banners.join('')}</section>` : '';
   }
 
   function renderPublicLayout() {
-    return `<main class="flex-1 gradient-bg flex items-center justify-center p-6 min-h-[calc(100vh-200px)]">${renderPublicPage()}</main>`;
+    return `
+      <main class="flex-1 bg-gradient-to-br from-primary-600 via-primary-700 to-secondary-600 flex items-center justify-center p-6 min-h-[calc(100vh-200px)]">
+        <div class="absolute inset-0 overflow-hidden pointer-events-none opacity-30">
+          <div class="absolute -top-40 -right-40 w-80 h-80 bg-white/10 rounded-full blur-3xl"></div>
+          <div class="absolute -bottom-40 -left-40 w-80 h-80 bg-secondary-400/20 rounded-full blur-3xl"></div>
+        </div>
+        <div class="relative z-10">
+          ${renderPublicPage()}
+        </div>
+      </main>
+    `;
   }
 
   function renderPublicPage() {
@@ -571,139 +702,182 @@
 
   function renderLoginPage() {
     return `
-      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-2xl card-hover">
-        <div class="text-center mb-6">
-          <div class="w-16 h-16 gradient-bg rounded-xl flex items-center justify-center mx-auto mb-4">
-            <i class="fas fa-user-lock text-white text-2xl"></i>
+      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-card-xl animate-slide-up">
+        <div class="text-center mb-8">
+          <div class="w-16 h-16 bg-gradient-to-br from-primary-500 to-secondary-500 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
+            <i class="fas fa-lock text-white text-2xl"></i>
           </div>
-          <h1 class="text-2xl font-bold text-gray-800">Bem-vindo(a) de volta</h1>
-          <p class="text-gray-600 mt-2">Acesse sua conta para acompanhar negociações.</p>
+          <h1 class="text-2xl font-bold text-gray-900">Bem-vindo de volta</h1>
+          <p class="text-gray-600 mt-2">Acesse sua conta para gerenciar negociações</p>
         </div>
-        <form data-action="login" class="flex flex-col gap-4">
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">E-mail</span>
-            <input type="email" name="email" required autocomplete="email" placeholder="voce@email.com" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">Senha</span>
-            <input type="password" name="password" required autocomplete="current-password" minlength="8" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <button type="submit" class="w-full py-3 btn-gradient rounded-lg font-bold text-white mt-2">Entrar</button>
+        
+        <form data-action="login" class="space-y-5">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">E-mail</label>
+            <input 
+              type="email" 
+              name="email" 
+              required 
+              autocomplete="email" 
+              placeholder="seu@email.com" 
+              class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
+            >
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Senha</label>
+            <input 
+              type="password" 
+              name="password" 
+              required 
+              autocomplete="current-password" 
+              minlength="8" 
+              placeholder="••••••••"
+              class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
+            >
+          </div>
+          
+          <button type="submit" class="w-full bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white font-semibold py-3 rounded-lg transition-all duration-300 hover:shadow-lg">
+            Entrar na Plataforma
+          </button>
         </form>
-        <div class="flex justify-between mt-6 text-sm">
-          <button class="text-purple-600 hover:text-purple-800 font-medium transition" data-action="navigate" data-page="forgot-password">Esqueci minha senha</button>
-          <button class="text-purple-600 hover:text-purple-800 font-medium transition" data-action="navigate" data-page="register">Criar conta</button>
+        
+        <div class="flex items-center justify-between mt-6 pt-6 border-t border-gray-200">
+          <button class="text-sm text-primary-600 hover:text-primary-700 font-medium transition" data-action="navigate" data-page="forgot-password">
+            Esqueci a senha
+          </button>
+          <button class="text-sm text-primary-600 hover:text-primary-700 font-medium transition" data-action="navigate" data-page="register">
+            Criar nova conta
+          </button>
         </div>
       </section>
     `;
   }
 
   function renderRegisterPage() {
-    ensureSaoPauloCitiesLoaded();
-    const cities = Array.isArray(state.saoPauloCities) ? state.saoPauloCities : [];
-    const selectedCity = state.registerSelectedCity || '';
-    const cityFilterRaw = state.registerCityFilter || '';
-    const cityFilter = normalizeText(cityFilterRaw);
-    const filteredCities = cityFilter
-      ? cities.filter((city) => normalizeText(city).includes(cityFilter))
-      : cities;
-    const optionsHtml = filteredCities.map((city) => `
-      <option value="${escapeAttr(city)}" ${city === selectedCity ? 'selected' : ''}>${escapeHtml(city)}</option>
-    `).join('');
-    const hasCityResults = Boolean(optionsHtml);
+    const saoPauloCities = Array.isArray(window.__SAO_PAULO_CITIES) ? window.__SAO_PAULO_CITIES : [];
+    const cityOptions = saoPauloCities.length
+      ? [
+          '<option value="" selected disabled>Selecione a cidade</option>',
+          ...saoPauloCities.map((city) => `<option value="${escapeAttr(city)}">${escapeHtml(city)}</option>`)
+        ].join('')
+      : '<option value="" selected disabled>Lista de cidades indisponível</option>';
 
     return `
-      <section class="w-full max-w-2xl bg-white rounded-2xl p-8 shadow-2xl card-hover">
-        <div class="text-center mb-6">
-          <div class="w-16 h-16 bg-gradient-to-r from-green-400 to-blue-500 rounded-xl flex items-center justify-center mx-auto mb-4">
+      <section class="w-full max-w-2xl bg-white rounded-2xl p-8 shadow-card-xl animate-slide-up">
+        <div class="text-center mb-8">
+          <div class="w-16 h-16 bg-gradient-to-br from-success-500 to-secondary-500 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
             <i class="fas fa-user-plus text-white text-2xl"></i>
           </div>
-          <h1 class="text-2xl font-bold text-gray-800">Criar conta</h1>
-          <p class="text-gray-600 mt-2">Cadastre-se para negociar com segurança.</p>
+          <h1 class="text-2xl font-bold text-gray-900">Criar sua conta</h1>
+          <p class="text-gray-600 mt-2">Cadastre-se para negociar com total segurança</p>
         </div>
-        <form data-action="register" class="flex flex-col gap-5">
+        
+        <form data-action="register" class="space-y-5">
           <div class="grid sm:grid-cols-2 gap-4">
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">Nome completo</span>
-              <input type="text" name="name" required autocomplete="name" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">E-mail</span>
-              <input type="email" name="email" required autocomplete="email" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Nome completo *</label>
+              <input type="text" name="name" required autocomplete="name" placeholder="Seu nome completo" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">E-mail *</label>
+              <input type="email" name="email" required autocomplete="email" placeholder="seu@email.com" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+            </div>
           </div>
 
           <div class="grid sm:grid-cols-2 gap-4">
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">Telefone celular</span>
-              <input type="tel" name="phone" required maxlength="15" placeholder="(11) 90000-0000" data-action="formatPhoneInput" inputmode="tel" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">CEP</span>
-              <input type="text" name="zip_code" required maxlength="9" placeholder="00000-000" data-action="formatCepInput" inputmode="numeric" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Telefone celular</label>
+              <input type="tel" name="phone" maxlength="15" placeholder="(11) 90000-0000" data-action="formatPhoneInput" inputmode="tel" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">CEP *</label>
+              <input type="text" name="zip_code" required maxlength="9" placeholder="00000-000" data-action="formatCepInput" inputmode="numeric" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+            </div>
           </div>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">Endereço</span>
-            <input type="text" name="address" required placeholder="Rua, avenida ou travessa" autocomplete="address-line1" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Endereço *</label>
+            <input type="text" name="address" required placeholder="Rua, avenida ou travessa" autocomplete="address-line1" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          </div>
 
           <div class="grid sm:grid-cols-3 gap-4">
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">Número</span>
-              <input type="text" name="address_number" required inputmode="numeric" pattern="[0-9A-Za-z-]+" placeholder="123" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">Complemento</span>
-              <input type="text" name="address_complement" placeholder="Apartamento, bloco, referência" autocomplete="address-line2" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">Bairro</span>
-              <input type="text" name="district" required placeholder="Bairro" autocomplete="address-level2" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Número *</label>
+              <input type="text" name="address_number" required inputmode="numeric" placeholder="123" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Complemento</label>
+              <input type="text" name="address_complement" placeholder="Apto, bloco" autocomplete="address-line2" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Bairro *</label>
+              <input type="text" name="district" required placeholder="Bairro" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+            </div>
           </div>
-
-          <div class="flex flex-col gap-2">
-            <span class="text-sm text-gray-700 font-medium">Cidade (São Paulo)</span>
-            <input type="search" placeholder="Filtrar cidade" value="${escapeAttr(cityFilterRaw)}" data-action="filterRegisterCity" class="px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            <label class="flex flex-col gap-1">
-              <span class="text-xs text-gray-500">Selecione uma cidade disponível</span>
-              <select name="city" required data-action="selectRegisterCity" class="px-4 py-2.5 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                <option value="" ${selectedCity ? '' : 'selected'} disabled hidden>Escolha a cidade</option>
-                ${hasCityResults ? optionsHtml : '<option value="" disabled>Nenhuma cidade encontrada</option>'}
-              </select>
-            </label>
-            ${state.saoPauloCitiesLoading && !cities.length ? '<p class="text-xs text-gray-500">Carregando cidades de São Paulo...</p>' : ''}
-            ${!state.saoPauloCitiesLoading && !cities.length ? '<p class="text-xs text-red-500">Não foi possível carregar a lista de cidades. Tente novamente mais tarde.</p>' : ''}
-          </div>
-
-          <input type="hidden" name="state" value="SP">
 
           <div class="grid sm:grid-cols-2 gap-4">
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">Senha</span>
-              <input type="password" name="password" required minlength="8" autocomplete="new-password" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">Confirmar senha</span>
-              <input type="password" name="password_confirmation" required minlength="8" autocomplete="new-password" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
+            <div class="space-y-3">
+              <label class="block text-sm font-medium text-gray-700">Estado *</label>
+              <select name="state" required class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                <option value="SP" selected>São Paulo (SP)</option>
+              </select>
+            </div>
+            <div class="space-y-3">
+              <label class="block text-sm font-medium text-gray-700">Cidade *</label>
+              <select name="city" required class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                ${cityOptions}
+              </select>
+            </div>
           </div>
 
-          <button type="submit" class="w-full py-3 btn-gradient rounded-lg font-bold text-white">Cadastrar</button>
+          <div class="grid sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Senha *</label>
+              <input type="password" name="password" required minlength="8" autocomplete="new-password" placeholder="Mínimo 8 caracteres" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Confirmar senha *</label>
+              <input type="password" name="password_confirmation" required minlength="8" autocomplete="new-password" placeholder="Repita a senha" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+            </div>
+          </div>
+
+          <button type="submit" class="w-full bg-gradient-to-r from-success-600 to-secondary-500 hover:from-success-700 hover:to-secondary-600 text-white font-semibold py-3 rounded-lg transition-all duration-300 hover:shadow-lg">
+            Criar Minha Conta
+          </button>
         </form>
-        <div class="flex justify-center mt-6 text-sm">
-          <button class="text-purple-600 hover:text-purple-800 font-medium transition" data-action="navigate" data-page="login">Já tenho conta</button>
+        
+        <div class="text-center mt-6 pt-6 border-t border-gray-200">
+          <button class="text-sm text-primary-600 hover:text-primary-700 font-medium transition" data-action="navigate" data-page="login">
+            Já tenho uma conta
+          </button>
         </div>
       </section>
     `;
   }
 
   function ensureSaoPauloCitiesLoaded() {
+    // Cadastro agora usa cidade fixa (São Paulo). Mantido por compatibilidade.
+    return;
+    // Cache simples para evitar re-render tardio durante o preenchimento
+    if (!Array.isArray(state.saoPauloCities) || !state.saoPauloCities.length) {
+      const cached = safeParse(localStorage.getItem('spCitiesV1'));
+      if (Array.isArray(cached) && cached.length) {
+        setState({ saoPauloCities: cached });
+        return;
+      }
+    }
+
     if (state.saoPauloCitiesLoading || (Array.isArray(state.saoPauloCities) && state.saoPauloCities.length) || saoPauloCitiesPromise) {
       return;
     }
+
+    // Backoff: se falhou recentemente, não fica tentando toda hora (isso causa sensação de "atualizando")
+    if (saoPauloCitiesLastAttemptAt && Date.now() - saoPauloCitiesLastAttemptAt < 30000) {
+      return;
+    }
+
+    saoPauloCitiesLastAttemptAt = Date.now();
     setState({ saoPauloCitiesLoading: true });
     const endpoint = 'https://servicodados.ibge.gov.br/api/v1/localidades/estados/35/municipios';
     saoPauloCitiesPromise = fetch(endpoint)
@@ -721,6 +895,13 @@
               .map((name) => String(name))
               .sort((a, b) => normalizeText(a).localeCompare(normalizeText(b)))
           : [];
+        if (cities.length) {
+          try {
+            localStorage.setItem('spCitiesV1', JSON.stringify(cities));
+          } catch {
+            // ignore
+          }
+        }
         setState({ saoPauloCities: cities, saoPauloCitiesLoading: false });
       })
       .catch((error) => {
@@ -734,23 +915,30 @@
 
   function renderForgotPasswordPage() {
     return `
-      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-2xl card-hover">
-        <div class="text-center mb-6">
-          <div class="w-16 h-16 bg-gradient-to-r from-amber-400 to-orange-500 rounded-xl flex items-center justify-center mx-auto mb-4">
+      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-card-xl animate-slide-up">
+        <div class="text-center mb-8">
+          <div class="w-16 h-16 bg-gradient-to-br from-warning-500 to-danger-400 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
             <i class="fas fa-key text-white text-2xl"></i>
           </div>
-          <h1 class="text-2xl font-bold text-gray-800">Recuperar acesso</h1>
-          <p class="text-gray-600 mt-2">Informe o e-mail cadastrado para receber instruções.</p>
+          <h1 class="text-2xl font-bold text-gray-900">Recuperar acesso</h1>
+          <p class="text-gray-600 mt-2">Informe o e-mail cadastrado para receber instruções</p>
         </div>
-        <form data-action="forgotPassword" class="flex flex-col gap-4">
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">E-mail</span>
-            <input type="email" name="email" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <button type="submit" class="w-full py-3 btn-gradient rounded-lg font-bold text-white mt-2">Enviar link de recuperação</button>
+        
+        <form data-action="forgotPassword" class="space-y-5">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">E-mail</label>
+            <input type="email" name="email" required class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          </div>
+          
+          <button type="submit" class="w-full bg-gradient-to-r from-warning-500 to-danger-400 hover:from-warning-600 hover:to-danger-500 text-white font-semibold py-3 rounded-lg transition-all duration-300 hover:shadow-lg">
+            Enviar Link de Recuperação
+          </button>
         </form>
-        <div class="flex justify-center mt-6 text-sm">
-          <button class="text-purple-600 hover:text-purple-800 font-medium transition" data-action="navigate" data-page="login">Voltar para login</button>
+        
+        <div class="text-center mt-6 pt-6 border-t border-gray-200">
+          <button class="text-sm text-primary-600 hover:text-primary-700 font-medium transition" data-action="navigate" data-page="login">
+            <i class="fas fa-arrow-left mr-1"></i> Voltar para login
+          </button>
         </div>
       </section>
     `;
@@ -758,35 +946,45 @@
 
   function renderResetPasswordPage() {
     return `
-      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-2xl card-hover">
-        <div class="text-center mb-6">
-          <div class="w-16 h-16 bg-gradient-to-r from-teal-400 to-green-500 rounded-xl flex items-center justify-center mx-auto mb-4">
+      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-card-xl animate-slide-up">
+        <div class="text-center mb-8">
+          <div class="w-16 h-16 bg-gradient-to-br from-success-500 to-secondary-500 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
             <i class="fas fa-lock text-white text-2xl"></i>
           </div>
-          <h1 class="text-2xl font-bold text-gray-800">Definir nova senha</h1>
-          <p class="text-gray-600 mt-2">Escolha uma senha forte para proteger sua conta.</p>
+          <h1 class="text-2xl font-bold text-gray-900">Definir nova senha</h1>
+          <p class="text-gray-600 mt-2">Escolha uma senha forte para proteger sua conta</p>
         </div>
-        <form data-action="resetPassword" class="flex flex-col gap-4">
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">Token de redefinição</span>
-            <input type="text" name="token" required value="${escapeAttr(state.resetPasswordToken || '')}" placeholder="Cole o token recebido por email" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">E-mail</span>
-            <input type="email" name="email" required value="${escapeAttr(state.resetPasswordEmail || '')}" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">Nova senha</span>
-            <input type="password" name="password" required minlength="8" autocomplete="new-password" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-sm text-gray-700 font-medium">Confirmar senha</span>
-            <input type="password" name="password_confirmation" required minlength="8" autocomplete="new-password" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          </label>
-          <button type="submit" class="w-full py-3 btn-gradient rounded-lg font-bold text-white mt-2">Atualizar senha</button>
+        
+        <form data-action="resetPassword" class="space-y-5">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Token de redefinição</label>
+            <input type="text" name="token" required value="${escapeAttr(state.resetPasswordToken || '')}" placeholder="Cole o token recebido por email" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">E-mail</label>
+            <input type="email" name="email" required value="${escapeAttr(state.resetPasswordEmail || '')}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Nova senha</label>
+            <input type="password" name="password" required minlength="8" autocomplete="new-password" placeholder="Mínimo 8 caracteres" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Confirmar senha</label>
+            <input type="password" name="password_confirmation" required minlength="8" autocomplete="new-password" placeholder="Repita a senha" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          </div>
+          
+          <button type="submit" class="w-full bg-gradient-to-r from-success-600 to-secondary-500 hover:from-success-700 hover:to-secondary-600 text-white font-semibold py-3 rounded-lg transition-all duration-300 hover:shadow-lg">
+            Atualizar Senha
+          </button>
         </form>
-        <div class="flex justify-center mt-6 text-sm">
-          <button class="text-purple-600 hover:text-purple-800 font-medium transition" data-action="navigate" data-page="login">Voltar para login</button>
+        
+        <div class="text-center mt-6 pt-6 border-t border-gray-200">
+          <button class="text-sm text-primary-600 hover:text-primary-700 font-medium transition" data-action="navigate" data-page="login">
+            <i class="fas fa-arrow-left mr-1"></i> Voltar para login
+          </button>
         </div>
       </section>
     `;
@@ -794,18 +992,39 @@
 
   function renderConfirmEmailPage() {
     return `
-      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-2xl card-hover text-center">
-        <div class="w-16 h-16 bg-gradient-to-r from-blue-400 to-cyan-500 rounded-xl flex items-center justify-center mx-auto mb-4">
+      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-card-xl animate-slide-up text-center">
+        <div class="w-16 h-16 bg-gradient-to-br from-secondary-500 to-primary-500 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
           <i class="fas fa-envelope text-white text-2xl"></i>
         </div>
-        <h1 class="text-2xl font-bold text-gray-800 mb-2">Confirme seu e-mail</h1>
-        <p class="text-gray-600 mb-4">Enviamos um link de confirmação para ${escapeHtml(state.confirmationEmail || 'seu e-mail')}.</p>
-        <p class="text-gray-500 text-sm mb-6">Não recebeu? Podemos reenviar.</p>
-        <div class="flex flex-col gap-3">
-          <button class="w-full py-3 btn-gradient disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-bold text-white transition" data-action="resendConfirmation" ${state.confirmationCooldownRemaining ? 'disabled' : ''}>
-            ${state.confirmationCooldownRemaining ? `Aguarde ${state.confirmationCooldownRemaining}s` : 'Reenviar e-mail'}
+        <h1 class="text-2xl font-bold text-gray-900 mb-2">Confirme seu e-mail</h1>
+        <p class="text-gray-600 mb-4">Enviamos um <strong>código de 6 dígitos</strong> para <span class="font-medium text-primary-600">${escapeHtml(state.confirmationEmail || 'seu e-mail')}</span></p>
+        <p class="text-gray-500 text-sm mb-6">Digite o código abaixo. Se não recebeu, verifique a caixa de spam ou solicite um novo envio.</p>
+
+        <form data-action="verifyEmailCode" class="space-y-3 mb-4">
+          <input
+            type="text"
+            name="code"
+            inputmode="numeric"
+            minlength="6"
+            maxlength="6"
+            placeholder="Código (6 dígitos)"
+            class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 text-center tracking-widest focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
+            required
+          >
+          <button type="submit" class="w-full bg-gradient-to-r from-success-600 to-secondary-500 hover:from-success-700 hover:to-secondary-600 text-white font-semibold py-3 rounded-lg transition-all duration-300 hover:shadow-lg">
+            <i class="fas fa-check mr-2"></i>Confirmar código
           </button>
-          <button class="text-purple-600 hover:text-purple-800 font-medium transition text-sm" data-action="navigate" data-page="login">Voltar</button>
+        </form>
+        
+        <div class="space-y-3">
+          <button class="w-full bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white font-semibold py-3 rounded-lg transition-all duration-300 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed" data-action="resendEmailVerification" data-confirmation-resend ${state.confirmationCooldownRemaining ? 'disabled' : ''}>
+            <span data-confirmation-resend-label>
+              ${state.confirmationCooldownRemaining ? `<i class="fas fa-clock mr-2"></i>Aguarde ${state.confirmationCooldownRemaining}s` : '<i class="fas fa-paper-plane mr-2"></i>Reenviar código'}
+            </span>
+          </button>
+          <button class="text-primary-600 hover:text-primary-700 font-medium transition text-sm" data-action="navigate" data-page="login">
+            <i class="fas fa-arrow-left mr-1"></i> Voltar para login
+          </button>
         </div>
       </section>
     `;
@@ -836,13 +1055,13 @@
     <p class="text-base text-gray-500 mt-1">Gerencie cada etapa do processo de intermediação.</p>
   </div>
   <div class="flex gap-3">
-    <button class="px-6 py-3 bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white font-semibold rounded-xl shadow-lg shadow-purple-500/50 transition duration-300 ease-in-out flex items-center gap-2" data-action="openCreateNegotiation">
+    <button class="px-6 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white font-semibold rounded-xl shadow-lg shadow-primary-500/30 transition duration-300 ease-in-out flex items-center gap-2" data-action="openCreateNegotiation">
       <i class="fas fa-plus"></i> Nova Negociação
     </button>
-    <button class="w-12 h-12 bg-white border border-gray-200 hover:border-purple-500 rounded-xl text-gray-700 hover:text-purple-600 transition shadow-sm flex items-center justify-center" data-action="dashboardRefresh">
+    <button class="w-12 h-12 bg-white border border-gray-200 hover:border-primary-500 rounded-xl text-gray-700 hover:text-primary-600 transition shadow-sm flex items-center justify-center" data-action="dashboardRefresh">
       <i class="fas fa-sync-alt"></i>
     </button>
-    ${isAdmin() ? '<button class="w-12 h-12 bg-white border border-gray-200 hover:border-purple-500 rounded-xl text-gray-700 hover:text-purple-600 transition shadow-sm flex items-center justify-center" data-action="navigate" data-page="admin"><i class="fas fa-cog"></i></button>' : ''}
+    ${isAdmin() ? '<button class="w-12 h-12 bg-white border border-gray-200 hover:border-primary-500 rounded-xl text-gray-700 hover:text-primary-600 transition shadow-sm flex items-center justify-center" data-action="navigate" data-page="admin"><i class="fas fa-cog"></i></button>' : ''}
   </div>
 </header>
         <!-- Layout com 2 colunas: Filtros à esquerda | Cards + Tabela à direita -->
@@ -863,18 +1082,17 @@
 
   function renderFilterSidebar() {
   const { status, query, mineOnly } = state.negotiationFilters;
-  // ... (statusOptions remains the same)
   const statusOptions = [
     { key: 'all', label: 'Todos', icon: 'fa-th-list', color: 'text-gray-600' },
-    { key: 'awaiting_admin_approval', label: 'Aguardando revisão', icon: 'fa-hourglass-half', color: 'text-purple-600' },
-    { key: 'pending_acceptance', label: 'Convites pendentes', icon: 'fa-user-plus', color: 'text-indigo-600' },
-    { key: 'waiting_payment', label: 'Pagamento pendente', icon: 'fa-credit-card', color: 'text-amber-600' },
-    { key: 'waiting_shipment', label: 'Aguardando envio', icon: 'fa-box', color: 'text-slate-600' },
-    { key: 'shipped', label: 'Em trânsito', icon: 'fa-truck', color: 'text-blue-600' },
-    { key: 'at_intermediary', label: 'Na intermediadora', icon: 'fa-warehouse', color: 'text-cyan-600' },
-    { key: 'approved', label: 'Inspeção aprovada', icon: 'fa-check-circle', color: 'text-teal-600' },
-    { key: 'delivered', label: 'Entregues', icon: 'fa-flag-checkered', color: 'text-green-600' },
-    { key: 'cancelled', label: 'Canceladas', icon: 'fa-times-circle', color: 'text-red-600' }
+    { key: 'awaiting_admin_approval', label: 'Aguardando revisão', icon: 'fa-hourglass-half', color: 'text-primary-600' },
+    { key: 'pending_acceptance', label: 'Convites pendentes', icon: 'fa-user-plus', color: 'text-secondary-600' },
+    { key: 'waiting_payment', label: 'Pagamento pendente', icon: 'fa-credit-card', color: 'text-warning-600' },
+    { key: 'waiting_shipment', label: 'Aguardando envio', icon: 'fa-box', color: 'text-gray-600' },
+    { key: 'shipped', label: 'Em trânsito', icon: 'fa-truck', color: 'text-secondary-600' },
+    { key: 'at_intermediary', label: 'Na intermediadora', icon: 'fa-warehouse', color: 'text-secondary-500' },
+    { key: 'approved', label: 'Inspeção aprovada', icon: 'fa-check-circle', color: 'text-success-600' },
+    { key: 'delivered', label: 'Entregues', icon: 'fa-flag-checkered', color: 'text-success-500' },
+    { key: 'cancelled', label: 'Canceladas', icon: 'fa-times-circle', color: 'text-danger-600' }
   ];
   const expanded = Boolean(state.filtersExpanded);
   const activeStatus = statusOptions.find((opt) => opt.key === status) || statusOptions[0];
@@ -883,16 +1101,16 @@
 
   return `
     <aside class="w-72 flex-shrink-0 sticky top-28 self-start">
-      <div class="bg-white border border-gray-100 rounded-3xl shadow-xl p-6">
+      <div class="bg-white border border-gray-100 rounded-2xl shadow-card p-6">
         <button
           type="button"
-          class="w-full flex lg:hidden items-center justify-between gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50 hover:border-purple-500 transition mb-4"
+          class="w-full flex lg:hidden items-center justify-between gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50 hover:border-primary-500 transition mb-4"
           data-action="toggleFilters"
           aria-expanded="${expanded}"
           aria-controls="${filterPanelId}"
         >
           <span class="flex items-center gap-2 text-base font-bold text-gray-800">
-            <i class="fas fa-filter text-purple-600"></i>
+            <i class="fas fa-filter text-primary-600"></i>
             Filtros
           </span>
           <span class="flex-1 text-right text-sm text-gray-500 truncate">${escapeHtml(activeLabel)}</span>
@@ -909,7 +1127,7 @@
                 placeholder="Filtrar por título, comprador ou vendedor" 
                 value="${escapeAttr(query)}" 
                 data-action="dashboardSearch" 
-                class="w-full pl-9 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-4 focus:ring-purple-100 focus:border-purple-500 transition duration-150"
+                class="w-full pl-9 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all duration-150"
               >
             </div>
           </div>
@@ -923,8 +1141,8 @@
                   <button
                     type="button"
                     class="w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl text-sm transition duration-150 ${isActive 
-                      ? 'bg-purple-600 text-white font-semibold shadow-md shadow-purple-500/20' 
-                      : 'bg-white text-gray-700 hover:bg-purple-50 hover:text-purple-600'}"
+                      ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white font-semibold shadow-md' 
+                      : 'bg-white text-gray-700 hover:bg-primary-50 hover:text-primary-600'}"
                     data-action="dashboardStatusFilter"
                     data-status="${opt.key}"
                   >
@@ -945,7 +1163,7 @@
                 type="checkbox" 
                 ${mineOnly ? 'checked' : ''} 
                 data-action="dashboardMine" 
-                class="w-5 h-5 rounded border-gray-300 text-purple-600 focus:ring-purple-500 transition duration-150"
+                class="w-5 h-5 rounded border-gray-300 text-primary-600 focus:ring-primary-500 transition duration-150"
               >
               <span class="text-sm font-medium text-gray-700 select-none">Mostrar apenas as minhas</span>
             </label>
@@ -958,132 +1176,179 @@
 
   function renderCreateNegotiationModal() {
     const { buyerFound, buyerSearching, productPhotos, photoError } = state.createNegForm;
+    const showTerms = state.showCreateTerms;
     const photosHtml = productPhotos.map((photo, idx) => `
       <div class="relative group">
         <img src="${photo.preview}" alt="Foto ${idx + 1}" class="w-full h-24 object-cover rounded-lg border border-gray-200">
-        <button type="button" class="absolute top-1 right-1 w-6 h-6 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition" data-action="removeProductPhoto" data-index="${idx}">✕</button>
+        <button type="button" class="absolute top-1 right-1 w-6 h-6 bg-danger-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition" data-action="removeProductPhoto" data-index="${idx}">✕</button>
       </div>
     `).join('');
 
     return `
       <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
-        <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full my-4 overflow-hidden">
-          <div class="h-1 gradient-bg"></div>
-          <header class="flex items-center justify-between p-6 border-b border-gray-200">
+        <div class="bg-white rounded-2xl shadow-card-xl max-w-2xl w-full my-4 overflow-hidden animate-slide-up">
+          <div class="h-1 bg-gradient-to-r from-primary-600 to-secondary-500"></div>
+          <header class="flex items-center justify-between p-6 border-b border-gray-100">
             <div>
-              <h2 class="text-xl font-bold text-gray-800">Nova Negociação</h2>
+              <h2 class="text-xl font-bold text-gray-900">Nova Negociação</h2>
               <p class="text-gray-500 text-sm">Preencha todos os dados para iniciar</p>
             </div>
             <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeCreateNegotiation">✕</button>
           </header>
           
           <form data-action="createNegotiation" class="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
-            <!-- Título do produto -->
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">Título do produto *</span>
-              <input type="text" name="title" required maxlength="255" placeholder="Ex: iPhone 15 Pro Max 256GB" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
-
-            <!-- Categoria -->
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">Categoria *</span>
-              <select name="category" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                <option value="">Selecione uma categoria</option>
-                ${PRODUCT_CATEGORIES.map(cat => `<option value="${cat}">${cat}</option>`).join('')}
-              </select>
-            </label>
-
-            <!-- Descrição -->
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-700 font-medium">Descrição detalhada *</span>
-              <textarea name="description" rows="3" required maxlength="2000" placeholder="Descreva o estado do produto, acessórios inclusos, defeitos conhecidos, etc." class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"></textarea>
-            </label>
-
-            <!-- Preço -->
-            <div class="grid grid-cols-2 gap-4">
-              <label class="flex flex-col gap-1">
-                <span class="text-sm text-gray-700 font-medium">Preço (R$) *</span>
-                <input type="number" name="price" required min="50" max="100000" step="0.01" placeholder="0,00" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-                <span class="text-xs text-gray-400">Mínimo R$ 50,00 - Máximo R$ 100.000,00</span>
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-sm text-gray-700 font-medium">Prazo de envio</span>
-                <input type="text" value="2 dias úteis" disabled class="px-4 py-3 bg-gray-200 border border-gray-300 rounded-lg text-gray-600 cursor-not-allowed">
-                <span class="text-xs text-amber-600"><i class="fas fa-info-circle mr-1"></i>Prazo fixo obrigatório</span>
-              </label>
-            </div>
-
-            <!-- Upload de fotos -->
-            <div class="space-y-2">
-              <span class="text-sm text-gray-700 font-medium">Fotos do produto (até 8 fotos) *</span>
-              <div class="grid grid-cols-4 gap-2">
-                ${photosHtml}
-                ${productPhotos.length < 8 ? `
-                  <label class="w-full h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-purple-400 hover:bg-purple-50 transition">
-                    <i class="fas fa-camera text-gray-400 text-xl mb-1"></i>
-                    <span class="text-xs text-gray-400">Adicionar</span>
-                    <input type="file" accept="image/*" multiple class="hidden" data-action="addProductPhotos">
-                  </label>
-                ` : ''}
+            <div class="${showTerms ? 'hidden' : 'space-y-5'}">
+              <!-- Título do produto -->
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Título do produto *</label>
+                <input type="text" name="title" required maxlength="255" placeholder="Ex: iPhone 15 Pro Max 256GB" data-focus-key="create-neg-title" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
               </div>
-              ${photoError ? `<p class="text-xs text-red-500"><i class="fas fa-exclamation-circle mr-1"></i>${photoError}</p>` : ''}
-              <p class="text-xs text-gray-400">Adicione pelo menos 1 foto. Formatos: JPG, PNG. Máx 5MB cada.</p>
-            </div>
 
-            <!-- Busca do comprador -->
-            <div class="space-y-2">
-              <label class="flex flex-col gap-1">
-                <span class="text-sm text-gray-700 font-medium">E-mail do comprador *</span>
+              <!-- Categoria -->
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Categoria *</label>
+                <select name="category" required data-focus-key="create-neg-category" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  <option value="" selected>Selecione uma categoria</option>
+                  ${PRODUCT_CATEGORIES.map(cat => `<option value="${escapeAttr(cat)}">${escapeHtml(cat)}</option>`).join('')}
+                </select>
+              </div>
+
+              <!-- Descrição -->
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Descrição detalhada *</label>
+                <textarea name="description" rows="3" required maxlength="2000" placeholder="Descreva o estado do produto, acessórios inclusos, defeitos conhecidos, etc." data-focus-key="create-neg-description" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none"></textarea>
+              </div>
+
+              <!-- Preço -->
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Preço (R$) *</label>
+                  <input type="number" name="price" required min="50" max="100000" step="0.01" placeholder="0,00" data-focus-key="create-neg-price" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  <span class="text-xs text-gray-400 mt-1 block">Mínimo R$ 50,00 - Máximo R$ 100.000,00</span>
+                </div>
+                <div>
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Prazo de envio</label>
+                  <input type="text" value="2 dias úteis" disabled class="w-full px-4 py-3 bg-gray-200 border border-gray-300 rounded-lg text-gray-600 cursor-not-allowed">
+                  <span class="text-xs text-warning-600 mt-1 block"><i class="fas fa-info-circle mr-1"></i>Prazo fixo obrigatório</span>
+                </div>
+              </div>
+
+              <!-- Upload de fotos -->
+              <div class="space-y-2">
+                <label class="block text-sm text-gray-700 font-medium">Fotos do produto (até 8 fotos) *</label>
+                <div class="grid grid-cols-4 gap-2">
+                  ${photosHtml}
+                  ${productPhotos.length < 8 ? `
+                    <label class="w-full h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-primary-400 hover:bg-primary-50 transition">
+                      <i class="fas fa-camera text-gray-400 text-xl mb-1"></i>
+                      <span class="text-xs text-gray-400">Adicionar</span>
+                      <input type="file" accept="image/*" multiple class="hidden" data-action="addProductPhotos">
+                    </label>
+                  ` : ''}
+                </div>
+                ${photoError ? `<p class="text-xs text-danger-500"><i class="fas fa-exclamation-circle mr-1"></i>${photoError}</p>` : ''}
+                <p class="text-xs text-gray-400">Adicione pelo menos 1 foto. Formatos: JPG, PNG. Máx 5MB cada.</p>
+              </div>
+
+              <!-- Busca do comprador -->
+              <div class="space-y-2">
+                <label class="block text-sm text-gray-700 font-medium">E-mail do comprador *</label>
+                <p class="text-xs text-gray-500">Digite o e-mail completo do comprador e clique em <strong>Buscar</strong> para confirmar o cadastro.</p>
                 <div class="flex gap-2">
-                  <input type="email" name="buyer_email" required placeholder="comprador@email.com" class="flex-1 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent" data-action="searchBuyerOnBlur">
+                  <input type="email" name="buyer_email" required placeholder="comprador@email.com" class="flex-1 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all" data-action="updateNegFormField" data-field="buyerEmail" data-focus-key="create-neg-buyer-email">
                   <button type="button" class="px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-gray-700 transition" data-action="searchBuyer">
                     ${buyerSearching ? '<i class="fas fa-spinner fa-spin"></i>' : '<i class="fas fa-search"></i>'}
                   </button>
                 </div>
-              </label>
-              ${buyerFound === false ? `
-                <div class="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-                  <i class="fas fa-exclamation-circle mr-2"></i>Comprador não encontrado. Verifique o e-mail ou peça para se cadastrar.
+                <div class="p-3 bg-primary-50 border border-primary-100 rounded-lg text-primary-700 text-xs flex items-center gap-2">
+                  <i class="fas fa-info-circle"></i>
+                  <span>Encontramos o comprador somente pelo <strong>e-mail já cadastrado</strong>. Confirme com o cliente antes de continuar.</span>
                 </div>
-              ` : ''}
-              ${buyerFound ? `
-                <div class="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm flex items-center gap-3">
-                  <i class="fas fa-check-circle text-lg"></i>
-                  <div>
-                    <strong>${escapeHtml(buyerFound.name)}</strong>
-                    <span class="block text-xs text-green-600">${escapeHtml(buyerFound.email)}</span>
+                ${buyerFound === false ? `
+                  <div class="p-3 bg-danger-50 border border-danger-200 rounded-lg text-danger-700 text-sm">
+                    <i class="fas fa-exclamation-circle mr-2"></i>Comprador não encontrado. Verifique o e-mail ou peça para se cadastrar.
+                  </div>
+                ` : ''}
+                ${buyerFound ? `
+                  <div class="p-3 bg-success-50 border border-success-200 rounded-lg text-success-700 text-sm flex items-center gap-3">
+                    <i class="fas fa-check-circle text-lg"></i>
+                    <div>
+                      <strong>${escapeHtml(buyerFound.name)}</strong>
+                      <span class="block text-xs text-success-600">${escapeHtml(buyerFound.email)}</span>
+                    </div>
+                  </div>
+                ` : ''}
+              </div>
+
+              <!-- Endereço da intermediadora -->
+              <div class="p-4 bg-gradient-to-r from-primary-50 to-secondary-50 rounded-xl border border-primary-200">
+                <h3 class="text-sm font-bold text-primary-800 mb-2 flex items-center gap-2">
+                  <i class="fas fa-map-marker-alt"></i> Endereço para envio
+                </h3>
+                <p class="text-primary-700 font-medium">${escapeHtml([INTERMEDIARY_ADDRESS.street, INTERMEDIARY_ADDRESS.number].filter(Boolean).join(', '))}</p>
+                ${INTERMEDIARY_ADDRESS.district ? `<p class="text-primary-700">Bairro: ${escapeHtml(INTERMEDIARY_ADDRESS.district)}</p>` : ''}
+                <p class="text-primary-700">${escapeHtml([INTERMEDIARY_ADDRESS.city, INTERMEDIARY_ADDRESS.state].filter(Boolean).join(' - '))}</p>
+                <p class="text-primary-700">CEP: ${escapeHtml(formatCep(INTERMEDIARY_ADDRESS.cep))}</p>
+                <p class="text-xs text-primary-600 mt-2 italic">
+                  <i class="fas fa-info-circle mr-1"></i>
+                  Você deve enviar o produto em até 2 dias úteis após aprovar a venda.
+                </p>
+              </div>
+
+              <div class="p-4 bg-white border border-gray-200 rounded-xl text-sm text-gray-600 flex items-center gap-3">
+                <i class="fas fa-file-signature text-primary-500 text-lg"></i>
+                <span>Ao clicar em <strong>Criar negociação</strong> você verá todos os termos obrigatórios antes de concluir.</span>
+              </div>
+            </div>
+
+            ${showTerms ? `
+              <div class="space-y-5">
+                <div class="p-4 bg-white border border-warning-200 rounded-xl shadow-sm">
+                  <div class="flex items-center gap-2 text-warning-700 font-semibold mb-2">
+                    <i class="fas fa-shield-alt"></i>
+                    Compromissos do vendedor após o pagamento aprovado
+                  </div>
+                  <ul class="text-sm text-gray-600 space-y-2 text-left">
+                    <li><strong>Prazo:</strong> enviar o produto para a intermediadora em até <strong>2 dias corridos</strong>.</li>
+                    <li><strong>Obrigatório:</strong> registrar o código de rastreio no sistema.</li>
+                    <li><strong>Embalagem:</strong> enviar bem protegido para evitar danos.</li>
+                  </ul>
+                  <div class="mt-3 p-3 bg-danger-50 border border-danger-200 rounded-lg text-danger-700 text-sm">
+                    <p class="font-semibold">Se não enviar em até 2 dias:</p>
+                    <ul class="list-disc ml-4 space-y-1">
+                      <li>Perde a taxa de R$ 15,00.</li>
+                      <li>O comprador recebe 100% do valor pago + taxa.</li>
+                      <li>A negociação é cancelada.</li>
+                    </ul>
+                    <p class="mt-2 text-xs">Envios fora do prazo serão devolvidos e a taxa continua perdida.</p>
                   </div>
                 </div>
-              ` : ''}
-            </div>
 
-            <!-- Endereço da intermediadora -->
-            <div class="p-4 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-xl border border-purple-200">
-              <h3 class="text-sm font-bold text-purple-800 mb-2 flex items-center gap-2">
-                <i class="fas fa-map-marker-alt"></i> Endereço para envio
-              </h3>
-              <p class="text-purple-700 font-medium">${escapeHtml([INTERMEDIARY_ADDRESS.street, INTERMEDIARY_ADDRESS.number].filter(Boolean).join(', '))}</p>
-              ${INTERMEDIARY_ADDRESS.district ? `<p class="text-purple-700">Bairro: ${escapeHtml(INTERMEDIARY_ADDRESS.district)}</p>` : ''}
-              <p class="text-purple-700">${escapeHtml([INTERMEDIARY_ADDRESS.city, INTERMEDIARY_ADDRESS.state].filter(Boolean).join(' - '))}</p>
-              <p class="text-purple-700">CEP: ${escapeHtml(formatCep(INTERMEDIARY_ADDRESS.cep))}</p>
-              <p class="text-xs text-purple-600 mt-2 italic">
-                <i class="fas fa-info-circle mr-1"></i>
-                Você deve enviar o produto em até 2 dias úteis após aprovar a venda.
-              </p>
-            </div>
+                <div class="space-y-3">
+                  <div class="p-4 bg-warning-50 border border-warning-200 rounded-xl text-warning-800 text-sm space-y-3">
+                    <p><strong>Antes de finalizar, confirme que está ciente de todas as regras:</strong></p>
+                    <ul class="list-disc ml-4 space-y-2">
+                      <li>Envio obrigatório para a intermediadora em até 2 dias corridos após a aprovação do pagamento.</li>
+                      <li>Inserir o código de rastreio no sistema imediatamente após a postagem.</li>
+                      <li>Embalagem responsável: danos por embalagem inadequada são de responsabilidade do vendedor.</li>
+                      <li>Descumprimento do prazo implica perda da taxa de R$ 15,00, devolução total ao comprador e cancelamento da negociação.</li>
+                      <li>Envios fora do prazo serão devolvidos e a taxa continua perdida.</li>
+                    </ul>
+                  </div>
+                  <label class="flex items-start gap-3 p-4 bg-white border border-warning-200 rounded-xl cursor-pointer">
+                    <input type="checkbox" name="terms_accepted" required class="w-5 h-5 mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500">
+                    <span class="text-sm text-gray-700">
+                      Confirmo que li e concordo com todas as condições acima e autorizo a inspeção completa do produto pela intermediadora.
+                    </span>
+                  </label>
+                </div>
+              </div>
+            ` : ''}
 
-            <!-- Termo de verificação -->
-            <label class="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl cursor-pointer">
-              <input type="checkbox" name="terms_accepted" required class="w-5 h-5 mt-0.5 rounded border-gray-300 text-purple-600 focus:ring-purple-500">
-              <span class="text-sm text-amber-800">
-                <strong>Declaro que:</strong> O produto está em condições conforme descrito, assumo responsabilidade pela veracidade das informações e autorizo a intermediadora a inspecionar o produto.
-              </span>
-            </label>
-
-            <div class="flex gap-3 pt-4 border-t border-gray-200">
+            <div class="flex gap-3 pt-4 border-t border-gray-100">
               <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-medium transition" data-action="closeCreateNegotiation">Cancelar</button>
-              <button type="submit" class="flex-1 px-4 py-3 btn-gradient rounded-lg text-white font-bold" ${!buyerFound ? 'disabled' : ''}>
-                <i class="fas fa-paper-plane mr-2"></i>Criar negociação
+              <button type="submit" class="flex-1 px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition disabled:opacity-50 disabled:cursor-not-allowed" ${!buyerFound ? 'disabled' : ''}>
+                <i class="fas fa-paper-plane mr-2"></i>${showTerms ? 'Confirmar e enviar' : 'Criar negociação'}
               </button>
             </div>
           </form>
@@ -1097,11 +1362,11 @@
     if (!list.length) {
       return `
         <div class="text-center py-12 text-gray-500">
-          <div class="w-16 h-16 gradient-bg rounded-xl flex items-center justify-center mx-auto mb-4">
+          <div class="w-16 h-16 bg-gradient-to-br from-primary-500 to-secondary-500 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
             <i class="fas fa-folder-open text-white text-2xl"></i>
           </div>
           <p class="mb-4 text-gray-600">Sem negociações carregadas ainda.</p>
-          <button class="px-6 py-3 btn-gradient rounded-lg text-white font-bold" data-action="dashboardRefresh">Atualizar agora</button>
+          <button class="px-6 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition" data-action="dashboardRefresh">Atualizar agora</button>
         </div>
       `;
     }
@@ -1112,24 +1377,24 @@
 
     return `
       <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        ${renderSummaryCard('Total', total, 'fa-chart-bar', 'Resumo de negociações registradas')}
-        ${renderSummaryCard('Em andamento', active, 'fa-clock', 'Negociações ainda não finalizadas')}
-        ${renderSummaryCard('Aguardando aprovação', awaiting, 'fa-hourglass-half', 'Necessitam análise da intermediadora')}
-        ${renderSummaryCard('Entregues', delivered, 'fa-check-circle', 'Finalizadas com sucesso')}
+        ${renderSummaryCard('Total', total, 'fa-chart-bar', 'Resumo de negociações registradas', 'from-primary-500 to-secondary-500')}
+        ${renderSummaryCard('Em andamento', active, 'fa-clock', 'Negociações ainda não finalizadas', 'from-warning-500 to-danger-400')}
+        ${renderSummaryCard('Aguardando aprovação', awaiting, 'fa-hourglass-half', 'Necessitam análise da intermediadora', 'from-secondary-500 to-primary-500')}
+        ${renderSummaryCard('Entregues', delivered, 'fa-check-circle', 'Finalizadas com sucesso', 'from-success-500 to-secondary-500')}
       </section>
     `;
   }
 
-  function renderSummaryCard(label, value, icon, description) {
+  function renderSummaryCard(label, value, icon, description, gradient) {
     return `
-      <article class="bg-white rounded-xl p-5 shadow-sm border border-gray-200">
+      <article class="bg-white rounded-xl p-5 shadow-card border border-gray-100 hover:shadow-card-lg transition-all duration-300">
         <div class="flex items-center gap-3 mb-3">
-          <div class="w-12 h-12 rounded-lg bg-gray-100 text-gray-500 flex items-center justify-center">
+          <div class="w-12 h-12 rounded-xl bg-gradient-to-br ${gradient} text-white flex items-center justify-center shadow-lg">
             <i class="fas ${icon} text-lg"></i>
           </div>
           <div>
             <span class="text-xs font-medium text-gray-500 uppercase tracking-wide">${escapeHtml(label)}</span>
-            <div class="text-2xl font-semibold text-gray-800">${Number(value) || 0}</div>
+            <div class="text-2xl font-bold text-gray-800">${Number(value) || 0}</div>
           </div>
         </div>
         <p class="text-xs text-gray-500 leading-snug">${escapeHtml(description)}</p>
@@ -1140,12 +1405,12 @@
   function renderNegotiationsTable(negotiations) {
     if (!negotiations.length) {
       return `
-        <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-12 text-center">
+        <div class="bg-white rounded-2xl border border-gray-100 shadow-card p-12 text-center">
           <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <i class="fas fa-inbox text-gray-400 text-2xl"></i>
           </div>
           <p class="text-gray-500 mb-4">Nenhuma negociação encontrada.</p>
-          <button class="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-white text-sm font-medium transition" data-action="dashboardRefresh">
+          <button class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white text-sm font-medium transition" data-action="dashboardRefresh">
             <i class="fas fa-sync-alt mr-2"></i>Atualizar
           </button>
         </div>
@@ -1154,8 +1419,8 @@
     const rows = negotiations.map((neg) => renderNegotiationRow(neg)).join('');
     const totalLabel = negotiations.length === 1 ? '1 negociação' : `${negotiations.length} negociações`;
     return `
-      <div class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-        <div class="px-5 py-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+      <div class="bg-white rounded-2xl border border-gray-100 shadow-card overflow-hidden">
+        <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between bg-gray-50">
           <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Negociações</h2>
           <span class="text-xs text-gray-500">${totalLabel}</span>
         </div>
@@ -1238,22 +1503,22 @@
   function renderStatusBadge(status) {
     const label = STATUS_LABELS[status] || status || '—';
     const colorClass = STATUS_BADGE_COLORS[status] || 'bg-gray-600';
-    return `<span class="inline-block px-2 py-1 rounded-full text-xs font-medium text-white ${colorClass}">${escapeHtml(label)}</span>`;
+    return `<span class="inline-block px-2 py-1 rounded-full text-xs font-medium ${colorClass}">${escapeHtml(label)}</span>`;
   }
 
   function renderStatusBadgeEnhanced(status) {
     const label = STATUS_LABELS[status] || status || '—';
     const statusConfig = {
-      awaiting_admin_approval: { bg: 'bg-purple-100', text: 'text-purple-700', border: 'border-purple-200', icon: 'fa-hourglass-half' },
-      pending_acceptance: { bg: 'bg-indigo-100', text: 'text-indigo-700', border: 'border-indigo-200', icon: 'fa-user-plus' },
-      waiting_payment: { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200', icon: 'fa-credit-card' },
-      waiting_shipment: { bg: 'bg-slate-100', text: 'text-slate-700', border: 'border-slate-200', icon: 'fa-box' },
-      shipped: { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-200', icon: 'fa-truck' },
-      at_intermediary: { bg: 'bg-cyan-100', text: 'text-cyan-700', border: 'border-cyan-200', icon: 'fa-warehouse' },
-      approved: { bg: 'bg-teal-100', text: 'text-teal-700', border: 'border-teal-200', icon: 'fa-check-circle' },
-      delivered: { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-200', icon: 'fa-flag-checkered' },
-      rejected_by_admin: { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200', icon: 'fa-times-circle' },
-      cancelled: { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200', icon: 'fa-ban' },
+      awaiting_admin_approval: { bg: 'bg-primary-100', text: 'text-primary-700', border: 'border-primary-200', icon: 'fa-hourglass-half' },
+      pending_acceptance: { bg: 'bg-secondary-100', text: 'text-secondary-700', border: 'border-secondary-200', icon: 'fa-user-plus' },
+      waiting_payment: { bg: 'bg-warning-100', text: 'text-warning-700', border: 'border-warning-200', icon: 'fa-credit-card' },
+      waiting_shipment: { bg: 'bg-gray-100', text: 'text-gray-700', border: 'border-gray-200', icon: 'fa-box' },
+      shipped: { bg: 'bg-secondary-100', text: 'text-secondary-700', border: 'border-secondary-200', icon: 'fa-truck' },
+      at_intermediary: { bg: 'bg-secondary-100', text: 'text-secondary-700', border: 'border-secondary-200', icon: 'fa-warehouse' },
+      approved: { bg: 'bg-success-100', text: 'text-success-700', border: 'border-success-200', icon: 'fa-check-circle' },
+      delivered: { bg: 'bg-success-100', text: 'text-success-700', border: 'border-success-200', icon: 'fa-flag-checkered' },
+      rejected_by_admin: { bg: 'bg-danger-100', text: 'text-danger-700', border: 'border-danger-200', icon: 'fa-times-circle' },
+      cancelled: { bg: 'bg-danger-100', text: 'text-danger-700', border: 'border-danger-200', icon: 'fa-ban' },
       expired: { bg: 'bg-gray-100', text: 'text-gray-600', border: 'border-gray-200', icon: 'fa-clock' }
     };
     const config = statusConfig[status] || { bg: 'bg-gray-100', text: 'text-gray-600', border: 'border-gray-200', icon: 'fa-question' };
@@ -1288,7 +1553,7 @@
       return `
         <section class="space-y-6">
           <header>
-            <h1 class="text-2xl font-bold text-gray-800">Negociação</h1>
+            <h1 class="text-2xl font-bold text-gray-900">Negociação</h1>
             <p class="text-gray-500">Carregando detalhes...</p>
           </header>
         </section>
@@ -1306,19 +1571,19 @@
       <section class="space-y-6">
         <header class="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <button class="text-purple-600 hover:text-purple-800 font-medium transition mb-2 flex items-center gap-2" data-action="navigate" data-page="dashboard"><i class="fas fa-arrow-left"></i> Voltar</button>
-            <h1 class="text-3xl font-bold text-gray-800">Negociação #${negotiation.id}</h1>
+            <button class="text-primary-600 hover:text-primary-700 font-medium transition mb-2 flex items-center gap-2" data-action="navigate" data-page="dashboard"><i class="fas fa-arrow-left"></i> Voltar</button>
+            <h1 class="text-3xl font-bold text-gray-900">Negociação #${negotiation.id}</h1>
             <p class="text-gray-500">${escapeHtml(productTitle)}</p>
           </div>
           <div class="flex items-center gap-3">
             <span>${renderStatusBadge(status)}</span>
-            <button class="px-4 py-2 bg-white border border-gray-200 hover:border-purple-400 rounded-lg text-gray-700 font-medium transition shadow-sm flex items-center gap-2" data-action="openTimeline" data-id="${negotiation.id}"><i class="fas fa-stream"></i> Linha do tempo</button>
+            <button class="px-4 py-2 bg-white border border-gray-200 hover:border-primary-400 rounded-lg text-gray-700 font-medium transition shadow-sm flex items-center gap-2" data-action="openTimeline" data-id="${negotiation.id}"><i class="fas fa-stream"></i> Linha do tempo</button>
           </div>
         </header>
 
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 card-hover">
-            <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-info-circle text-purple-500"></i> Resumo</h2>
+          <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+            <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-info-circle text-primary-500"></i> Resumo</h2>
             <dl class="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <dt class="text-gray-500">Valor</dt>
@@ -1338,42 +1603,42 @@
               </div>
             </dl>
             ${negotiation.product_description || negotiation.description ? `
-              <section class="mt-6 pt-4 border-t border-gray-200">
+              <section class="mt-6 pt-4 border-t border-gray-100">
                 <h3 class="text-sm font-medium text-gray-600 mb-2">Descrição enviada pelo vendedor</h3>
                 <p class="text-gray-500">${escapeHtml(negotiation.product_description || negotiation.description)}</p>
               </section>
             ` : ''}
           </article>
 
-          <article class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
-            <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-users text-blue-500"></i> Participantes</h2>
+          <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-users text-secondary-500"></i> Participantes</h2>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
+              <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
                 <header class="flex items-center gap-2 mb-2">
-                  <span class="px-2 py-0.5 bg-amber-500 text-white text-xs rounded-full font-medium">Vendedor</span>
+                  <span class="px-2 py-0.5 bg-warning-500 text-white text-xs rounded-full font-medium">Vendedor</span>
                   ${isSellerRole ? '<span class="px-2 py-0.5 bg-gray-900 text-white text-xs rounded-full font-medium">Você</span>' : ''}
                 </header>
                 <strong class="block text-gray-800">${escapeHtml(seller.name || '—')}</strong>
-                <span class="block text-gray-500 text-sm">${escapeHtml(seller.email || '—')}</span>
+                <span class="block text-gray-500 text-sm break-all">${escapeHtml(seller.email || '—')}</span>
                 <span class="block text-gray-500 text-sm">${formatPhone(seller.phone)}</span>
                 ${renderAddressDetails(seller)}
               </div>
-              <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
+              <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
                 <header class="flex items-center gap-2 mb-2">
-                  <span class="px-2 py-0.5 bg-cyan-500 text-white text-xs rounded-full font-medium">Comprador</span>
+                  <span class="px-2 py-0.5 bg-secondary-500 text-white text-xs rounded-full font-medium">Comprador</span>
                   ${isBuyerRole ? '<span class="px-2 py-0.5 bg-gray-900 text-white text-xs rounded-full font-medium">Você</span>' : ''}
                 </header>
                 <strong class="block text-gray-800">${escapeHtml(buyer.name || '—')}</strong>
-                <span class="block text-gray-500 text-sm">${escapeHtml(buyer.email || '—')}</span>
+                <span class="block text-gray-500 text-sm break-all">${escapeHtml(buyer.email || '—')}</span>
                 <span class="block text-gray-500 text-sm">${formatPhone(buyer.phone)}</span>
                 ${renderAddressDetails(buyer)}
               </div>
-              <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
+              <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
                 <header class="flex items-center gap-2 mb-2">
-                  <span class="px-2 py-0.5 bg-purple-500 text-white text-xs rounded-full font-medium">Intermediadora</span>
+                  <span class="px-2 py-0.5 bg-primary-500 text-white text-xs rounded-full font-medium">Intermediadora</span>
                 </header>
                 <strong class="block text-gray-800">IntermediaçãoPro</strong>
-                <span class="block text-gray-500 text-sm">contato@intermediacaopro.com</span>
+                <span class="block text-gray-500 text-sm break-all">contato@intermediacaopro.com</span>
                 <span class="block text-gray-500 text-sm">${formatPhone('(11) 99999-9999')}</span>
                 ${renderAddressDetails(INTERMEDIARY_ADDRESS, 'Endereço não informado.')}
               </div>
@@ -1399,15 +1664,15 @@
     const trackSeller = neg.tracking_to_intermediary || neg.tracking_code || '';
     const trackBuyer = neg.tracking_to_buyer || neg.buyer_tracking_code || '';
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
-        <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-truck text-green-500"></i> Logística</h2>
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-truck text-success-500"></i> Logística</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
+          <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
             <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para intermediadora</h3>
             <p class="text-sm text-gray-800 font-medium">${trackSeller ? escapeHtml(trackSeller) : 'Não informado'}</p>
             ${neg.sent_to_intermediary_at || neg.shipped_at ? `<small class="text-xs text-gray-500">Postado em ${formatDate(neg.sent_to_intermediary_at || neg.shipped_at)}</small>` : ''}
           </div>
-          <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
+          <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
             <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para comprador</h3>
             <p class="text-sm text-gray-800 font-medium">${trackBuyer ? escapeHtml(trackBuyer) : 'Não informado'}</p>
             ${neg.sent_to_buyer_at ? `<small class="text-xs text-gray-500">Despachado em ${formatDate(neg.sent_to_buyer_at)}</small>` : ''}
@@ -1420,30 +1685,31 @@
 
   function renderBuyerAcceptSection(neg, { isBuyer, isSeller }) {
     // Mostra apenas se o status for pending_acceptance e o usuário for comprador válido ou um interessado que não seja o vendedor
-    const canAcceptPendingBuyer = neg.status === 'pending_acceptance' && Boolean(neg.buyer_id) && isBuyer;
-    const canAcceptAsInterested = neg.status === 'pending_acceptance' && !neg.buyer_id && !isSeller;
+    const hasBuyerAssigned = Boolean(neg.buyer && neg.buyer.id);
+    const canAcceptPendingBuyer = neg.status === 'pending_acceptance' && hasBuyerAssigned && isBuyer;
+    const canAcceptAsInterested = neg.status === 'pending_acceptance' && !hasBuyerAssigned && !isSeller && !isAdmin() && state.user?.role === 'buyer';
     const canAccept = canAcceptPendingBuyer || canAcceptAsInterested;
     if (!canAccept) return '';
 
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-sm border border-green-200">
-        <h2 class="text-lg font-semibold text-green-700 mb-3 flex items-center gap-2"><i class="fas fa-handshake text-green-600"></i> Aceite da negociação</h2>
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-success-200">
+        <h2 class="text-lg font-semibold text-success-700 mb-3 flex items-center gap-2"><i class="fas fa-handshake text-success-600"></i> Aceite da negociação</h2>
         <p class="text-sm text-gray-600 mb-4">Esta negociação está aguardando o aceite do comprador. Revise os detalhes acima e confirme sua participação.</p>
         
         <!-- Endereço de envio informativo -->
-        <div class="p-4 rounded-xl border border-gray-200 bg-gray-50 mb-4">
+        <div class="p-4 rounded-xl border border-gray-100 bg-gray-50 mb-4">
           <h3 class="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
-            <i class="fas fa-info-circle text-blue-500"></i> Informações importantes
+            <i class="fas fa-info-circle text-secondary-500"></i> Informações importantes
           </h3>
           <p class="text-sm text-gray-600 mb-2">O vendedor deve enviar o produto em até <strong>2 dias úteis</strong> após você aceitar.</p>
           <p class="text-sm text-gray-600">Após o aceite, você receberá as instruções de pagamento.</p>
         </div>
         
         <div class="flex flex-wrap gap-3">
-          <button class="px-5 py-2.5 bg-green-600 hover:bg-green-700 rounded-lg text-white font-semibold transition flex items-center gap-2" data-action="acceptNegotiation" data-id="${neg.id}">
+          <button class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2" data-action="acceptNegotiation" data-id="${neg.id}">
             <i class="fas fa-check"></i> Aceitar e participar
           </button>
-          <button class="px-5 py-2.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg font-medium transition flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
+          <button class="px-5 py-2.5 bg-danger-100 hover:bg-danger-200 text-danger-700 rounded-lg font-medium transition flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
             <i class="fas fa-times"></i> Recusar
           </button>
         </div>
@@ -1459,17 +1725,18 @@
     const fee = amount * 0.05; // Taxa de 5%
     const total = amount + fee;
     
-    // Dados para QR Code Pix (simulado)
+    // Dados para QR Code Pix (usa código vindo da API, com fallback simulado)
     const pixKey = 'pix@intermediacao.com.br';
-    const pixCode = `00020126580014br.gov.bcb.pix0136${pixKey}5204000053039865406${total.toFixed(2)}5802BR5925INTERMEDIACAO PRO LTDA6009SAO PAULO62070503***6304`;
+    const fallbackPixCode = `00020126580014br.gov.bcb.pix0136${pixKey}5204000053039865406${total.toFixed(2)}5802BR5925INTERMEDIACAO PRO LTDA6009SAO PAULO62070503***6304`;
+    const pixCode = String(neg.pix_code || fallbackPixCode);
 
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
-        <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-qrcode text-blue-600"></i> Pagamento via Pix</h2>
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-qrcode text-secondary-600"></i> Pagamento via Pix</h2>
         
         <div class="grid md:grid-cols-2 gap-4">
           <div>
-            <div class="bg-gray-50 p-4 rounded-xl border border-gray-200 mb-4">
+            <div class="bg-gray-50 p-4 rounded-xl border border-gray-100 mb-4">
               <h3 class="text-sm font-medium text-gray-700 mb-3">Resumo do pagamento</h3>
               <div class="space-y-2 text-sm text-gray-700">
                 <div class="flex justify-between">
@@ -1482,13 +1749,13 @@
                 </div>
                 <div class="flex justify-between pt-2 border-t border-gray-200">
                   <span class="text-gray-800 font-bold">Total a pagar</span>
-                  <span class="text-blue-600 font-bold text-lg">${formatCurrency(total)}</span>
+                  <span class="text-secondary-600 font-bold text-lg">${formatCurrency(total)}</span>
                 </div>
               </div>
             </div>
             
             <div class="space-y-3">
-              <div class="p-3 bg-white rounded-lg border border-blue-200">
+              <div class="p-3 bg-white rounded-lg border border-secondary-200">
                 <span class="text-xs text-gray-500 block mb-1">Chave Pix (E-mail)</span>
                 <div class="flex items-center gap-2">
                   <code class="text-sm text-gray-800 flex-1">${pixKey}</code>
@@ -1498,7 +1765,7 @@
                 </div>
               </div>
               
-              <button class="w-full px-4 py-3 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 rounded-lg text-white font-bold transition shadow-md" data-action="confirmPayment" data-id="${neg.id}">
+              <button class="w-full px-4 py-3 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-white font-bold transition shadow-md" data-action="confirmPayment" data-id="${neg.id}">
                 <i class="fas fa-check mr-2"></i>Já realizei o pagamento
               </button>
               <p class="text-xs text-gray-500 text-center">Pagamento confirmado em até 1 hora útil.</p>
@@ -1506,21 +1773,13 @@
           </div>
           
           <div class="flex flex-col items-center justify-center">
-            <div class="bg-white p-4 rounded-xl border border-blue-200">
+            <div class="bg-white p-4 rounded-xl border border-secondary-200">
               <div class="w-48 h-48 bg-gray-100 rounded-lg flex items-center justify-center mb-3" id="qrcode-container">
                 <!-- QR Code gerado via JS -->
-                <canvas id="qrcode-${neg.id}" class="w-full h-full"></canvas>
+                <div id="qrcode-${neg.id}" class="w-full h-full" data-pix-code="${escapeAttr(pixCode)}" data-qr-rendered="0"></div>
               </div>
               <p class="text-xs text-center text-gray-500">Escaneie com o app do seu banco</p>
             </div>
-            <script>
-              (function() {
-                const canvas = document.getElementById('qrcode-${neg.id}');
-                if (canvas && window.QRCode) {
-                  QRCode.toCanvas(canvas, '${pixCode}', { width: 192 });
-                }
-              })();
-            </script>
           </div>
         </div>
         
@@ -1537,11 +1796,11 @@
     
     return `
       <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden">
-          <div class="h-1 bg-gradient-to-r from-red-500 to-pink-500"></div>
-          <header class="flex items-center justify-between p-6 border-b border-gray-200">
+        <div class="bg-white rounded-2xl shadow-card-xl max-w-md w-full overflow-hidden animate-slide-up">
+          <div class="h-1 bg-gradient-to-r from-danger-500 to-danger-400"></div>
+          <header class="flex items-center justify-between p-6 border-b border-gray-100">
             <div>
-              <h2 class="text-xl font-bold text-gray-800">Recusar Negociação</h2>
+              <h2 class="text-xl font-bold text-gray-900">Recusar Negociação</h2>
               <p class="text-gray-500 text-sm">Informe o motivo da recusa</p>
             </div>
             <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeRejectModal">✕</button>
@@ -1550,7 +1809,7 @@
             <input type="hidden" name="negotiation_id" value="${state.rejectNegotiationId || ''}">
             <label class="flex flex-col gap-1">
               <span class="text-sm text-gray-700 font-medium">Motivo da recusa *</span>
-              <select name="reject_reason_type" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent">
+              <select name="reject_reason_type" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-danger-500 focus:border-danger-500 transition-all">
                 <option value="">Selecione um motivo</option>
                 <option value="price">Preço muito alto</option>
                 <option value="description">Descrição não corresponde</option>
@@ -1562,11 +1821,11 @@
             </label>
             <label class="flex flex-col gap-1">
               <span class="text-sm text-gray-700 font-medium">Detalhes (opcional)</span>
-              <textarea name="reject_details" rows="3" maxlength="500" placeholder="Explique melhor o motivo..." class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent resize-none"></textarea>
+              <textarea name="reject_details" rows="3" maxlength="500" placeholder="Explique melhor o motivo..." class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-danger-500 focus:border-danger-500 transition-all resize-none"></textarea>
             </label>
             <div class="flex gap-3 pt-4">
               <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-medium transition" data-action="closeRejectModal">Cancelar</button>
-              <button type="submit" class="flex-1 px-4 py-3 bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 rounded-lg text-white font-bold">
+              <button type="submit" class="flex-1 px-4 py-3 bg-gradient-to-r from-danger-500 to-danger-600 hover:from-danger-600 hover:to-danger-700 rounded-lg text-white font-bold transition-all">
                 <i class="fas fa-times mr-2"></i>Confirmar recusa
               </button>
             </div>
@@ -1581,9 +1840,19 @@
     const trackSeller = neg.tracking_to_intermediary || neg.tracking_code || '';
     const trackBuyer = neg.tracking_to_buyer || neg.buyer_tracking_code || '';
     
+    // Status onde o vendedor pode/deve adicionar código de rastreio
+    const sellerTrackingStatuses = [
+      'waiting_shipment', 
+      'awaiting_shipment', 
+      'pending_shipment',
+      'approved',
+      'payment_confirmed',
+      'awaiting_seller_shipment'
+    ];
+    
     // Vendedor pode adicionar código apenas UMA VEZ (se ainda não tem código)
     // Admin pode sempre editar
-    const sellerCanAddCode = isSeller && !trackSeller && neg.status === 'waiting_shipment';
+    const sellerCanAddCode = isSeller && !trackSeller && sellerTrackingStatuses.includes(neg.status);
     const adminCanEditSellerCode = admin;
     
     // Apenas Admin pode editar código para comprador
@@ -1599,9 +1868,9 @@
           <form class="flex flex-wrap items-end gap-3 mt-4" data-action="updateTracking" data-id="${neg.id}" data-type="seller">
             <label class="flex flex-col gap-1 flex-1 min-w-[200px]">
               <span class="text-sm text-gray-600 font-medium"><i class="fas fa-truck mr-1"></i>Código de rastreio para intermediadora</span>
-              <input type="text" name="tracking_code" placeholder="Ex: BR123456789" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+              <input type="text" name="tracking_code" placeholder="Ex: BR123456789" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
             </label>
-            <button type="submit" class="px-4 py-3 btn-gradient rounded-lg text-white font-medium">Salvar</button>
+            <button type="submit" class="px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium transition">Salvar</button>
           </form>
         `);
       } else if (adminCanEditSellerCode) {
@@ -1610,19 +1879,19 @@
           <form class="flex flex-wrap items-end gap-3 mt-4" data-action="updateTracking" data-id="${neg.id}" data-type="seller">
             <label class="flex flex-col gap-1 flex-1 min-w-[200px]">
               <span class="text-sm text-gray-600 font-medium"><i class="fas fa-truck mr-1"></i>Rastreio para intermediadora (Admin)</span>
-              <input type="text" name="tracking_code" placeholder="Ex: BR123456789" value="${escapeAttr(trackSeller)}" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+              <input type="text" name="tracking_code" placeholder="Ex: BR123456789" value="${escapeAttr(trackSeller)}" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
             </label>
-            <button type="submit" class="px-4 py-3 btn-gradient rounded-lg text-white font-medium">Atualizar</button>
+            <button type="submit" class="px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium transition">Atualizar</button>
           </form>
         `);
       } else if (trackSeller) {
         // Apenas visualização para vendedor (já preenchido) e comprador
         sections.push(`
-          <div class="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+          <div class="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-100">
             <span class="text-sm text-gray-600 font-medium"><i class="fas fa-truck mr-1"></i>Rastreio para intermediadora</span>
             <div class="mt-1 flex items-center gap-2">
-              <code class="px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-800 font-mono">${escapeHtml(trackSeller)}</code>
-              <a href="https://www.google.com/search?q=${encodeURIComponent(trackSeller + ' rastreio')}" target="_blank" class="text-purple-600 hover:text-purple-700 text-sm"><i class="fas fa-external-link-alt"></i> Rastrear</a>
+              <code class="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 font-mono">${escapeHtml(trackSeller)}</code>
+              <a href="https://www.google.com/search?q=${encodeURIComponent(trackSeller + ' rastreio')}" target="_blank" class="text-primary-600 hover:text-primary-700 text-sm"><i class="fas fa-external-link-alt"></i> Rastrear</a>
             </div>
           </div>
         `);
@@ -1637,19 +1906,19 @@
           <form class="flex flex-wrap items-end gap-3 mt-4" data-action="updateTracking" data-id="${neg.id}" data-type="buyer">
             <label class="flex flex-col gap-1 flex-1 min-w-[200px]">
               <span class="text-sm text-gray-600 font-medium"><i class="fas fa-shipping-fast mr-1"></i>Rastreio para comprador (Admin)</span>
-              <input type="text" name="tracking_code" placeholder="Ex: BR987654321" value="${escapeAttr(trackBuyer)}" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+              <input type="text" name="tracking_code" placeholder="Ex: BR987654321" value="${escapeAttr(trackBuyer)}" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
             </label>
-            <button type="submit" class="px-4 py-3 btn-gradient rounded-lg text-white font-medium">Atualizar</button>
+            <button type="submit" class="px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium transition">Atualizar</button>
           </form>
         `);
       } else if (trackBuyer) {
         // Apenas visualização para comprador e vendedor
         sections.push(`
-          <div class="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+          <div class="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-100">
             <span class="text-sm text-gray-600 font-medium"><i class="fas fa-shipping-fast mr-1"></i>Rastreio para comprador</span>
             <div class="mt-1 flex items-center gap-2">
-              <code class="px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-800 font-mono">${escapeHtml(trackBuyer)}</code>
-              <a href="https://www.google.com/search?q=${encodeURIComponent(trackBuyer + ' rastreio')}" target="_blank" class="text-purple-600 hover:text-purple-700 text-sm"><i class="fas fa-external-link-alt"></i> Rastrear</a>
+              <code class="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 font-mono">${escapeHtml(trackBuyer)}</code>
+              <a href="https://www.google.com/search?q=${encodeURIComponent(trackBuyer + ' rastreio')}" target="_blank" class="text-primary-600 hover:text-primary-700 text-sm"><i class="fas fa-external-link-alt"></i> Rastrear</a>
             </div>
           </div>
         `);
@@ -1657,7 +1926,7 @@
     }
 
     if (!sections.length) return '';
-    return `<div class="mt-4 pt-4 border-t border-gray-200">${sections.join('')}</div>`;
+    return `<div class="mt-4 pt-4 border-t border-gray-100">${sections.join('')}</div>`;
   }
 
   function renderPaymentsSection(neg) {
@@ -1673,14 +1942,14 @@
       return `
         <div class="grid grid-cols-3 gap-4 py-2 border-b border-slate-700 last:border-b-0">
           <span class="text-white">${escapeHtml(label)}</span>
-          <span class="text-green-600 font-bold">${formatCurrency(payment.amount)}</span>
+          <span class="text-success-600 font-bold">${formatCurrency(payment.amount)}</span>
           <span class="text-gray-500">${escapeHtml(status)}</span>
         </div>
       `;
     }).join('');
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 card-hover">
-        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-credit-card text-indigo-500"></i> Pagamentos</h2>
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100 hover:shadow-card-lg transition-all duration-200">
+        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-credit-card text-primary-500"></i> Pagamentos</h2>
         <div>
           ${rows}
         </div>
@@ -1693,8 +1962,9 @@
     const awaitingAdmin = neg.status === 'awaiting_admin_approval';
     const atIntermediary = neg.status === 'at_intermediary';
     const showApproveReject = awaitingAdmin;
-    const showInspectionForm = atIntermediary && !neg.intermediary_approval_confirmed_at;
+    const showInspectionForm = atIntermediary && Boolean(neg.inspection_saved_at) && !neg.intermediary_approval_confirmed_at;
     const showFinalize = neg.status === 'delivered';
+    const showMarkReceived = neg.status === 'shipped' && !neg.intermediary_received_status;
 
     const sections = [];
 
@@ -1703,8 +1973,8 @@
         <section class="pt-4 border-t border-gray-200 first:border-t-0 first:pt-0">
           <h3 class="text-sm font-medium text-gray-700 mb-3">Aprovação inicial</h3>
           <div class="flex flex-wrap gap-3">
-            <button class="px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 rounded-lg text-white font-medium transition shadow-md" data-action="adminApproveNegotiation" data-id="${neg.id}"><i class="fas fa-check mr-2"></i>Aprovar negociação</button>
-            <button class="px-4 py-2 bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 rounded-lg text-white font-medium transition shadow-md" data-action="adminRejectNegotiation" data-id="${neg.id}"><i class="fas fa-times mr-2"></i>Reprovar</button>
+            <button class="px-4 py-2 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-white font-medium transition shadow-md" data-action="adminApproveNegotiation" data-id="${neg.id}"><i class="fas fa-check mr-2"></i>Aprovar negociação</button>
+            <button class="px-4 py-2 bg-gradient-to-r from-danger-500 to-danger-600 hover:from-danger-600 hover:to-danger-700 rounded-lg text-white font-medium transition shadow-md" data-action="adminRejectNegotiation" data-id="${neg.id}"><i class="fas fa-times mr-2"></i>Reprovar</button>
           </div>
         </section>
       `);
@@ -1712,44 +1982,44 @@
 
     if (showInspectionForm) {
       sections.push(`
-        <section class="pt-4 border-t border-gray-200">
+        <section class="pt-4 border-t border-gray-100">
           <h3 class="text-sm font-medium text-gray-700 mb-3">Envio ao comprador</h3>
           <form data-action="approveProduct" data-id="${neg.id}" class="space-y-4">
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-600 font-medium">Rastreio para o comprador</span>
-              <input type="text" name="tracking_to_buyer" required placeholder="Código de rastreio" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-            </label>
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-600 font-medium">Observações</span>
-              <textarea name="intermediary_notes" rows="3" placeholder="Observações sobre estado do produto" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"></textarea>
-            </label>
+            <div>
+              <label class="block text-sm text-gray-600 font-medium mb-2">Rastreio para o comprador</label>
+              <input type="text" name="tracking_to_buyer" required placeholder="Código de rastreio" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+            </div>
+            <div>
+              <label class="block text-sm text-gray-600 font-medium mb-2">Observações</label>
+              <textarea name="intermediary_notes" rows="3" placeholder="Observações sobre estado do produto" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none"></textarea>
+            </div>
             <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-              <input type="checkbox" name="seller_transferred" checked class="w-4 h-4 rounded bg-gray-50 border-gray-300 text-purple-600 focus:ring-purple-500">
+              <input type="checkbox" name="seller_transferred" checked class="w-4 h-4 rounded bg-gray-50 border-gray-300 text-primary-600 focus:ring-primary-500">
               <span>Transferir valor ao vendedor imediatamente</span>
             </label>
             <div class="flex flex-wrap gap-3">
-              <button type="submit" class="px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 rounded-lg text-white font-medium transition shadow-md"><i class="fas fa-paper-plane mr-2"></i>Aprovar e enviar</button>
-              <button type="button" class="px-4 py-2 bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 rounded-lg text-white font-medium transition shadow-md" data-action="rejectProduct" data-id="${neg.id}"><i class="fas fa-times mr-2"></i>Reprovar</button>
+              <button type="submit" class="px-4 py-2 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-white font-medium transition shadow-md"><i class="fas fa-paper-plane mr-2"></i>Aprovar e enviar</button>
+              <button type="button" class="px-4 py-2 bg-gradient-to-r from-danger-500 to-danger-600 hover:from-danger-600 hover:to-danger-700 rounded-lg text-white font-medium transition shadow-md" data-action="rejectProduct" data-id="${neg.id}"><i class="fas fa-times mr-2"></i>Reprovar</button>
             </div>
           </form>
         </section>
       `);
     }
 
-    if (neg.status === 'at_intermediary' && !neg.intermediary_received_status) {
+    if (showMarkReceived) {
       sections.push(`
-        <section class="pt-4 border-t border-gray-200">
+        <section class="pt-4 border-t border-gray-100">
           <h3 class="text-sm font-medium text-gray-700 mb-3">Confirmação de chegada na intermediadora</h3>
-          <button class="px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg text-white font-medium transition shadow-md" data-action="markIntermediaryReceived" data-id="${neg.id}"><i class="fas fa-box-open mr-2"></i>Marcar como recebido</button>
+          <button class="px-4 py-2 bg-gradient-to-r from-secondary-500 to-secondary-600 hover:from-secondary-600 hover:to-secondary-700 rounded-lg text-white font-medium transition shadow-md" data-action="markIntermediaryReceived" data-id="${neg.id}"><i class="fas fa-box-open mr-2"></i>Marcar como recebido</button>
         </section>
       `);
     }
 
     if (showFinalize) {
       sections.push(`
-        <section class="pt-4 border-t border-gray-200">
+        <section class="pt-4 border-t border-gray-100">
           <h3 class="text-sm font-medium text-gray-700 mb-3">Finalização</h3>
-          <button class="px-4 py-2 btn-gradient rounded-lg text-white font-bold transition shadow-md" data-action="finalizeNegotiation" data-id="${neg.id}"><i class="fas fa-flag-checkered mr-2"></i>Finalizar negociação</button>
+          <button class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition shadow-md" data-action="finalizeNegotiation" data-id="${neg.id}"><i class="fas fa-flag-checkered mr-2"></i>Finalizar negociação</button>
         </section>
       `);
     }
@@ -1757,8 +2027,8 @@
     if (!sections.length) return '';
 
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 card-hover">
-        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-shield-alt text-purple-500"></i> Ações da intermediadora</h2>
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-shield-alt text-primary-500"></i> Ações da intermediadora</h2>
         <div class="space-y-4">
           ${sections.join('')}
         </div>
@@ -1779,10 +2049,10 @@
     // Se já existe relatório e não está editando, mostrar visualização
     if (existingReport && !isEditing) {
       return `
-        <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 card-hover">
+        <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100 hover:shadow-card-lg transition-all duration-200">
           <header class="flex items-center justify-between mb-4">
             <h2 class="text-lg font-bold text-gray-800 flex items-center gap-2">
-              <i class="fas fa-clipboard-check text-teal-500"></i> Relatório de Inspeção
+              <i class="fas fa-clipboard-check text-secondary-500"></i> Relatório de Inspeção
             </h2>
             <button class="px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 text-sm transition" data-action="editInspectionReport" data-id="${neg.id}">
               <i class="fas fa-edit mr-1"></i>Editar
@@ -1793,7 +2063,7 @@
             <!-- Checklist -->
             <div class="grid grid-cols-2 gap-2">
               ${INSPECTION_CHECKLIST.map(item => `
-                <div class="flex items-center gap-2 text-sm ${checklist[item.id] ? 'text-green-600' : 'text-red-500'}">
+                <div class="flex items-center gap-2 text-sm ${checklist[item.id] ? 'text-success-600' : 'text-danger-500'}">
                   <i class="fas ${checklist[item.id] ? 'fa-check-circle' : 'fa-times-circle'}"></i>
                   ${escapeHtml(item.label)}
                 </div>
@@ -1828,9 +2098,9 @@
     const currentPhotos = state.inspectionReport.photos || [];
     
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 card-hover">
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100 hover:shadow-card-lg transition-all duration-200">
         <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-          <i class="fas fa-clipboard-check text-teal-500"></i> ${existingReport ? 'Editar' : 'Criar'} Relatório de Inspeção
+          <i class="fas fa-clipboard-check text-secondary-500"></i> ${existingReport ? 'Editar' : 'Criar'} Relatório de Inspeção
         </h2>
         
         <form data-action="saveInspectionReport" data-id="${neg.id}" class="space-y-5">
@@ -1840,7 +2110,7 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               ${INSPECTION_CHECKLIST.map(item => `
                 <label class="flex items-center gap-3 p-3 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100 transition">
-                  <input type="checkbox" name="checklist_${item.id}" ${state.inspectionReport.checklist[item.id] ? 'checked' : ''} class="w-5 h-5 rounded border-gray-300 text-teal-600 focus:ring-teal-500">
+                  <input type="checkbox" name="checklist_${item.id}" ${state.inspectionReport.checklist[item.id] ? 'checked' : ''} class="w-5 h-5 rounded border-gray-300 text-secondary-600 focus:ring-secondary-500">
                   <span class="text-sm text-gray-700">${escapeHtml(item.label)}</span>
                 </label>
               `).join('')}
@@ -1854,11 +2124,11 @@
               ${currentPhotos.map((photo, idx) => `
                 <div class="relative group">
                   <img src="${photo.preview || resolvePhotoUrl(photo)}" alt="Foto ${idx + 1}" class="w-full h-20 object-cover rounded-lg border border-gray-200">
-                  <button type="button" class="absolute top-1 right-1 w-5 h-5 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition" data-action="removeInspectionPhoto" data-index="${idx}">✕</button>
+                  <button type="button" class="absolute top-1 right-1 w-5 h-5 bg-danger-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition" data-action="removeInspectionPhoto" data-index="${idx}">✕</button>
                 </div>
               `).join('')}
               ${currentPhotos.length < 3 ? `
-                <label class="w-full h-20 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-teal-400 hover:bg-teal-50 transition">
+                <label class="w-full h-20 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-secondary-400 hover:bg-secondary-50 transition">
                   <i class="fas fa-camera text-gray-400"></i>
                   <span class="text-xs text-gray-400">Adicionar</span>
                   <input type="file" accept="image/*" class="hidden" data-action="addInspectionPhoto">
@@ -1870,14 +2140,14 @@
           <!-- Observações -->
           <label class="flex flex-col gap-1">
             <span class="text-sm text-gray-700 font-medium">Observações do inspetor</span>
-            <textarea name="inspection_notes" rows="3" placeholder="Descreva o estado do produto, problemas encontrados, etc." class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent resize-none">${escapeHtml(state.inspectionReport.notes || '')}</textarea>
+            <textarea name="inspection_notes" rows="3" placeholder="Descreva o estado do produto, problemas encontrados, etc." class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all resize-none">${escapeHtml(state.inspectionReport.notes || '')}</textarea>
           </label>
           
           <div class="flex gap-3">
             ${existingReport ? `
               <button type="button" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-medium transition" data-action="cancelEditInspectionReport">Cancelar</button>
             ` : ''}
-            <button type="submit" class="flex-1 px-4 py-2 bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-600 hover:to-cyan-600 rounded-lg text-white font-medium transition shadow-md">
+            <button type="submit" class="flex-1 px-4 py-2 bg-gradient-to-r from-secondary-500 to-secondary-600 hover:from-secondary-600 hover:to-secondary-700 rounded-lg text-white font-medium transition shadow-md">
               <i class="fas fa-save mr-2"></i>${existingReport ? 'Atualizar' : 'Salvar'} relatório
             </button>
           </div>
@@ -1892,7 +2162,7 @@
     const logs = neg.logs || state.negotiationLogs || [];
     
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 card-hover">
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100 hover:shadow-card-lg transition-all duration-200">
         <header class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-bold text-gray-800 flex items-center gap-2">
             <i class="fas fa-history text-gray-500"></i> Logs da Negociação
@@ -1918,16 +2188,16 @@
         </div>
         
         <!-- Formulário de nova nota interna -->
-        <form data-action="submitInternalLog" data-id="${neg.id}" class="mt-4 pt-4 border-t border-gray-200">
+        <form data-action="submitInternalLog" data-id="${neg.id}" class="mt-4 pt-4 border-t border-gray-100">
           <div class="flex gap-2">
-            <input type="text" name="log_message" placeholder="Adicionar nota interna..." class="flex-1 px-4 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm">
-            <select name="log_type" class="px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500">
+            <input type="text" name="log_message" placeholder="Adicionar nota interna..." class="flex-1 px-4 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all text-sm">
+            <select name="log_type" class="px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
               <option value="note">Nota</option>
               <option value="warning">Alerta</option>
               <option value="action">Ação</option>
               <option value="system">Sistema</option>
             </select>
-            <button type="submit" class="px-4 py-2 btn-gradient rounded-lg text-white text-sm font-medium">
+            <button type="submit" class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white text-sm font-medium transition">
               <i class="fas fa-plus"></i>
             </button>
           </div>
@@ -1938,22 +2208,22 @@
 
   function getLogBorderColor(type) {
     const colors = {
-      note: 'border-blue-400',
-      warning: 'border-amber-400',
-      action: 'border-green-400',
+      note: 'border-secondary-400',
+      warning: 'border-warning-400',
+      action: 'border-success-400',
       system: 'border-gray-400',
-      error: 'border-red-400'
+      error: 'border-danger-400'
     };
     return colors[type] || colors.note;
   }
 
   function getLogTextColor(type) {
     const colors = {
-      note: 'text-blue-600',
-      warning: 'text-amber-600',
-      action: 'text-green-600',
+      note: 'text-secondary-600',
+      warning: 'text-warning-600',
+      action: 'text-success-600',
       system: 'text-gray-600',
-      error: 'text-red-600'
+      error: 'text-danger-600'
     };
     return colors[type] || colors.note;
   }
@@ -1974,26 +2244,26 @@
 
     if (isBuyer && neg.status === 'approved' && !neg.buyer_confirmed_at) {
       sections.push(`
-        <section class="pt-4 border-t border-gray-200 first:border-t-0 first:pt-0">
+        <section class="pt-4 border-t border-gray-100 first:border-t-0 first:pt-0">
           <h3 class="text-sm font-medium text-gray-700 mb-2">Confirmação de recebimento</h3>
           <p class="text-gray-500 text-sm mb-3">Ao confirmar, a negociação avança para etapa final.</p>
-          <button class="px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 rounded-lg text-white font-medium transition shadow-md" data-action="buyerConfirmDelivery" data-id="${neg.id}"><i class="fas fa-check mr-2"></i>Confirmar recebimento</button>
+          <button class="px-4 py-2 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-white font-medium transition shadow-md" data-action="buyerConfirmDelivery" data-id="${neg.id}"><i class="fas fa-check mr-2"></i>Confirmar recebimento</button>
         </section>
       `);
 
       sections.push(`
-        <section class="pt-4 border-t border-gray-200">
+        <section class="pt-4 border-t border-gray-100">
           <h3 class="text-sm font-medium text-gray-700 mb-3">Avaliação da experiência</h3>
           <form data-action="submitBuyerFeedback" data-id="${neg.id}" class="space-y-4">
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-600 font-medium">Nota (1 a 10)</span>
-              <input type="number" name="buyer_rating" min="1" max="10" value="${neg.buyer_rating ?? 10}" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent w-24">
-            </label>
-            <label class="flex flex-col gap-1">
-              <span class="text-sm text-gray-600 font-medium">Comentário (opcional)</span>
-              <textarea name="buyer_rating_comment" rows="3" maxlength="500" placeholder="Conte como foi sua experiência" class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"></textarea>
-            </label>
-            <button type="submit" class="px-4 py-2 btn-gradient rounded-lg text-white font-medium"><i class="fas fa-paper-plane mr-2"></i>Enviar feedback</button>
+            <div>
+              <label class="block text-sm text-gray-600 font-medium mb-2">Nota (1 a 10)</label>
+              <input type="number" name="buyer_rating" min="1" max="10" value="${neg.buyer_rating ?? 10}" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all w-24">
+            </div>
+            <div>
+              <label class="block text-sm text-gray-600 font-medium mb-2">Comentário (opcional)</label>
+              <textarea name="buyer_rating_comment" rows="3" maxlength="500" placeholder="Conte como foi sua experiência" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none"></textarea>
+            </div>
+            <button type="submit" class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium transition"><i class="fas fa-paper-plane mr-2"></i>Enviar feedback</button>
           </form>
         </section>
       `);
@@ -2002,8 +2272,8 @@
     if (!sections.length) return '';
 
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 card-hover">
-        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-user-check text-cyan-500"></i> Ações do participante</h2>
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-user-check text-secondary-500"></i> Ações do participante</h2>
         <div class="space-y-4">
           ${sections.join('')}
         </div>
@@ -2015,19 +2285,27 @@
     const photos = Array.isArray(neg.intermediary_photos) ? neg.intermediary_photos : [];
     const productPhotos = Array.isArray(neg.product_photos || neg.photos) ? (neg.product_photos || neg.photos) : [];
     const report = neg.intermediary_damage_report;
+    const canPurgeImages = isAdmin() && neg.status === 'delivered' && (photos.length || productPhotos.length);
     
     if (!photos.length && !productPhotos.length && !report) return '';
     
     return `
-      <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 card-hover">
-        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-images text-pink-500"></i> Fotos e Relatórios</h2>
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <div class="flex items-start justify-between gap-3 mb-4">
+          <h2 class="text-lg font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-images text-danger-400"></i> Fotos e Relatórios</h2>
+          ${canPurgeImages ? `
+            <button class="px-3 py-2 bg-danger-50 hover:bg-danger-100 border border-danger-200 rounded-lg text-danger-700 text-sm font-medium transition" data-action="purgeNegotiationImages" data-id="${neg.id}">
+              <i class="fas fa-trash-alt mr-2"></i>Apagar imagens
+            </button>
+          ` : ''}
+        </div>
         
         ${productPhotos.length ? `
           <section class="mb-6">
             <h3 class="text-sm font-medium text-gray-700 mb-3">Fotos do Produto</h3>
             <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
               ${productPhotos.map((url, index) => `
-                <button class="aspect-square rounded-xl overflow-hidden bg-gray-100 hover:ring-2 hover:ring-purple-500 transition shadow-md" data-action="openGallery" data-id="${neg.id}" data-index="${index}" data-type="product">
+                <button class="aspect-square rounded-xl overflow-hidden bg-gray-100 hover:ring-2 hover:ring-primary-500 transition shadow-md" data-action="openGallery" data-id="${neg.id}" data-index="${index}" data-type="product">
                   <img src="${escapeAttr(resolvePhotoUrl(url))}" alt="Foto do produto ${index + 1}" class="w-full h-full object-cover">
                 </button>
               `).join('')}
@@ -2047,7 +2325,7 @@
             <h3 class="text-sm font-medium text-gray-700 mb-3">Fotos da Inspeção</h3>
             <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
               ${photos.map((url, index) => `
-                <button class="aspect-square rounded-xl overflow-hidden bg-gray-100 hover:ring-2 hover:ring-purple-500 transition shadow-md" data-action="openGallery" data-id="${neg.id}" data-index="${index}">
+                <button class="aspect-square rounded-xl overflow-hidden bg-gray-100 hover:ring-2 hover:ring-primary-500 transition shadow-md" data-action="openGallery" data-id="${neg.id}" data-index="${index}">
                   <img src="${escapeAttr(resolvePhotoUrl(url))}" alt="Foto ${index + 1}" class="w-full h-full object-cover">
                 </button>
               `).join('')}
@@ -2063,12 +2341,12 @@
       <section class="space-y-6">
         <header class="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 class="text-3xl font-bold text-gray-800">Painel administrativo</h1>
+            <h1 class="text-3xl font-bold text-gray-900">Painel administrativo</h1>
             <p class="text-gray-500">Visão completa de negociações e usuários.</p>
           </div>
           <div class="flex gap-3">
-            <button class="px-4 py-2 bg-white border border-gray-200 hover:border-purple-400 rounded-lg text-gray-700 font-medium transition shadow-sm flex items-center gap-2" data-action="adminRefresh"><i class="fas fa-sync-alt"></i> Atualizar</button>
-            <button class="px-4 py-2 btn-gradient rounded-lg text-white font-medium flex items-center gap-2" data-action="openPendingModal"><i class="fas fa-bell"></i> Pendências (${state.pendingCount})</button>
+            <button class="px-4 py-2 bg-white border border-gray-200 hover:border-primary-400 rounded-lg text-gray-700 font-medium transition shadow-sm flex items-center gap-2" data-action="adminRefresh"><i class="fas fa-sync-alt"></i> Atualizar</button>
+            <button class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium flex items-center gap-2 transition" data-action="openPendingModal"><i class="fas fa-bell"></i> Pendências (${state.pendingCount})</button>
           </div>
         </header>
         ${renderAdminTabs()}
@@ -2084,9 +2362,9 @@
       { key: 'users', label: 'Usuários', icon: 'fa-users' }
     ];
     return `
-      <nav class="flex gap-2 bg-white rounded-xl p-2 shadow-md">
+      <nav class="flex gap-2 bg-white rounded-xl p-2 shadow-card">
         ${tabs.map((tab) => `
-          <button class="flex-1 px-4 py-3 rounded-lg text-sm font-medium transition flex items-center justify-center gap-2 ${state.adminTab === tab.key ? 'btn-gradient text-white' : 'text-gray-600 hover:text-purple-600 hover:bg-purple-50'}" data-action="adminSelectTab" data-tab="${tab.key}">
+          <button class="flex-1 px-4 py-3 rounded-lg text-sm font-medium transition flex items-center justify-center gap-2 ${state.adminTab === tab.key ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white' : 'text-gray-600 hover:text-primary-600 hover:bg-primary-50'}" data-action="adminSelectTab" data-tab="${tab.key}">
             <i class="fas ${tab.icon}"></i> ${tab.label}
           </button>
         `).join('')}
@@ -2119,16 +2397,16 @@
     `).join('');
     return `
       <section class="space-y-6">
-        <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100">
-          <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-chart-bar text-purple-500"></i> Resumo geral</h2>
+        <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+          <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-chart-bar text-primary-500"></i> Resumo geral</h2>
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-6">
-            ${renderSummaryCard('Negociações', overview.total, 'fa-box', 'from-purple-500 to-indigo-600', 'Total de registros')}
-            ${renderSummaryCard('Pendentes', overview.awaiting, 'fa-hourglass-half', 'from-amber-500 to-orange-500', 'Necessitam análise')}
-            ${renderSummaryCard('Usuários', state.adminUsers.length, 'fa-users', 'from-cyan-500 to-blue-500', 'Usuários registrados')}
+            ${renderSummaryCard('Negociações', overview.total, 'fa-box', 'from-primary-500 to-primary-600', 'Total de registros')}
+            ${renderSummaryCard('Pendentes', overview.awaiting, 'fa-hourglass-half', 'from-warning-500 to-orange-500', 'Necessitam análise')}
+            ${renderSummaryCard('Usuários', state.adminUsers.length, 'fa-users', 'from-secondary-500 to-blue-500', 'Usuários registrados')}
           </div>
         </article>
-        <article class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100">
-          <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-chart-pie text-blue-500"></i> Distribuição por status</h2>
+        <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+          <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-chart-pie text-secondary-500"></i> Distribuição por status</h2>
           <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             ${statusCards}
           </div>
@@ -2146,14 +2424,14 @@
             <i class="fas fa-inbox text-white text-2xl"></i>
           </div>
           <p class="mb-4 text-gray-500">Ainda não carregamos negociações administrativas.</p>
-          <button class="px-6 py-3 bg-white border border-gray-200 hover:border-purple-400 rounded-lg text-gray-700 font-medium transition shadow-sm" data-action="adminRefresh">Recarregar</button>
+          <button class="px-6 py-3 bg-white border border-gray-200 hover:border-primary-400 rounded-lg text-gray-700 font-medium transition shadow-sm" data-action="adminRefresh">Recarregar</button>
         </div>
       `;
     }
     const rows = list.map((neg) => {
       const canApprove = neg.status === 'awaiting_admin_approval';
       return `
-      <div class="grid grid-cols-7 gap-4 px-6 py-4 border-t border-gray-100 items-center hover:bg-purple-50 transition">
+      <div class="grid grid-cols-7 gap-4 px-6 py-4 border-t border-gray-100 items-center hover:bg-primary-50 transition">
         <span class="text-gray-500 font-medium">#${neg.id}</span>
         <span class="truncate text-gray-800 font-medium">${escapeHtml(neg.product_title || neg.product_name || neg.title || 'Produto')}</span>
         <span class="truncate text-gray-600">${escapeHtml(neg.buyer?.name || '—')}</span>
@@ -2161,18 +2439,18 @@
         <span>${renderStatusBadge(neg.status)}</span>
         <span class="text-gray-500 text-sm">${formatDateTime(neg.updated_at)}</span>
         <span class="flex flex-wrap gap-1">
-          <button class="px-3 py-1 btn-gradient rounded text-xs text-white font-medium" data-action="adminOpenNegotiation" data-id="${neg.id}">Detalhes</button>
+          <button class="px-3 py-1 bg-gradient-to-r from-primary-600 to-secondary-500 rounded text-xs text-white font-medium" data-action="adminOpenNegotiation" data-id="${neg.id}">Detalhes</button>
           ${canApprove ? `
-            <button class="px-3 py-1 bg-gradient-to-r from-green-500 to-emerald-500 rounded text-xs text-white font-medium" data-action="adminApproveNegotiation" data-id="${neg.id}">Aprovar</button>
-            <button class="px-3 py-1 bg-gradient-to-r from-red-500 to-pink-500 rounded text-xs text-white font-medium" data-action="adminRejectNegotiation" data-id="${neg.id}">Reprovar</button>
+            <button class="px-3 py-1 bg-gradient-to-r from-success-500 to-success-600 rounded text-xs text-white font-medium" data-action="adminApproveNegotiation" data-id="${neg.id}">Aprovar</button>
+            <button class="px-3 py-1 bg-gradient-to-r from-danger-500 to-danger-600 rounded text-xs text-white font-medium" data-action="adminRejectNegotiation" data-id="${neg.id}">Reprovar</button>
           ` : ''}
         </span>
       </div>
     `;
     }).join('');
     return `
-      <section class="bg-white rounded-2xl shadow-lg overflow-hidden border border-gray-100">
-        <div class="grid grid-cols-7 gap-4 px-6 py-4 bg-gradient-to-r from-gray-50 to-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-200">
+      <section class="bg-white rounded-2xl shadow-card overflow-hidden border border-gray-100">
+        <div class="grid grid-cols-7 gap-4 px-6 py-4 bg-gradient-to-r from-gray-50 to-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100">
           <span>ID</span>
           <span>Produto</span>
           <span>Comprador</span>
@@ -2189,26 +2467,29 @@
   function renderAdminUsers() {
     const users = Array.isArray(state.adminUsers) ? state.adminUsers : [];
     return `
-      <section class="bg-white rounded-2xl p-6 shadow-lg border border-gray-100">
-        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-user-plus text-green-500"></i> Gerenciar Usuários</h2>
+      <section class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-user-plus text-success-500"></i> Gerenciar Usuários</h2>
         <form class="flex flex-wrap gap-3 mb-6" data-action="adminCreateInvitation">
-          <input type="text" name="name" placeholder="Nome completo" required class="flex-1 min-w-[160px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          <input type="email" name="email" placeholder="email@exemplo.com" required class="flex-1 min-w-[180px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
-          <select name="role" class="min-w-[140px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+          <input type="text" name="name" placeholder="Nome completo" required class="flex-1 min-w-[160px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          <input type="email" name="email" placeholder="email@exemplo.com" required class="flex-1 min-w-[180px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          <select name="role" class="min-w-[140px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
             <option value="buyer">Comprador</option>
             <option value="seller">Vendedor</option>
             <option value="admin">Administrador</option>
           </select>
-          <button type="submit" class="px-6 py-3 btn-gradient rounded-lg text-white font-bold"><i class="fas fa-plus mr-2"></i>Criar convite</button>
+          <button type="submit" class="px-6 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition"><i class="fas fa-plus mr-2"></i>Criar convite</button>
         </form>
         <div class="space-y-2 mt-4">
           ${users.length ? users.map((user) => `
             <div class="grid grid-cols-5 gap-4 items-center py-4 px-4 bg-gradient-to-r from-gray-50 to-white rounded-xl border border-gray-100 hover:shadow-md transition">
               <span class="text-gray-800 font-medium">${escapeHtml(user.name || user.email || 'Usuário')}</span>
-              <span class="text-gray-500">${escapeHtml(user.email || '—')}</span>
-              <span class="px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium inline-block w-fit">${ROLE_LABELS[user.role] || user.role || '—'}</span>
+              <span>
+                <div class="text-gray-500">${escapeHtml(user.email || '—')}</div>
+                <div class="text-gray-400 text-xs">${escapeHtml(user.address_city || '—')} / ${escapeHtml(user.address_state || '—')}</div>
+              </span>
+              <span class="px-2 py-1 bg-primary-100 text-primary-700 rounded-full text-xs font-medium inline-block w-fit">${ROLE_LABELS[user.role] || user.role || '—'}</span>
               <span class="text-gray-400 text-sm">${formatDate(user.created_at)}</span>
-              <button class="px-3 py-2 bg-gradient-to-r from-red-500 to-pink-500 rounded-lg text-sm text-white font-medium transition" data-action="adminDeleteUser" data-id="${user.id}"><i class="fas fa-trash mr-1"></i>Remover</button>
+              <button class="px-3 py-2 bg-gradient-to-r from-danger-500 to-danger-600 rounded-lg text-sm text-white font-medium transition" data-action="adminDeleteUser" data-id="${user.id}"><i class="fas fa-trash mr-1"></i>Remover</button>
             </div>
           `).join('') : '<p class="text-gray-400 text-center py-4">Sem usuários cadastrados.</p>'}
         </div>
@@ -2224,19 +2505,20 @@
       : '<p class="text-slate-400 text-center py-8">Nenhuma negociação pendente.</p>';
 
     return `
-      <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-        <div class="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl">
-          <header class="flex items-start justify-between p-6 border-b border-gray-200">
+      <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-card-xl overflow-hidden animate-slide-up">
+          <div class="h-1 bg-gradient-to-r from-primary-500 to-secondary-500"></div>
+          <header class="flex items-start justify-between p-6 border-b border-gray-100">
             <div>
-              <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-bell text-purple-500"></i> Pendências</h2>
+              <h2 class="text-xl font-bold text-gray-900 flex items-center gap-2"><i class="fas fa-bell text-primary-500"></i> Pendências</h2>
               <p class="text-gray-500 text-sm">Negociações aguardando ação da intermediadora.</p>
             </div>
             <button class="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition" data-action="closePendingModal">✕</button>
           </header>
           <section class="flex-1 overflow-y-auto p-6">
             <label class="flex items-center gap-3 mb-4">
-              <span class="text-gray-600 text-sm font-medium">Filtrar por mês</span>
-              <select data-action="selectPendingFilter" class="px-4 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+              <span class="text-gray-700 text-sm font-medium">Filtrar por mês</span>
+              <select data-action="selectPendingFilter" class="px-4 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
                 ${options.map((opt) => `<option value="${opt.value}" ${opt.value === state.pendingFilter ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`).join('')}
               </select>
             </label>
@@ -2254,9 +2536,9 @@
     const seller = neg?.seller?.name || '—';
     const product = neg?.product_title || neg?.product_name || neg?.title || 'Produto';
     return `
-      <article class="bg-gradient-to-r from-purple-50 to-indigo-50 rounded-xl p-4 border border-purple-200 card-hover">
+      <article class="bg-gradient-to-r from-primary-50 to-secondary-50 rounded-xl p-4 border border-primary-200 hover:shadow-card transition-all duration-200">
         <header class="flex items-center justify-between mb-3">
-          <span class="px-2 py-0.5 gradient-bg text-white text-xs rounded-full font-medium">#${neg.id}</span>
+          <span class="px-2 py-0.5 bg-gradient-to-r from-primary-600 to-secondary-500 text-white text-xs rounded-full font-medium">#${neg.id}</span>
           <span class="text-gray-500 text-sm">${formatRelativeTime(neg.created_at)}</span>
         </header>
         <div class="space-y-2 mb-4">
@@ -2268,9 +2550,9 @@
           <div>Status: ${renderStatusBadge(neg.status)}</div>
         </div>
         <footer class="flex flex-wrap gap-2">
-          <button class="px-3 py-2 btn-gradient rounded-lg text-sm text-white font-medium" data-action="adminOpenNegotiation" data-id="${neg.id}"><i class="fas fa-eye mr-1"></i>Ver detalhes</button>
-          <button class="px-3 py-2 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg text-sm text-white font-medium" data-action="adminApproveNegotiation" data-id="${neg.id}"><i class="fas fa-check mr-1"></i>Aprovar</button>
-          <button class="px-3 py-2 bg-gradient-to-r from-red-500 to-pink-500 rounded-lg text-sm text-white font-medium" data-action="adminRejectNegotiation" data-id="${neg.id}"><i class="fas fa-times mr-1"></i>Reprovar</button>
+          <button class="px-3 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-sm text-white font-medium transition-all" data-action="adminOpenNegotiation" data-id="${neg.id}"><i class="fas fa-eye mr-1"></i>Ver detalhes</button>
+          <button class="px-3 py-2 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-sm text-white font-medium transition-all" data-action="adminApproveNegotiation" data-id="${neg.id}"><i class="fas fa-check mr-1"></i>Aprovar</button>
+          <button class="px-3 py-2 bg-gradient-to-r from-danger-500 to-danger-600 hover:from-danger-600 hover:to-danger-700 rounded-lg text-sm text-white font-medium transition-all" data-action="adminRejectNegotiation" data-id="${neg.id}"><i class="fas fa-times mr-1"></i>Reprovar</button>
         </footer>
       </article>
     `;
@@ -2279,11 +2561,12 @@
   function renderTimelineModal() {
     const timeline = Array.isArray(state.timelineData) ? state.timelineData : [];
     return `
-      <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-        <div class="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
-          <header class="flex items-start justify-between p-6 border-b border-gray-200">
+      <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-card-xl overflow-hidden animate-slide-up">
+          <div class="h-1 bg-gradient-to-r from-secondary-500 to-primary-500"></div>
+          <header class="flex items-start justify-between p-6 border-b border-gray-100">
             <div>
-              <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-stream text-blue-500"></i> Linha do tempo</h2>
+              <h2 class="text-xl font-bold text-gray-900 flex items-center gap-2"><i class="fas fa-stream text-secondary-500"></i> Linha do tempo</h2>
               <p class="text-gray-500 text-sm mt-1">Acompanhamento dos eventos da negociação.</p>
             </div>
             <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeTimeline">✕</button>
@@ -2299,7 +2582,7 @@
   function renderTimelineItem(item) {
     return `
       <div class="flex gap-4 relative">
-        <div class="w-3 h-3 rounded-full bg-purple-500 mt-1.5 shrink-0 ring-4 ring-purple-100"></div>
+        <div class="w-3 h-3 rounded-full bg-gradient-to-br from-primary-500 to-secondary-500 mt-1.5 shrink-0 ring-4 ring-primary-100"></div>
         <div class="flex-1 pb-4 border-l-2 border-gray-200 pl-4 -ml-1.5">
           <strong class="text-gray-800 block">${escapeHtml(item.label)}</strong>
           <span class="text-gray-500 text-sm">${item.date ? formatDateTime(item.date) : 'Pendente'}</span>
@@ -2316,22 +2599,22 @@
     const current = photos[gallery.index] || null;
     return `
       <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-        <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden">
-          <div class="h-1 gradient-bg"></div>
-          <header class="flex items-start justify-between p-4 border-b border-gray-200">
+        <div class="bg-white rounded-2xl shadow-card-xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-slide-up">
+          <div class="h-1 bg-gradient-to-r from-primary-600 to-secondary-500"></div>
+          <header class="flex items-start justify-between p-4 border-b border-gray-100">
             <div>
-              <h2 class="text-xl font-bold text-gray-800">Fotos da inspeção</h2>
+              <h2 class="text-xl font-bold text-gray-900">Fotos da inspeção</h2>
               <p class="text-gray-500 text-sm">${gallery.index + 1} de ${photos.length}</p>
             </div>
             <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeGallery">✕</button>
           </header>
           <div class="flex-1 flex items-center justify-center p-4 min-h-[300px] bg-gray-50">
-            ${current ? `<img src="${escapeAttr(resolvePhotoUrl(current))}" alt="Foto da inspeção" class="max-w-full max-h-[60vh] object-contain rounded-lg shadow-md">` : '<p class="text-gray-500">Foto indisponível.</p>'}
+            ${current ? `<img src="${escapeAttr(resolvePhotoUrl(current))}" alt="Foto da inspeção" class="max-w-full max-h-[60vh] object-contain rounded-lg shadow-lg">` : '<p class="text-gray-500">Foto indisponível.</p>'}
           </div>
-          <footer class="flex items-center justify-center gap-3 p-4 border-t border-gray-200 bg-white">
+          <footer class="flex items-center justify-center gap-3 p-4 border-t border-gray-100 bg-white">
             <button class="px-4 py-2 bg-gray-200 hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-gray-700 rounded-lg transition-colors" data-action="galleryPrev" ${gallery.index === 0 ? 'disabled' : ''}>Anterior</button>
             <button class="px-4 py-2 bg-gray-200 hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-gray-700 rounded-lg transition-colors" data-action="galleryNext" ${gallery.index >= photos.length - 1 ? 'disabled' : ''}>Próxima</button>
-            ${current ? `<a class="px-4 py-2 gradient-bg hover:opacity-90 text-white rounded-lg transition-colors" href="${escapeAttr(resolvePhotoUrl(current))}" target="_blank" rel="noopener">Abrir em nova guia</a>` : ''}
+            ${current ? `<a class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white rounded-lg transition-colors" href="${escapeAttr(resolvePhotoUrl(current))}" target="_blank" rel="noopener">Abrir em nova guia</a>` : ''}
           </footer>
         </div>
       </div>
@@ -2340,23 +2623,23 @@
 
   function renderFooter() {
     return `
-      <footer class="bg-gray-900 text-white py-10">
+      <footer class="bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white py-12">
         <div class="container mx-auto px-6">
           <!-- Grid de 3 colunas -->
           <div class="grid grid-cols-1 md:grid-cols-3 gap-8 lg:gap-12">
             <!-- Coluna 1: Logo e descrição -->
             <div class="space-y-4">
               <div class="flex items-center gap-3">
-                <div class="w-10 h-10 gradient-bg rounded-lg flex items-center justify-center flex-shrink-0">
+                <div class="w-10 h-10 bg-gradient-to-br from-primary-500 to-secondary-500 rounded-xl flex items-center justify-center flex-shrink-0 shadow-lg">
                   <i class="fas fa-handshake text-white text-lg"></i>
                 </div>
-                <span class="text-xl font-bold">Intermediação<span class="gradient-text">Pro</span></span>
+                <span class="text-xl font-bold">Intermediação<span class="text-transparent bg-clip-text bg-gradient-to-r from-primary-400 to-secondary-400">Pro</span></span>
               </div>
               <p class="text-gray-400 text-sm leading-relaxed">Conectando pessoas e oportunidades com segurança e eficiência.</p>
               <div class="flex gap-3 pt-2">
-                <a href="#" class="w-9 h-9 gradient-bg rounded-full flex items-center justify-center hover:opacity-80 transition"><i class="fab fa-facebook-f text-sm"></i></a>
-                <a href="#" class="w-9 h-9 bg-gradient-to-r from-blue-400 to-cyan-400 rounded-full flex items-center justify-center hover:opacity-80 transition"><i class="fab fa-twitter text-sm"></i></a>
-                <a href="#" class="w-9 h-9 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center hover:opacity-80 transition"><i class="fab fa-instagram text-sm"></i></a>
+                <a href="#" class="w-9 h-9 bg-gradient-to-br from-primary-500 to-secondary-500 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-lg"><i class="fab fa-facebook-f text-sm"></i></a>
+                <a href="#" class="w-9 h-9 bg-gradient-to-br from-secondary-400 to-primary-400 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-lg"><i class="fab fa-twitter text-sm"></i></a>
+                <a href="#" class="w-9 h-9 bg-gradient-to-br from-danger-400 to-warning-400 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-lg"><i class="fab fa-instagram text-sm"></i></a>
               </div>
             </div>
 
@@ -2365,17 +2648,17 @@
               <div>
                 <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-4">Navegação</h4>
                 <ul class="space-y-2">
-                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">Início</a></li>
-                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">Serviços</a></li>
-                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">Como Funciona</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">Início</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">Serviços</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">Como Funciona</a></li>
                 </ul>
               </div>
               <div>
                 <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-4">Legal</h4>
                 <ul class="space-y-2">
-                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">Termos de Uso</a></li>
-                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">Privacidade</a></li>
-                  <li><a href="#" class="text-gray-400 hover:text-white transition text-sm">FAQ</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">Termos de Uso</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">Privacidade</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">FAQ</a></li>
                 </ul>
               </div>
             </div>
@@ -2385,20 +2668,20 @@
               <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-4">Contato</h4>
               <ul class="space-y-3">
                 <li class="flex items-center gap-3 text-gray-400 text-sm">
-                  <div class="w-8 h-8 rounded-lg bg-gray-800 flex items-center justify-center flex-shrink-0">
-                    <i class="fas fa-envelope text-purple-400 text-xs"></i>
+                  <div class="w-8 h-8 rounded-lg bg-gray-700/50 flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-envelope text-primary-400 text-xs"></i>
                   </div>
                   <span>contato@intermediacaopro.com</span>
                 </li>
                 <li class="flex items-center gap-3 text-gray-400 text-sm">
-                  <div class="w-8 h-8 rounded-lg bg-gray-800 flex items-center justify-center flex-shrink-0">
-                    <i class="fas fa-phone text-purple-400 text-xs"></i>
+                  <div class="w-8 h-8 rounded-lg bg-gray-700/50 flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-phone text-primary-400 text-xs"></i>
                   </div>
                   <span>(11) 99999-9999</span>
                 </li>
                 <li class="flex items-center gap-3 text-gray-400 text-sm">
-                  <div class="w-8 h-8 rounded-lg bg-gray-800 flex items-center justify-center flex-shrink-0">
-                    <i class="fas fa-map-marker-alt text-purple-400 text-xs"></i>
+                  <div class="w-8 h-8 rounded-lg bg-gray-700/50 flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-map-marker-alt text-primary-400 text-xs"></i>
                   </div>
                   <span>São Paulo, SP</span>
                 </li>
@@ -2407,9 +2690,9 @@
           </div>
 
           <!-- Linha divisória e copyright -->
-          <div class="border-t border-gray-800 mt-8 pt-6 flex flex-col md:flex-row items-center justify-between gap-4">
+          <div class="border-t border-gray-700/50 mt-10 pt-6 flex flex-col md:flex-row items-center justify-between gap-4">
             <p class="text-gray-500 text-sm">© ${new Date().getFullYear()} IntermediaçãoPro. Todos os direitos reservados.</p>
-            <p class="text-gray-600 text-xs">Feito com <i class="fas fa-heart text-red-500"></i> no Brasil</p>
+            <p class="text-gray-600 text-xs">Feito com <i class="fas fa-heart text-danger-400"></i> no Brasil</p>
           </div>
         </div>
       </footer>
@@ -2434,16 +2717,21 @@
     const toast = state.toast;
     if (!toast || !toast.message) return '';
     const typeColors = {
-      success: 'bg-green-600 text-white',
-      error: 'bg-red-600 text-white',
-      warning: 'bg-yellow-500 text-black',
-      info: 'bg-blue-600 text-white'
+      success: 'bg-success-600 text-white',
+      error: 'bg-danger-600 text-white',
+      warning: 'bg-warning-500 text-gray-900',
+      info: 'bg-secondary-600 text-white'
     };
     const colorClass = typeColors[toast.type] || typeColors.info;
-    return `<div class="fixed bottom-6 right-6 px-6 py-3 rounded-xl shadow-xl ${colorClass} z-50 animate-pulse">${escapeHtml(toast.message)}</div>`;
+    return `<div class="fixed bottom-6 right-6 px-6 py-3 rounded-xl shadow-card-lg ${colorClass} z-50 animate-slide-up">${escapeHtml(toast.message)}</div>`;
   }
 
   function attachGlobalHandlers() {
+    if (window.__intermediacaoGlobalHandlersAttached) {
+      return;
+    }
+    window.__intermediacaoGlobalHandlersAttached = true;
+
     document.addEventListener('submit', handleSubmit, true);
     document.addEventListener('click', handleClick);
     document.addEventListener('input', handleInput);
@@ -2452,11 +2740,17 @@
   function handleSubmit(event) {
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) return;
+
+    // SPA: nunca permitir submit nativo (evita "recarregar" a pagina, inclusive ao apertar Enter)
+    event.preventDefault();
+    event.stopPropagation();
+
     const actionName = form.dataset.action;
-    if (!actionName) return;
+    if (!actionName) {
+      return;
+    }
     const handler = actions[actionName];
     if (typeof handler !== 'function') return;
-    event.preventDefault();
     const payload = extractFormPayload(form);
     Promise.resolve(handler({ form, ...payload })).catch((error) => handleError(error));
   }
@@ -2824,6 +3118,57 @@
     return value ? String(value).replace(/\D/g, '') : '';
   }
 
+  function findCaretPositionByDigitCount(formattedValue, digitsBeforeCaret) {
+    const target = Math.max(0, Number(digitsBeforeCaret) || 0);
+    if (!target) return 0;
+    let count = 0;
+    for (let i = 0; i < formattedValue.length; i++) {
+      if (/\d/.test(formattedValue[i])) {
+        count += 1;
+        if (count >= target) {
+          return i + 1;
+        }
+      }
+    }
+    return formattedValue.length;
+  }
+
+  function applyFormattedValuePreservingCaret(element, formattedValue, digitsBeforeCaretCount) {
+    if (!(element instanceof HTMLInputElement)) return;
+    if (element.value === formattedValue) return;
+    element.value = formattedValue;
+    try {
+      const caret = findCaretPositionByDigitCount(formattedValue, digitsBeforeCaretCount);
+      element.setSelectionRange(caret, caret);
+    } catch {
+      // ignore (some inputs/browsers may block selection)
+    }
+  }
+
+  function formatPhoneDigits(digits) {
+    const cleaned = String(digits || '').replace(/\D/g, '').slice(0, 11);
+    if (!cleaned) return '';
+    if (cleaned.length >= 11) {
+      return `(${cleaned.slice(0, 2)}) ${cleaned.slice(2, 7)}-${cleaned.slice(7, 11)}`;
+    }
+    if (cleaned.length >= 7) {
+      return `(${cleaned.slice(0, 2)}) ${cleaned.slice(2, 6)}-${cleaned.slice(6)}`;
+    }
+    if (cleaned.length > 2) {
+      return `(${cleaned.slice(0, 2)}) ${cleaned.slice(2)}`;
+    }
+    return `(${cleaned}`;
+  }
+
+  function formatCepDigits(digits) {
+    const cleaned = String(digits || '').replace(/\D/g, '').slice(0, 8);
+    if (!cleaned) return '';
+    if (cleaned.length > 5) {
+      return `${cleaned.slice(0, 5)}-${cleaned.slice(5)}`;
+    }
+    return cleaned;
+  }
+
   function normalizeText(value) {
     if (!value) return '';
     return String(value)
@@ -2836,13 +3181,13 @@
     if (!entity) {
       return `<p class="text-xs text-gray-500 mt-3">${escapeHtml(emptyMessage)}</p>`;
     }
-    const street = entity.address || entity.street || '';
+    const street = entity.address_street || entity.address || entity.street || '';
     const number = entity.address_number || entity.number || '';
     const complement = entity.address_complement || entity.complement || '';
-    const district = entity.district || entity.neighborhood || '';
-    const city = entity.city || entity.city_name || '';
-    const stateValue = entity.state || entity.state_code || '';
-    const zip = entity.zip_code || entity.cep || entity.postal_code || '';
+    const district = entity.address_neighborhood || entity.district || entity.neighborhood || '';
+    const city = entity.address_city || entity.city || entity.city_name || '';
+    const stateValue = entity.address_state || entity.state || entity.state_code || '';
+    const zip = entity.address_zipcode || entity.zip_code || entity.cep || entity.postal_code || '';
     const lines = [];
     const streetLine = [street, number].filter(Boolean).join(', ');
     if (streetLine) {
@@ -3062,14 +3407,27 @@
       clearInterval(confirmationIntervalHandle);
       confirmationIntervalHandle = null;
     }
-    setState({ confirmationCooldownRemaining: seconds });
+
+    const initial = Math.max(0, Number(seconds) || 0);
+    // Renderiza uma vez (pra desabilitar o botão e montar a tela), e depois só atualiza o DOM.
+    setState({ confirmationCooldownRemaining: initial });
+    updateConfirmationCooldownUI(initial);
+
+    let remaining = initial;
     confirmationIntervalHandle = setInterval(() => {
-      if (state.confirmationCooldownRemaining <= 1) {
+      if (state.currentPage !== 'confirm-email') {
         clearInterval(confirmationIntervalHandle);
         confirmationIntervalHandle = null;
-        setState({ confirmationCooldownRemaining: 0 });
-      } else {
-        setState({ confirmationCooldownRemaining: state.confirmationCooldownRemaining - 1 });
+        return;
+      }
+
+      remaining = Math.max(0, remaining - 1);
+      state.confirmationCooldownRemaining = remaining;
+      updateConfirmationCooldownUI(remaining);
+
+      if (remaining <= 0) {
+        clearInterval(confirmationIntervalHandle);
+        confirmationIntervalHandle = null;
       }
     }, 1000);
   }
@@ -3254,29 +3612,25 @@
       if (!dataset || !dataset.page) return;
       navigate(dataset.page, dataset);
     },
-    formatPhoneInput({ element }) {
+    formatPhoneInput({ element, event }) {
       if (!(element instanceof HTMLInputElement)) return;
-      const digits = onlyDigits(element.value).slice(0, 11);
-      if (digits.length >= 11) {
-        element.value = `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7, 11)}`;
-      } else if (digits.length >= 7) {
-        element.value = `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
-      } else if (digits.length > 2) {
-        element.value = `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
-      } else if (digits.length) {
-        element.value = `(${digits}`;
-      } else {
-        element.value = '';
-      }
+      if (event && event.isComposing) return;
+      const raw = String(element.value || '');
+      const caret = typeof element.selectionStart === 'number' ? element.selectionStart : raw.length;
+      const digitsBeforeCaret = onlyDigits(raw.slice(0, caret)).length;
+      const digits = onlyDigits(raw).slice(0, 11);
+      const formatted = formatPhoneDigits(digits);
+      applyFormattedValuePreservingCaret(element, formatted, digitsBeforeCaret);
     },
-    formatCepInput({ element }) {
+    formatCepInput({ element, event }) {
       if (!(element instanceof HTMLInputElement)) return;
-      const digits = onlyDigits(element.value).slice(0, 8);
-      if (digits.length > 5) {
-        element.value = `${digits.slice(0, 5)}-${digits.slice(5)}`;
-      } else {
-        element.value = digits;
-      }
+      if (event && event.isComposing) return;
+      const raw = String(element.value || '');
+      const caret = typeof element.selectionStart === 'number' ? element.selectionStart : raw.length;
+      const digitsBeforeCaret = onlyDigits(raw.slice(0, caret)).length;
+      const digits = onlyDigits(raw).slice(0, 8);
+      const formatted = formatCepDigits(digits);
+      applyFormattedValuePreservingCaret(element, formatted, digitsBeforeCaret);
     },
     filterRegisterCity({ value }) {
       setState({ registerCityFilter: value || '' });
@@ -3319,14 +3673,13 @@
       const payload = {
         name: sanitize(values.name),
         email: sanitize(values.email),
-        phone: phoneDigits,
-        phone_formatted: sanitize(values.phone),
-        zip_code: zipDigits,
-        address: sanitize(values.address),
-        address_number: sanitize(values.address_number),
+        phone: phoneDigits || null,
+        zip_code: zipDigits || null,
+        address: sanitize(values.address) || null,
+        address_number: sanitize(values.address_number) || null,
         address_complement: sanitize(values.address_complement) || null,
-        district: sanitize(values.district),
-        city: sanitize(values.city),
+        district: sanitize(values.district) || null,
+        city: sanitize(values.city) || null,
         state: sanitize(values.state) || 'SP',
         password: values.password,
         password_confirmation: values.password_confirmation
@@ -3337,17 +3690,47 @@
           body: payload
         });
         const smsSent = Boolean(result?.data?.sms_sent ?? result?.sms_sent);
-        const successMessage = smsSent
-          ? 'Conta criada! Enviamos um SMS com o codigo de verificacao. Faca login para continuar.'
-          : 'Conta criada! Faca login para continuar.';
-        notify({ type: 'success', message: successMessage });
+        const verificationSent = Boolean(result?.data?.verification_email_sent ?? result?.verification_email_sent);
+        const baseMessage = verificationSent
+          ? 'Conta criada! Enviamos um código de confirmação para o seu e-mail.'
+          : 'Conta criada! Não conseguimos enviar o código, mas você pode solicitar o reenvio.';
+        const extraMessage = smsSent ? ' Também enviamos um SMS com o código de verificação.' : '';
+        notify({ type: 'success', message: `${baseMessage}${extraMessage}`.trim() });
         setState({
-          currentPage: 'login',
+          currentPage: 'confirm-email',
           confirmationEmail: values.email,
           registerCityFilter: '',
           registerSelectedCity: ''
         });
+        if (verificationSent) {
+          startConfirmationCooldown(120);
+        } else {
+          if (confirmationIntervalHandle) {
+            clearInterval(confirmationIntervalHandle);
+            confirmationIntervalHandle = null;
+          }
+          setState({ confirmationCooldownRemaining: 0 });
+        }
       }, 'Criando conta...');
+    },
+
+    async verifyEmailCode({ values }) {
+      const code = String(values.code || '').replace(/\D+/g, '').slice(0, 6);
+      if (!state.confirmationEmail) {
+        throw new Error('Informe o e-mail para confirmar.');
+      }
+      if (code.length !== 6) {
+        throw new Error('Informe o código de 6 dígitos.');
+      }
+
+      await withLoader(async () => {
+        const result = await apiCall('/email/verify-code', {
+          method: 'POST',
+          body: { email: state.confirmationEmail, code }
+        });
+        notify({ type: 'success', message: result.message || 'Email verificado com sucesso!' });
+        setState({ currentPage: 'login' });
+      }, 'Confirmando código...');
     },
     async forgotPassword({ values }) {
       await withLoader(async () => {
@@ -3377,17 +3760,28 @@
       }, 'Atualizando senha...');
     },
     async resendConfirmation() {
+      // Legacy handler - redirects to new one
+      await actions.resendEmailVerification();
+    },
+    async resendEmailVerification() {
       if (state.confirmationCooldownRemaining) return;
-      const email = state.confirmationEmail;
-      if (!email) {
-        notify({ type: 'error', message: 'Informe o e-mail primeiro.' });
-        return;
-      }
       await withLoader(async () => {
-        await apiCall('/email/resend', { method: 'POST', body: { email } });
-        notify({ type: 'success', message: 'E-mail reenviado.' });
-        startConfirmationCooldown(45);
-      }, 'Reenviando e-mail...');
+        let result;
+        if (state.token && state.user) {
+          result = await apiCall('/email/send-verification', { method: 'POST' });
+        } else if (state.confirmationEmail) {
+          result = await apiCall('/email/resend-link', {
+            method: 'POST',
+            body: { email: state.confirmationEmail }
+          });
+        } else {
+          throw new Error('Informe o e-mail para reenviar.');
+        }
+
+        notify({ type: 'success', message: result.message || 'Código enviado!' });
+        const retryAfter = Number(result?.retry_after) || 120;
+        startConfirmationCooldown(retryAfter);
+      }, 'Reenviando código...');
     },
     dashboardRefresh() {
       loadNegotiations({ force: true });
@@ -3409,19 +3803,50 @@
     openCreateNegotiation() {
       setState({ 
         showCreateNegotiationModal: true,
-        createNegForm: { buyerFound: null, buyerSearching: false, productPhotos: [], photoError: null }
+        showCreateTerms: false,
+        createNegForm: { 
+          buyerFound: null, 
+          buyerSearching: false, 
+          productPhotos: [], 
+          photoError: null,
+          title: '',
+          category: '',
+          description: '',
+          price: '',
+          buyerEmail: ''
+        }
       });
     },
     closeCreateNegotiation() {
       setState({ 
         showCreateNegotiationModal: false,
-        createNegForm: { buyerFound: null, buyerSearching: false, productPhotos: [], photoError: null }
+        showCreateTerms: false,
+        createNegForm: { 
+          buyerFound: null, 
+          buyerSearching: false, 
+          productPhotos: [], 
+          photoError: null,
+          title: '',
+          category: '',
+          description: '',
+          price: '',
+          buyerEmail: ''
+        }
       });
     },
+    updateNegFormField({ element, dataset }) {
+      const field = dataset?.field;
+      if (!field || !element) return;
+      const value = element.value ?? '';
+      const currentForm = state.createNegForm || {};
+      const nextForm = { ...currentForm, [field]: value };
+      if (field === 'buyerEmail') {
+        nextForm.buyerFound = null;
+      }
+      state.createNegForm = nextForm;
+    },
     async searchBuyer({ element }) {
-      const form = element?.closest('form');
-      const emailInput = form?.querySelector('input[name="buyer_email"]');
-      const email = emailInput?.value?.trim();
+      const email = state.createNegForm.buyerEmail?.trim() || '';
       if (!email || !email.includes('@')) {
         notify({ type: 'error', message: 'Informe um e-mail válido.' });
         return;
@@ -3437,12 +3862,6 @@
         }
       } catch (e) {
         setState({ createNegForm: { ...state.createNegForm, buyerSearching: false, buyerFound: false } });
-      }
-    },
-    searchBuyerOnBlur({ element }) {
-      const email = element?.value?.trim();
-      if (email && email.includes('@') && !state.createNegForm.buyerFound) {
-        actions.searchBuyer({ element });
       }
     },
     addProductPhotos({ element }) {
@@ -3505,6 +3924,11 @@
         notify({ type: 'error', message: 'Adicione pelo menos 1 foto do produto.' });
         return;
       }
+      if (!state.showCreateTerms) {
+        setState({ showCreateTerms: true });
+        notify({ type: 'info', message: 'Leia e aceite os termos antes de finalizar.' });
+        return;
+      }
       if (!values.terms_accepted) {
         notify({ type: 'error', message: 'Você deve aceitar os termos para continuar.' });
         return;
@@ -3533,6 +3957,7 @@
         notify({ type: 'success', message: 'Negociação criada com sucesso!' });
         setState({ 
           showCreateNegotiationModal: false,
+          showCreateTerms: false,
           createNegForm: { buyerFound: null, buyerSearching: false, productPhotos: [], photoError: null }
         });
         await loadNegotiations({ force: true });
@@ -3743,6 +4168,23 @@
         notify({ type: 'success', message: 'Usuário removido.' });
         await loadAdminSnapshot({ force: true });
       }, 'Removendo usuário...');
+    },
+
+    async purgeNegotiationImages({ dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      if (!confirm('Apagar todas as imagens deste pedido concluído? Esta ação não pode ser desfeita.')) return;
+      await withLoader(async () => {
+        const result = await apiCall(`/intermediation/${id}/purge-images`, { method: 'POST', body: {} });
+        notify({ type: 'success', message: result?.message || 'Imagens apagadas.' });
+        if (state.currentNegotiation?.id === id) {
+          await loadNegotiation(id);
+        }
+        await loadNegotiations({ force: true });
+        if (isAdmin()) {
+          await loadAdminSnapshot({ force: true });
+        }
+      }, 'Apagando imagens...');
     },
     async updateTracking({ formData, dataset }) {
       const id = Number(dataset?.id);

@@ -21,7 +21,13 @@ class User extends Authenticatable
         'name',
         'email',
         'phone',
-        'city',
+        'address_zipcode',
+        'address_street',
+        'address_number',
+        'address_complement',
+        'address_neighborhood',
+        'address_city',
+        'address_state',
         'role',
         'password',
     ];
@@ -46,6 +52,8 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'email_verification_expires_at' => 'datetime',
+            'email_verification_sent_at' => 'datetime',
             'last_login_at' => 'datetime',
             'confirmation_code_expires_at' => 'datetime',
             'confirmation_code_last_sent_at' => 'datetime',

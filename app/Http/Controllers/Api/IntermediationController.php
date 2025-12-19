@@ -11,6 +11,27 @@ use Illuminate\Support\Facades\Validator;
 
 class IntermediationController extends Controller
 {
+    private function toIso8601StringOrNull(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if ($value instanceof \DateTimeInterface) {
+            return \Illuminate\Support\Carbon::instance($value)->toIso8601String();
+        }
+
+        if (is_string($value)) {
+            try {
+                return \Illuminate\Support\Carbon::parse($value)->toIso8601String();
+            } catch (\Throwable $exception) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
     /**
      * List negotiations for the authenticated user (as seller or buyer).
      */
@@ -18,7 +39,7 @@ class IntermediationController extends Controller
     {
         $user = $request->user();
 
-        $negotiations = Negotiation::with(['seller:id,name,email,phone', 'buyer:id,name,email,phone'])
+        $negotiations = Negotiation::with(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state'])
             ->where('seller_id', $user->id)
             ->orWhere('buyer_id', $user->id)
             ->orderByDesc('updated_at')
@@ -35,7 +56,7 @@ class IntermediationController extends Controller
     {
         $user = $request->user();
 
-        $negotiation = Negotiation::with(['seller:id,name,email,phone', 'buyer:id,name,email,phone'])
+        $negotiation = Negotiation::with(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state'])
             ->find($id);
 
         if (! $negotiation) {
@@ -99,11 +120,11 @@ class IntermediationController extends Controller
             'description' => $data['description'] ?? null,
             'price' => $data['price'],
             'category' => $data['category'],
-            'product_photos' => !empty($photosPaths) ? json_encode($photosPaths) : null,
-            'status' => 'awaiting_admin_approval',
+            'product_photos' => !empty($photosPaths) ? $photosPaths : null,
+            'status' => 'pending_acceptance',
         ]);
 
-        $negotiation->load(['seller:id,name,email,phone', 'buyer:id,name,email,phone']);
+        $negotiation->load(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state']);
 
         return response()->json(['data' => $this->transform($negotiation, $user)], 201);
     }
@@ -118,7 +139,7 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        $negotiations = Negotiation::with(['seller:id,name,email,phone', 'buyer:id,name,email,phone'])
+        $negotiations = Negotiation::with(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state'])
             ->orderByDesc('updated_at')
             ->get()
             ->map(fn ($n) => $this->transform($n, $user));
@@ -136,7 +157,7 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        $negotiations = Negotiation::with(['seller:id,name,email,phone', 'buyer:id,name,email,phone'])
+        $negotiations = Negotiation::with(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state'])
             ->where('status', 'awaiting_admin_approval')
             ->orderByDesc('created_at')
             ->get()
@@ -183,8 +204,12 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
         }
 
+        if ($negotiation->status !== 'awaiting_admin_approval') {
+            return response()->json(['message' => 'Aprovação não disponível neste status.'], 422);
+        }
+
         $negotiation->update([
-            'status' => 'pending_acceptance',
+            'status' => 'waiting_payment',
         ]);
 
         return response()->json(['success' => true]);
@@ -227,26 +252,81 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
         }
 
+        // Intermediadora/inspector: aprovar/reprovar após inspeção
+        if (in_array($user->role, ['admin', 'inspector'], true) && $request->has('approved')) {
+            if ($negotiation->status !== 'at_intermediary') {
+                return response()->json(['message' => 'Ação disponível apenas quando o produto está na intermediadora.'], 422);
+            }
+            if (! $negotiation->inspection_saved_at) {
+                return response()->json(['message' => 'Envie o relatório de inspeção antes de aprovar/reprovar.'], 422);
+            }
+
+            $approvedRaw = $request->input('approved');
+            $approved = filter_var($approvedRaw, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            if ($approved === null) {
+                return response()->json(['message' => 'Campo approved inválido.'], 422);
+            }
+
+            $notes = (string) ($request->input('notes') ?? $request->input('intermediary_notes') ?? '');
+
+            if ($approved) {
+                $trackingToBuyer = trim((string) $request->input('tracking_to_buyer'));
+                if ($trackingToBuyer === '') {
+                    return response()->json(['message' => 'Informe o rastreio para o comprador.'], 422);
+                }
+
+                $negotiation->update([
+                    'buyer_tracking_code' => $trackingToBuyer,
+                    'status' => 'approved',
+                    'intermediary_approval_confirmed_at' => now(),
+                    'sent_to_buyer_at' => now(),
+                    'intermediary_notes' => $notes !== '' ? $notes : $negotiation->intermediary_notes,
+                ]);
+
+                return response()->json(['success' => true]);
+            }
+
+            $negotiation->update([
+                'status' => 'rejected_by_admin',
+                'rejection_reason' => $notes !== '' ? $notes : $negotiation->rejection_reason,
+                'intermediary_approval_confirmed_at' => now(),
+            ]);
+
+            return response()->json(['success' => true]);
+        }
+
+        if ($negotiation->status !== 'pending_acceptance') {
+            return response()->json(['message' => 'Aceite não disponível neste status.'], 422);
+        }
+
+        if ($negotiation->seller_id === $user->id) {
+            return response()->json(['message' => 'O vendedor não pode aceitar a própria negociação.'], 403);
+        }
+
+        if ($user->role !== 'buyer') {
+            return response()->json(['message' => 'Apenas compradores podem aceitar uma negociação.'], 403);
+        }
+
         // If no buyer yet, current user becomes buyer by accepting
-        if ($negotiation->status === 'pending_acceptance' && ! $negotiation->buyer_id && $negotiation->seller_id !== $user->id) {
+        if (! $negotiation->buyer_id) {
             $negotiation->update([
                 'buyer_id' => $user->id,
-                'status' => 'waiting_payment',
+                'status' => 'awaiting_admin_approval',
                 'accepted_at' => now(),
             ]);
             return response()->json(['success' => true]);
         }
 
         // Buyer accepts
-        if ($negotiation->isBuyer($user) && $negotiation->status === 'pending_acceptance') {
+        if ($negotiation->isBuyer($user)) {
             $negotiation->update([
-                'status' => 'waiting_payment',
+                'status' => 'awaiting_admin_approval',
                 'accepted_at' => now(),
             ]);
             return response()->json(['success' => true]);
         }
 
-        return response()->json(['message' => 'Acao nao permitida.'], 400);
+        return response()->json(['message' => 'Acao nao permitida.'], 403);
     }
 
     /**
@@ -262,6 +342,10 @@ class IntermediationController extends Controller
         $negotiation = Negotiation::find($id);
         if (! $negotiation) {
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if ($negotiation->status !== 'shipped') {
+            return response()->json(['message' => 'Recebimento disponível apenas após envio (Em Trânsito).'], 422);
         }
 
         $negotiation->update([
@@ -288,6 +372,10 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Apenas o comprador pode confirmar.'], 403);
         }
 
+        if ($negotiation->status !== 'approved') {
+            return response()->json(['message' => 'Confirmação de entrega disponível apenas após aprovação da intermediadora.'], 422);
+        }
+
         $negotiation->update([
             'status' => 'delivered',
             'delivered_at' => now(),
@@ -310,6 +398,10 @@ class IntermediationController extends Controller
 
         if (! $negotiation->isSeller($user) && $user->role !== 'admin') {
             return response()->json(['message' => 'Apenas o vendedor pode adicionar rastreio.'], 403);
+        }
+
+        if ($negotiation->status !== 'waiting_shipment') {
+            return response()->json(['message' => 'Rastreio disponível apenas após confirmação do pagamento (Aguardando Envio).'], 422);
         }
 
         $data = Validator::make($request->all(), [
@@ -342,6 +434,14 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
         }
 
+        if ($negotiation->status !== 'at_intermediary' && $negotiation->status !== 'approved') {
+            return response()->json(['message' => 'Ação não disponível neste status.'], 422);
+        }
+
+        if (! $negotiation->inspection_saved_at) {
+            return response()->json(['message' => 'Envie o relatório de inspeção antes de informar o rastreio do comprador.'], 422);
+        }
+
         $data = Validator::make($request->all(), [
             'tracking_code' => ['required', 'string', 'max:100'],
             'tracking_carrier' => ['nullable', 'string', 'max:100'],
@@ -351,6 +451,8 @@ class IntermediationController extends Controller
             'buyer_tracking_code' => $data['tracking_code'],
             'buyer_tracking_carrier' => $data['tracking_carrier'] ?? null,
             'status' => 'approved',
+            'sent_to_buyer_at' => $negotiation->sent_to_buyer_at ?? now(),
+            'intermediary_approval_confirmed_at' => $negotiation->intermediary_approval_confirmed_at ?? now(),
         ]);
 
         return response()->json(['success' => true]);
@@ -459,7 +561,7 @@ class IntermediationController extends Controller
             'inspection_saved_at' => now(),
         ]);
 
-        $negotiation->load(['seller:id,name,email,phone', 'buyer:id,name,email,phone']);
+        $negotiation->load(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state']);
 
         return response()->json([
             'success' => true,
@@ -505,7 +607,7 @@ class IntermediationController extends Controller
 
         $negotiation->update(['internal_logs' => $logs]);
 
-        $negotiation->load(['seller:id,name,email,phone', 'buyer:id,name,email,phone']);
+        $negotiation->load(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state']);
 
         return response()->json([
             'success' => true, 
@@ -535,7 +637,7 @@ class IntermediationController extends Controller
             $events[] = [
                 'type' => 'created',
                 'label' => 'Negociação criada',
-                'date' => $negotiation->created_at->toIso8601String(),
+                'date' => $this->toIso8601StringOrNull($negotiation->created_at),
             ];
         }
 
@@ -543,7 +645,7 @@ class IntermediationController extends Controller
             $events[] = [
                 'type' => 'accepted',
                 'label' => 'Aceita pelo comprador',
-                'date' => $negotiation->accepted_at->toIso8601String(),
+                'date' => $this->toIso8601StringOrNull($negotiation->accepted_at),
             ];
         }
 
@@ -551,7 +653,7 @@ class IntermediationController extends Controller
             $events[] = [
                 'type' => 'paid',
                 'label' => 'Pagamento confirmado',
-                'date' => $negotiation->paid_at->toIso8601String(),
+                'date' => $this->toIso8601StringOrNull($negotiation->paid_at),
             ];
         }
 
@@ -559,7 +661,7 @@ class IntermediationController extends Controller
             $events[] = [
                 'type' => 'shipped',
                 'label' => 'Enviado para intermediadora',
-                'date' => $negotiation->shipped_at->toIso8601String(),
+                'date' => $this->toIso8601StringOrNull($negotiation->shipped_at),
             ];
         }
 
@@ -567,7 +669,7 @@ class IntermediationController extends Controller
             $events[] = [
                 'type' => 'received',
                 'label' => 'Recebido na intermediadora',
-                'date' => $negotiation->received_at->toIso8601String(),
+                'date' => $this->toIso8601StringOrNull($negotiation->received_at),
             ];
         }
 
@@ -575,11 +677,57 @@ class IntermediationController extends Controller
             $events[] = [
                 'type' => 'delivered',
                 'label' => 'Entregue ao comprador',
-                'date' => $negotiation->delivered_at->toIso8601String(),
+                'date' => $this->toIso8601StringOrNull($negotiation->delivered_at),
             ];
         }
 
         return response()->json(['data' => $events]);
+    }
+
+    /**
+     * Admin: remove stored images from a concluded negotiation to save storage.
+     */
+    public function purgeImages(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if (! $user || $user->role !== 'admin') {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        $negotiation = Negotiation::find($id);
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if ($negotiation->status !== 'delivered') {
+            return response()->json(['message' => 'Ação disponível apenas para pedidos concluídos.'], 422);
+        }
+
+        $disk = Storage::disk('public');
+
+        $productPaths = is_array($negotiation->product_photos) ? $negotiation->product_photos : [];
+        $inspectionPaths = is_array($negotiation->intermediary_photos) ? $negotiation->intermediary_photos : [];
+        $allPaths = array_values(array_unique(array_filter(array_merge($productPaths, $inspectionPaths))));
+
+        $deleted = 0;
+        foreach ($allPaths as $path) {
+            if (is_string($path) && $path !== '' && $disk->exists($path)) {
+                if ($disk->delete($path)) {
+                    $deleted += 1;
+                }
+            }
+        }
+
+        $negotiation->update([
+            'product_photos' => null,
+            'intermediary_photos' => null,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'deleted' => $deleted,
+            'message' => 'Imagens apagadas com sucesso.'
+        ]);
     }
 
     /**
@@ -613,6 +761,9 @@ class IntermediationController extends Controller
         };
 
         $productPhotos = $buildPhotoUrls($negotiation->product_photos);
+        if (empty($productPhotos) && isset($negotiation->product_images)) {
+            $productPhotos = $buildPhotoUrls($negotiation->product_images);
+        }
         $intermediaryPhotos = $buildPhotoUrls($negotiation->intermediary_photos);
 
         $checklist = $negotiation->intermediary_checklist;
@@ -637,12 +788,32 @@ class IntermediationController extends Controller
             $internalLogs = [];
         }
 
+        $hasInspectionData = ! empty($checklist)
+            || (is_string($negotiation->intermediary_notes) && trim($negotiation->intermediary_notes) !== '')
+            || ! empty($intermediaryPhotos)
+            || ! empty($negotiation->inspection_saved_at);
+
+        $inspectionReport = $hasInspectionData ? [
+            'checklist' => $checklist,
+            'notes' => $negotiation->intermediary_notes ?? '',
+            'photos' => $intermediaryPhotos,
+            'saved_at' => $this->toIso8601StringOrNull($negotiation->inspection_saved_at),
+        ] : null;
+
+        $title = $negotiation->title ?? $negotiation->product_title ?? null;
+        $description = $negotiation->description ?? $negotiation->product_description ?? null;
+        $rawPrice = $negotiation->price ?? $negotiation->product_price ?? null;
+        $price = is_numeric($rawPrice) ? (float) $rawPrice : 0.0;
+
+        $trackingToIntermediary = $negotiation->tracking_code ?? $negotiation->tracking_to_intermediary ?? null;
+        $trackingToBuyer = $negotiation->buyer_tracking_code ?? $negotiation->tracking_to_buyer ?? null;
+
         return [
             'id' => $negotiation->id,
-            'title' => $negotiation->title,
-            'description' => $negotiation->description,
+            'title' => $title,
+            'description' => $description,
             'category' => $negotiation->category,
-            'price' => (float) $negotiation->price,
+            'price' => $price,
             'status' => $negotiation->status,
             'seller' => $negotiation->seller ? [
                 'id' => $negotiation->seller->id,
@@ -657,6 +828,18 @@ class IntermediationController extends Controller
                 'phone' => $negotiation->buyer->phone,
             ] : null,
             'my_role' => $negotiation->getUserRole($currentUser),
+            // Aliases usados no front
+            'tracking_to_intermediary' => $trackingToIntermediary,
+            'tracking_to_buyer' => $trackingToBuyer,
+            'product_price' => $price,
+            'buyer_accepted_at' => $this->toIso8601StringOrNull($negotiation->accepted_at),
+            'product_paid_at' => $this->toIso8601StringOrNull($negotiation->paid_at),
+            'sent_to_intermediary_at' => $this->toIso8601StringOrNull($negotiation->shipped_at),
+            'intermediary_received_at' => $this->toIso8601StringOrNull($negotiation->received_at),
+            'intermediary_received_status' => (bool) $negotiation->received_at,
+            'intermediary_approval_confirmed_at' => $this->toIso8601StringOrNull($negotiation->intermediary_approval_confirmed_at),
+            'sent_to_buyer_at' => $this->toIso8601StringOrNull($negotiation->sent_to_buyer_at),
+            'buyer_confirmed_at' => $this->toIso8601StringOrNull($negotiation->delivered_at),
             'tracking_code' => $negotiation->tracking_code,
             'tracking_carrier' => $negotiation->tracking_carrier,
             'buyer_tracking_code' => $negotiation->buyer_tracking_code,
@@ -665,20 +848,21 @@ class IntermediationController extends Controller
             'buyer_rejection_reason' => $negotiation->buyer_rejection_reason,
             'buyer_rejection_details' => $negotiation->buyer_rejection_details,
             'product_photos' => $productPhotos,
+            'inspection_report' => $inspectionReport,
             'intermediary_checklist' => $checklist,
             'intermediary_notes' => $negotiation->intermediary_notes,
             'intermediary_photos' => $intermediaryPhotos,
-            'inspection_saved_at' => $negotiation->inspection_saved_at?->toIso8601String(),
+            'inspection_saved_at' => $this->toIso8601StringOrNull($negotiation->inspection_saved_at),
             'internal_logs' => $internalLogs,
             'pix_code' => $negotiation->pix_code,
-            'pix_generated_at' => $negotiation->pix_generated_at?->toIso8601String(),
-            'accepted_at' => $negotiation->accepted_at?->toIso8601String(),
-            'paid_at' => $negotiation->paid_at?->toIso8601String(),
-            'shipped_at' => $negotiation->shipped_at?->toIso8601String(),
-            'received_at' => $negotiation->received_at?->toIso8601String(),
-            'delivered_at' => $negotiation->delivered_at?->toIso8601String(),
-            'created_at' => $negotiation->created_at?->toIso8601String(),
-            'updated_at' => $negotiation->updated_at?->toIso8601String(),
+            'pix_generated_at' => $this->toIso8601StringOrNull($negotiation->pix_generated_at),
+            'accepted_at' => $this->toIso8601StringOrNull($negotiation->accepted_at),
+            'paid_at' => $this->toIso8601StringOrNull($negotiation->paid_at),
+            'shipped_at' => $this->toIso8601StringOrNull($negotiation->shipped_at),
+            'received_at' => $this->toIso8601StringOrNull($negotiation->received_at),
+            'delivered_at' => $this->toIso8601StringOrNull($negotiation->delivered_at),
+            'created_at' => $this->toIso8601StringOrNull($negotiation->created_at),
+            'updated_at' => $this->toIso8601StringOrNull($negotiation->updated_at),
         ];
     }
 }

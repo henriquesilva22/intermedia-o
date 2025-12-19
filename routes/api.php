@@ -8,9 +8,17 @@ use Illuminate\Support\Facades\Route;
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 
+// Email verification via link (public routes)
+Route::get('/email/verify/{id}/{token}', [AuthController::class, 'verifyEmailLink']);
+Route::post('/email/resend-link', [AuthController::class, 'publicResendEmailVerification']);
+Route::post('/email/verify-code', [AuthController::class, 'verifyEmailCode']);
+
 Route::middleware('auth:api')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
+
+    // Email verification - send link
+    Route::post('/email/send-verification', [AuthController::class, 'sendEmailVerification']);
 
     // Busca de usuário por email
     Route::get('/users/search', [AuthController::class, 'searchByEmail']);
@@ -35,6 +43,7 @@ Route::middleware('auth:api')->group(function () {
     Route::post('/intermediation/{id}/inspection-report', [IntermediationController::class, 'saveInspectionReport']);
     Route::post('/intermediation/{id}/logs', [IntermediationController::class, 'addLog']);
     Route::get('/intermediation/{id}/timeline', [IntermediationController::class, 'timeline']);
+    Route::post('/intermediation/{id}/purge-images', [IntermediationController::class, 'purgeImages']);
 
     // Admin routes
     Route::get('/admin/users', [AdminController::class, 'users']);
