@@ -142,7 +142,7 @@ class IntermediationController extends Controller
         $negotiations = Negotiation::with(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state'])
             ->orderByDesc('updated_at')
             ->get()
-            ->map(fn ($n) => $this->transform($n, $user));
+            ->map(fn ($n) => $this->transform($n, $user, ['include_photos' => false]));
 
         return response()->json(['data' => $negotiations]);
     }
@@ -161,7 +161,7 @@ class IntermediationController extends Controller
             ->where('status', 'awaiting_admin_approval')
             ->orderByDesc('created_at')
             ->get()
-            ->map(fn ($n) => $this->transform($n, $user));
+            ->map(fn ($n) => $this->transform($n, $user, ['include_photos' => false]));
 
         return response()->json(['data' => $negotiations]);
     }
@@ -733,9 +733,11 @@ class IntermediationController extends Controller
     /**
      * Transform negotiation for API response.
      */
-    protected function transform(Negotiation $negotiation, $currentUser): array
+    protected function transform(Negotiation $negotiation, $currentUser, array $options = []): array
     {
         $publicDisk = Storage::disk('public');
+
+        $includePhotos = $options['include_photos'] ?? true;
 
         $buildPhotoUrls = static function ($value) use ($publicDisk): array {
             $items = [];
@@ -760,11 +762,11 @@ class IntermediationController extends Controller
             return $urls;
         };
 
-        $productPhotos = $buildPhotoUrls($negotiation->product_photos);
-        if (empty($productPhotos) && isset($negotiation->product_images)) {
+        $productPhotos = $includePhotos ? $buildPhotoUrls($negotiation->product_photos) : [];
+        if ($includePhotos && empty($productPhotos) && isset($negotiation->product_images)) {
             $productPhotos = $buildPhotoUrls($negotiation->product_images);
         }
-        $intermediaryPhotos = $buildPhotoUrls($negotiation->intermediary_photos);
+        $intermediaryPhotos = $includePhotos ? $buildPhotoUrls($negotiation->intermediary_photos) : [];
 
         $checklist = $negotiation->intermediary_checklist;
         if (is_string($checklist) && $checklist !== '') {

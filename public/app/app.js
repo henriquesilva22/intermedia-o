@@ -1,6 +1,16 @@
 (() => {
   'use strict';
 
+  /*
+    NAV (VS Code)
+    - Ctrl+P, depois digite: @renderCreateNegotiationModal / @renderNegotiationDetailPage / @renderRegisterPage
+    - Ctrl+P, depois digite: @setState / @shouldDeferRender / @hydratePaymentQrCode / @attachGlobalHandlers
+    - Ctrl+P, depois digite: @actions.createNegotiation / @actions.searchBuyer / @actions.confirmPayment
+    - Outline: Ctrl+Shift+O (lista de funções)
+  */
+
+  //#region PART 1/3: Constantes e Estado
+
   const API_BASE = 'http://127.0.0.1:8000/api';
   const STORAGE_KEYS = { token: 'token', user: 'user' };
   const AUTH_PAGES = new Set(['login', 'register', 'forgot-password', 'reset-password', 'confirm-email']);
@@ -49,7 +59,7 @@
   const state = {
     token: initialToken,
     user: initialUser,
-    currentPage: initialToken ? 'dashboard' : 'login',
+    currentPage: initialToken && initialUser?.role === 'admin' ? 'admin' : (initialToken ? 'dashboard' : 'login'),
     isLoading: false,
     loadingMessage: null,
     errorMessage: null,
@@ -60,11 +70,17 @@
     currentNegotiation: null,
     negotiationFilters: {
       status: 'all',
-      query: '',
-      mineOnly: false
+      role: 'all',
+      query: ''
+    },
+    showDashboardFiltersModal: false,
+    dashboardFiltersDraft: {
+      status: 'all',
+      role: 'all',
+      query: ''
     },
     dashboardPage: 1,
-    dashboardPageSize: 12,
+    dashboardPageSize: 6,
     pendingCount: 0,
     pendingNotices: [],
     pendingFilter: 'today',
@@ -72,7 +88,7 @@
     timelineNegotiationId: null,
     timelineData: null,
     gallery: null,
-    adminTab: 'overview',
+    adminTab: 'negotiations',
     adminNegotiations: [],
     adminUsers: [],
     adminOverview: null,
@@ -114,6 +130,12 @@
     showBuyerRejectModal: false,
     rejectNegotiationId: null
   };
+
+  //#endregion PART 1/3: Constantes e Estado
+
+  //#region PART 2/3: Render, UI e Handlers
+
+  //#region Startup (DOMContentLoaded / Bootstrap)
 
   // Constantes do sistema
   const INTERMEDIARY_ADDRESS = {
@@ -203,6 +225,8 @@
       updatePendingPolling();
     }
   }
+
+  //#endregion Startup (DOMContentLoaded / Bootstrap)
 
   // CSS Complementar (Twind CSS é carregado via CDN no blade)
   function injectBaseStyles() {
@@ -304,6 +328,30 @@
     }
   }
 
+  function updatePendingCountUI(count) {
+    try {
+      const next = Math.max(0, Number(count) || 0);
+
+      // Header badge (admin nav)
+      const badge = document.querySelector('[data-pending-count-badge]');
+      const badgeValue = document.querySelector('[data-pending-count-value]');
+      if (badge instanceof HTMLElement && badgeValue instanceof HTMLElement) {
+        badgeValue.textContent = String(next);
+        badge.style.display = next > 0 ? '' : 'none';
+      }
+
+      // Admin page button: "Pendências (X)"
+      const inline = document.querySelector('[data-pending-count-inline]');
+      if (inline instanceof HTMLElement) {
+        inline.textContent = String(next);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  //#region Core State/Render (setState -> render -> hydrate)
+
   function setState(updater) {
     const updates = typeof updater === 'function' ? updater({ ...state }) : updater;
     if (!updates || typeof updates !== 'object') return;
@@ -319,6 +367,16 @@
       if (state.confirmationCooldownRemaining !== next) {
         state.confirmationCooldownRemaining = next;
         updateConfirmationCooldownUI(next);
+      }
+      return;
+    }
+
+    // Evita re-render pesado quando só o contador de pendências muda (polling).
+    if (updateKeys.length === 1 && updateKeys[0] === 'pendingCount' && isAdmin()) {
+      const next = Math.max(0, Number(updates.pendingCount) || 0);
+      if (state.pendingCount !== next) {
+        state.pendingCount = next;
+        updatePendingCountUI(next);
       }
       return;
     }
@@ -486,6 +544,8 @@
     }
   }
 
+  //#endregion Core State/Render (setState -> render -> hydrate)
+
   function cssEscapeAttr(value) {
     return String(value).replace(/\\/g, '\\\\').replace(/\"/g, '\\"');
   }
@@ -603,22 +663,21 @@
             ${isAuthenticated ? `
               <!-- Navegação Autenticada -->
               <nav class="hidden md:flex items-center space-x-1">
-                <button class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${state.currentPage === 'dashboard' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:text-primary-600 hover:bg-gray-50'}" data-action="navigate" data-page="dashboard">
-                  <i class="fas fa-th-large mr-2"></i> Dashboard
-                </button>
                 ${isAdmin() ? `
                   <button class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${state.currentPage === 'admin' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:text-primary-600 hover:bg-gray-50'}" data-action="navigate" data-page="admin">
                     <i class="fas fa-shield-alt mr-2"></i> Admin
                   </button>
                   <button class="relative px-4 py-2 rounded-lg text-sm font-medium text-gray-600 hover:text-primary-600 hover:bg-gray-50 transition-all duration-200" data-action="openPendingModal">
                     <i class="fas fa-bell mr-2"></i> Pendências
-                    ${state.pendingCount > 0 ? `
-                      <span class="absolute -top-1 -right-1 w-5 h-5 bg-danger-500 text-white text-xs rounded-full flex items-center justify-center animate-pulse">
-                        ${state.pendingCount}
-                      </span>
-                    ` : ''}
+                    <span data-pending-count-badge style="display:${state.pendingCount > 0 ? '' : 'none'}" class="absolute -top-1 -right-1 w-5 h-5 bg-danger-500 text-white text-xs rounded-full flex items-center justify-center animate-pulse">
+                      <span data-pending-count-value>${state.pendingCount}</span>
+                    </span>
                   </button>
-                ` : ''}
+                ` : `
+                  <button class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${state.currentPage === 'dashboard' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:text-primary-600 hover:bg-gray-50'}" data-action="navigate" data-page="dashboard">
+                    <i class="fas fa-th-large mr-2"></i> Dashboard
+                  </button>
+                `}
               </nav>
 
               <!-- User Menu -->
@@ -672,7 +731,7 @@
 
   function renderPublicLayout() {
     return `
-      <main class="flex-1 bg-gradient-to-br from-primary-600 via-primary-700 to-secondary-600 flex items-center justify-center p-6 min-h-[calc(100vh-200px)]">
+      <main class="flex-1 bg-gradient-to-br from-primary-600 via-primary-700 to-secondary-600 flex items-center justify-center p-4 sm:p-6 min-h-[calc(100vh-200px)]">
         <div class="absolute inset-0 overflow-hidden pointer-events-none opacity-30">
           <div class="absolute -top-40 -right-40 w-80 h-80 bg-white/10 rounded-full blur-3xl"></div>
           <div class="absolute -bottom-40 -left-40 w-80 h-80 bg-secondary-400/20 rounded-full blur-3xl"></div>
@@ -702,7 +761,7 @@
 
   function renderLoginPage() {
     return `
-      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-card-xl animate-slide-up">
+      <section class="w-full max-w-md bg-white rounded-2xl p-4 sm:p-8 shadow-card-xl animate-slide-up">
         <div class="text-center mb-8">
           <div class="w-16 h-16 bg-gradient-to-br from-primary-500 to-secondary-500 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
             <i class="fas fa-lock text-white text-2xl"></i>
@@ -764,7 +823,7 @@
       : '<option value="" selected disabled>Lista de cidades indisponível</option>';
 
     return `
-      <section class="w-full max-w-2xl bg-white rounded-2xl p-8 shadow-card-xl animate-slide-up">
+      <section class="w-full max-w-2xl bg-white rounded-2xl p-4 sm:p-8 shadow-card-xl animate-slide-up">
         <div class="text-center mb-8">
           <div class="w-16 h-16 bg-gradient-to-br from-success-500 to-secondary-500 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
             <i class="fas fa-user-plus text-white text-2xl"></i>
@@ -915,7 +974,7 @@
 
   function renderForgotPasswordPage() {
     return `
-      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-card-xl animate-slide-up">
+      <section class="w-full max-w-md bg-white rounded-2xl p-4 sm:p-8 shadow-card-xl animate-slide-up">
         <div class="text-center mb-8">
           <div class="w-16 h-16 bg-gradient-to-br from-warning-500 to-danger-400 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
             <i class="fas fa-key text-white text-2xl"></i>
@@ -946,7 +1005,7 @@
 
   function renderResetPasswordPage() {
     return `
-      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-card-xl animate-slide-up">
+      <section class="w-full max-w-md bg-white rounded-2xl p-4 sm:p-8 shadow-card-xl animate-slide-up">
         <div class="text-center mb-8">
           <div class="w-16 h-16 bg-gradient-to-br from-success-500 to-secondary-500 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
             <i class="fas fa-lock text-white text-2xl"></i>
@@ -992,7 +1051,7 @@
 
   function renderConfirmEmailPage() {
     return `
-      <section class="w-full max-w-md bg-white rounded-2xl p-8 shadow-card-xl animate-slide-up text-center">
+      <section class="w-full max-w-md bg-white rounded-2xl p-4 sm:p-8 shadow-card-xl animate-slide-up text-center">
         <div class="w-16 h-16 bg-gradient-to-br from-secondary-500 to-primary-500 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg">
           <i class="fas fa-envelope text-white text-2xl"></i>
         </div>
@@ -1031,7 +1090,7 @@
   }
 
   function renderProtectedView() {
-    return `<main class="flex-1 w-full max-w-6xl mx-auto p-6">${renderProtectedPage()}</main>`;
+    return `<main class="flex-1 w-full max-w-6xl mx-auto p-4 sm:p-6">${renderProtectedPage()}</main>`;
   }
 
   function renderProtectedPage() {
@@ -1046,6 +1105,20 @@
 
   function renderDashboardPage() {
     const negotiations = getFilteredNegotiations();
+    const pageSize = Math.max(1, Number(state.dashboardPageSize) || 6);
+    const totalPages = Math.max(1, Math.ceil(negotiations.length / pageSize));
+    const currentPage = Math.min(Math.max(1, Number(state.dashboardPage) || 1), totalPages);
+    const startIndex = (currentPage - 1) * pageSize;
+    const endIndex = Math.min(negotiations.length, startIndex + pageSize);
+    const pageItems = negotiations.slice(startIndex, endIndex);
+    const pageMeta = {
+      totalCount: negotiations.length,
+      page: currentPage,
+      pageSize,
+      totalPages,
+      startIndex,
+      endIndex
+    };
     return `
       <section>
         <!-- Header principal -->
@@ -1054,8 +1127,8 @@
     <h1 class="text-3xl font-extrabold text-gray-900 tracking-tight">Minhas Negociações</h1>
     <p class="text-base text-gray-500 mt-1">Gerencie cada etapa do processo de intermediação.</p>
   </div>
-  <div class="flex gap-3">
-    <button class="px-6 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white font-semibold rounded-xl shadow-lg shadow-primary-500/30 transition duration-300 ease-in-out flex items-center gap-2" data-action="openCreateNegotiation">
+  <div class="flex flex-wrap gap-3">
+    <button class="w-full sm:w-auto justify-center px-6 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white font-semibold rounded-xl shadow-lg shadow-primary-500/30 transition duration-300 ease-in-out flex items-center gap-2" data-action="openCreateNegotiation">
       <i class="fas fa-plus"></i> Nova Negociação
     </button>
     <button class="w-12 h-12 bg-white border border-gray-200 hover:border-primary-500 rounded-xl text-gray-700 hover:text-primary-600 transition shadow-sm flex items-center justify-center" data-action="dashboardRefresh">
@@ -1065,14 +1138,20 @@
   </div>
 </header>
         <!-- Layout com 2 colunas: Filtros à esquerda | Cards + Tabela à direita -->
-        <div class="flex flex-wrap gap-6 items-start">
+        <div class="flex flex-col lg:flex-row gap-6 items-start">
           <!-- COLUNA ESQUERDA: Filtros -->
           ${renderFilterSidebar()}
 
           <!-- COLUNA DIREITA: Cards de resumo + Tabela -->
           <div class="flex-1 min-w-0 space-y-6">
+            ${renderDashboardMobileFilterBar()}
             ${renderDashboardSummary()}
-            ${renderNegotiationsTable(negotiations)}
+            <div class="sm:hidden">
+              ${renderNegotiationsCardsMobile(pageItems, pageMeta)}
+            </div>
+            <div class="hidden sm:block">
+              ${renderNegotiationsTable(pageItems, pageMeta)}
+            </div>
           </div>
         </div>
       </section>
@@ -1080,8 +1159,37 @@
     `;
   }
 
+  function renderDashboardMobileFilterBar() {
+    const { status, role, query } = state.negotiationFilters || {};
+    const hasAnyFilter = (status && status !== 'all') || (role && role !== 'all') || Boolean(query);
+    const summaryParts = [];
+    if (status && status !== 'all') summaryParts.push(STATUS_LABELS[status] || status);
+    if (role && role !== 'all') summaryParts.push(role === 'buyer' ? 'Como comprador' : 'Como vendedor');
+    if (query) summaryParts.push(`Busca: "${query}"`);
+    const summary = summaryParts.join(' • ');
+
+    return `
+      <div class="sm:hidden sticky top-20 z-10">
+        <button
+          type="button"
+          class="w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl border border-gray-200 bg-white shadow-sm"
+          data-action="openDashboardFiltersModal"
+        >
+          <span class="flex items-center gap-2 text-gray-900 font-semibold">
+            <i class="fas fa-search text-primary-600"></i>
+            Filtrar
+          </span>
+          <span class="min-w-0 text-xs text-gray-500 truncate">
+            ${hasAnyFilter ? escapeHtml(summary) : 'Todos'}
+          </span>
+          <i class="fas fa-sliders-h text-gray-400"></i>
+        </button>
+      </div>
+    `;
+  }
+
   function renderFilterSidebar() {
-  const { status, query, mineOnly } = state.negotiationFilters;
+  const { status, query } = state.negotiationFilters;
   const statusOptions = [
     { key: 'all', label: 'Todos', icon: 'fa-th-list', color: 'text-gray-600' },
     { key: 'awaiting_admin_approval', label: 'Aguardando revisão', icon: 'fa-hourglass-half', color: 'text-primary-600' },
@@ -1100,8 +1208,8 @@
   const filterPanelId = 'dashboard-filter-panel';
 
   return `
-    <aside class="w-72 flex-shrink-0 sticky top-28 self-start">
-      <div class="bg-white border border-gray-100 rounded-2xl shadow-card p-6">
+    <aside class="hidden lg:block w-72 flex-shrink-0 lg:sticky lg:top-28 self-start">
+      <div class="bg-white border border-gray-100 rounded-2xl shadow-card p-4 sm:p-6">
         <button
           type="button"
           class="w-full flex lg:hidden items-center justify-between gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50 hover:border-primary-500 transition mb-4"
@@ -1157,17 +1265,6 @@
             </nav>
           </div>
 
-          <div class="pt-5 border-t border-gray-100">
-            <label class="flex items-center gap-3 cursor-pointer">
-              <input 
-                type="checkbox" 
-                ${mineOnly ? 'checked' : ''} 
-                data-action="dashboardMine" 
-                class="w-5 h-5 rounded border-gray-300 text-primary-600 focus:ring-primary-500 transition duration-150"
-              >
-              <span class="text-sm font-medium text-gray-700 select-none">Mostrar apenas as minhas</span>
-            </label>
-          </div>
         </div>
       </div>
     </aside>
@@ -1188,7 +1285,7 @@
       <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
         <div class="bg-white rounded-2xl shadow-card-xl max-w-2xl w-full my-4 overflow-hidden animate-slide-up">
           <div class="h-1 bg-gradient-to-r from-primary-600 to-secondary-500"></div>
-          <header class="flex items-center justify-between p-6 border-b border-gray-100">
+          <header class="flex items-center justify-between p-4 sm:p-6 border-b border-gray-100">
             <div>
               <h2 class="text-xl font-bold text-gray-900">Nova Negociação</h2>
               <p class="text-gray-500 text-sm">Preencha todos os dados para iniciar</p>
@@ -1196,7 +1293,7 @@
             <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeCreateNegotiation">✕</button>
           </header>
           
-          <form data-action="createNegotiation" class="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
+          <form data-action="createNegotiation" class="p-4 sm:p-6 space-y-5 max-h-[70vh] overflow-y-auto">
             <div class="${showTerms ? 'hidden' : 'space-y-5'}">
               <!-- Título do produto -->
               <div>
@@ -1220,7 +1317,7 @@
               </div>
 
               <!-- Preço -->
-              <div class="grid grid-cols-2 gap-4">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label class="block text-sm text-gray-700 font-medium mb-2">Preço (R$) *</label>
                   <input type="number" name="price" required min="50" max="100000" step="0.01" placeholder="0,00" data-focus-key="create-neg-price" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
@@ -1236,7 +1333,7 @@
               <!-- Upload de fotos -->
               <div class="space-y-2">
                 <label class="block text-sm text-gray-700 font-medium">Fotos do produto (até 8 fotos) *</label>
-                <div class="grid grid-cols-4 gap-2">
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   ${photosHtml}
                   ${productPhotos.length < 8 ? `
                     <label class="w-full h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-primary-400 hover:bg-primary-50 transition">
@@ -1254,9 +1351,9 @@
               <div class="space-y-2">
                 <label class="block text-sm text-gray-700 font-medium">E-mail do comprador *</label>
                 <p class="text-xs text-gray-500">Digite o e-mail completo do comprador e clique em <strong>Buscar</strong> para confirmar o cadastro.</p>
-                <div class="flex gap-2">
+                <div class="flex flex-col sm:flex-row gap-2">
                   <input type="email" name="buyer_email" required placeholder="comprador@email.com" class="flex-1 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all" data-action="updateNegFormField" data-field="buyerEmail" data-focus-key="create-neg-buyer-email">
-                  <button type="button" class="px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-gray-700 transition" data-action="searchBuyer">
+                  <button type="button" class="w-full sm:w-auto px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-gray-700 transition" data-action="searchBuyer">
                     ${buyerSearching ? '<i class="fas fa-spinner fa-spin"></i>' : '<i class="fas fa-search"></i>'}
                   </button>
                 </div>
@@ -1345,7 +1442,7 @@
               </div>
             ` : ''}
 
-            <div class="flex gap-3 pt-4 border-t border-gray-100">
+            <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-100">
               <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-medium transition" data-action="closeCreateNegotiation">Cancelar</button>
               <button type="submit" class="flex-1 px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition disabled:opacity-50 disabled:cursor-not-allowed" ${!buyerFound ? 'disabled' : ''}>
                 <i class="fas fa-paper-plane mr-2"></i>${showTerms ? 'Confirmar e enviar' : 'Criar negociação'}
@@ -1375,8 +1472,33 @@
     const awaiting = list.filter((item) => item?.status === 'awaiting_admin_approval').length;
     const delivered = list.filter((item) => item?.status === 'delivered').length;
 
+    const metric = (label, value, iconClass, valueClass) => `
+      <div class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 border border-gray-100">
+        <div class="w-10 h-10 rounded-xl bg-white border border-gray-200 flex items-center justify-center text-gray-600">
+          <i class="fas ${iconClass}"></i>
+        </div>
+        <div class="min-w-0">
+          <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide truncate">${escapeHtml(label)}</div>
+          <div class="text-lg font-extrabold ${valueClass}">${Number(value) || 0}</div>
+        </div>
+      </div>
+    `;
+
     return `
-      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <article class="sm:hidden bg-white rounded-2xl p-4 shadow-card border border-gray-100">
+        <div class="grid grid-cols-1 gap-3">
+          <div class="grid grid-cols-2 gap-3">
+            ${metric('Total', total, 'fa-chart-bar', 'text-gray-800')}
+            ${metric('Em andamento', active, 'fa-clock', 'text-gray-800')}
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            ${metric('Aguardando aprovação', awaiting, 'fa-hourglass-half', 'text-gray-800')}
+            ${metric('Entregues', delivered, 'fa-check-circle', 'text-gray-800')}
+          </div>
+        </div>
+      </article>
+
+      <section class="hidden sm:grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
         ${renderSummaryCard('Total', total, 'fa-chart-bar', 'Resumo de negociações registradas', 'from-primary-500 to-secondary-500')}
         ${renderSummaryCard('Em andamento', active, 'fa-clock', 'Negociações ainda não finalizadas', 'from-warning-500 to-danger-400')}
         ${renderSummaryCard('Aguardando aprovação', awaiting, 'fa-hourglass-half', 'Necessitam análise da intermediadora', 'from-secondary-500 to-primary-500')}
@@ -1402,7 +1524,7 @@
     `;
   }
 
-  function renderNegotiationsTable(negotiations) {
+  function renderNegotiationsTable(negotiations, meta = null) {
     if (!negotiations.length) {
       return `
         <div class="bg-white rounded-2xl border border-gray-100 shadow-card p-12 text-center">
@@ -1417,12 +1539,18 @@
       `;
     }
     const rows = negotiations.map((neg) => renderNegotiationRow(neg)).join('');
-    const totalLabel = negotiations.length === 1 ? '1 negociação' : `${negotiations.length} negociações`;
+    const totalCount = meta && typeof meta.totalCount === 'number' ? meta.totalCount : negotiations.length;
+    const totalLabel = totalCount === 1 ? '1 negociação' : `${totalCount} negociações`;
+    const totalPages = meta && typeof meta.totalPages === 'number' ? meta.totalPages : 1;
+    const page = meta && typeof meta.page === 'number' ? meta.page : 1;
+    const showingLabel = meta && typeof meta.startIndex === 'number' && typeof meta.endIndex === 'number'
+      ? `Mostrando ${meta.startIndex + 1}–${meta.endIndex} de ${totalCount}`
+      : '';
     return `
       <div class="bg-white rounded-2xl border border-gray-100 shadow-card overflow-hidden">
         <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between bg-gray-50">
           <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Negociações</h2>
-          <span class="text-xs text-gray-500">${totalLabel}</span>
+          <span class="text-xs text-gray-500">${showingLabel || totalLabel}${totalPages > 1 ? ` • Página ${page}/${totalPages}` : ''}</span>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
@@ -1441,6 +1569,157 @@
             </tbody>
           </table>
         </div>
+        ${totalPages > 1 ? `
+          <div class="px-5 py-4 border-t border-gray-100 bg-white flex items-center justify-between">
+            <button type="button" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardPrevPage" ${page <= 1 ? 'disabled' : ''}>
+              Anterior
+            </button>
+            <div class="text-xs text-gray-500">${showingLabel || ''}</div>
+            <button type="button" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardNextPage" ${page >= totalPages ? 'disabled' : ''}>
+              Próxima
+            </button>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  function maskEmail(email) {
+    if (!email) return '—';
+    const raw = String(email).trim();
+    const at = raw.indexOf('@');
+    if (at <= 0) return '—';
+    const local = raw.slice(0, at);
+    const domain = raw.slice(at + 1);
+    const prefix = local.length <= 3 ? local.slice(0, 1) : local.slice(0, 3);
+    return `${prefix}****@${domain}`;
+  }
+
+  function getRelevantCounterparty(neg) {
+    const buyer = neg?.buyer || {};
+    const seller = neg?.seller || {};
+    if (isBuyer(neg)) {
+      return { label: 'Vendedor', name: seller.name || '—', email: maskEmail(seller.email) };
+    }
+    if (isSeller(neg)) {
+      return { label: 'Comprador', name: buyer.name || '—', email: maskEmail(buyer.email) };
+    }
+    // Fallback: quando não dá pra identificar o papel
+    const buyerLine = buyer.name ? `${buyer.name} (${maskEmail(buyer.email)})` : '—';
+    const sellerLine = seller.name ? `${seller.name} (${maskEmail(seller.email)})` : '—';
+    return { label: 'Participantes', name: `${buyerLine} • ${sellerLine}`, email: '' };
+  }
+
+  function getMobilePrimaryCta(neg) {
+    const status = neg?.status || 'unknown';
+    if (status === 'waiting_payment') {
+      return { label: 'Pagar agora', icon: 'fa-credit-card' };
+    }
+    if (status === 'waiting_shipment') {
+      return { label: 'Ver instruções', icon: 'fa-box' };
+    }
+    if (['shipped', 'at_intermediary', 'approved', 'awaiting_admin_approval'].includes(status)) {
+      return { label: 'Acompanhar', icon: 'fa-stream' };
+    }
+    return { label: 'Ver detalhes', icon: 'fa-chevron-right' };
+  }
+
+  function renderNegotiationsCardsMobile(negotiations, meta = null) {
+    if (!negotiations.length) {
+      return `
+        <div class="bg-white rounded-2xl border border-gray-100 shadow-card p-6 text-center">
+          <div class="w-14 h-14 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
+            <i class="fas fa-inbox text-gray-400 text-xl"></i>
+          </div>
+          <p class="text-gray-600 font-medium">Nenhuma negociação encontrada.</p>
+          <p class="text-xs text-gray-500 mt-1">Ajuste os filtros ou atualize.</p>
+          <button class="mt-4 w-full px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-xl text-white font-semibold transition" data-action="dashboardRefresh">
+            <i class="fas fa-sync-alt mr-2"></i>Atualizar
+          </button>
+        </div>
+      `;
+    }
+
+    const totalCount = meta && typeof meta.totalCount === 'number' ? meta.totalCount : negotiations.length;
+    const totalPages = meta && typeof meta.totalPages === 'number' ? meta.totalPages : 1;
+    const page = meta && typeof meta.page === 'number' ? meta.page : 1;
+    const showingLabel = meta && typeof meta.startIndex === 'number' && typeof meta.endIndex === 'number'
+      ? `Mostrando ${meta.startIndex + 1}–${meta.endIndex} de ${totalCount}`
+      : (totalCount === 1 ? '1 negociação' : `${totalCount} negociações`);
+
+    const itemsHtml = negotiations.map((neg) => {
+      const productTitle = neg?.product_title || neg?.product_name || neg?.title || 'Produto';
+      const status = neg?.status || 'unknown';
+      const idLabel = neg?.id != null ? `#${neg.id}` : '—';
+      const updatedRaw = neg?.updated_at || neg?.created_at;
+      const updatedAbsolute = updatedRaw ? formatDateTime(updatedRaw) : '—';
+      const priority = getStatusPriority(status, neg);
+      const needsAction = priority <= 2;
+      const counterparty = getRelevantCounterparty(neg);
+      const cta = getMobilePrimaryCta(neg);
+
+      return `
+        <article class="bg-white rounded-2xl border border-gray-100 shadow-card p-4 space-y-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="text-xs text-gray-500 font-semibold">Negociação ${escapeHtml(idLabel)}</div>
+              <h3 class="text-base font-extrabold text-gray-900 mt-0.5 overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">
+                ${escapeHtml(productTitle)}
+              </h3>
+            </div>
+            <div class="flex-shrink-0">${renderStatusBadgeEnhanced(status)}</div>
+          </div>
+
+          <div class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 border border-gray-100">
+            <div class="w-10 h-10 rounded-full bg-white border border-gray-200 text-gray-700 font-semibold flex items-center justify-center uppercase">
+              ${escapeHtml(getInitials(counterparty.name))}
+            </div>
+            <div class="min-w-0">
+              <div class="text-xs text-gray-500">${escapeHtml(counterparty.label)}</div>
+              <div class="text-sm font-semibold text-gray-900 truncate">${escapeHtml(counterparty.name)}</div>
+              ${counterparty.email ? `<div class="text-xs text-gray-500 break-all">${escapeHtml(counterparty.email)}</div>` : ''}
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between gap-2 text-xs text-gray-500">
+            <span class="truncate">Atualizado em: ${escapeHtml(updatedAbsolute)}</span>
+            ${needsAction ? `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-semibold"><i class="fas fa-exclamation-triangle"></i>Ação</span>` : ''}
+          </div>
+
+          <div class="flex gap-3">
+            <button
+              type="button"
+              class="w-full px-4 py-3 rounded-xl bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white font-semibold shadow-md transition flex items-center justify-center gap-2"
+              data-action="openNegotiation"
+              data-id="${neg?.id}"
+            >
+              <i class="fas ${cta.icon}"></i>
+              ${escapeHtml(cta.label)}
+            </button>
+          </div>
+        </article>
+      `;
+    }).join('');
+
+    return `
+      <div class="space-y-4">
+        <div class="px-1 flex items-center justify-between">
+          <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Negociações</h2>
+          <span class="text-xs text-gray-500">${escapeHtml(showingLabel)}${totalPages > 1 ? ` • Página ${page}/${totalPages}` : ''}</span>
+        </div>
+        <div class="space-y-4">
+          ${itemsHtml}
+        </div>
+        ${totalPages > 1 ? `
+          <div class="flex items-center gap-3">
+            <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-xl text-gray-700 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardPrevPage" ${page <= 1 ? 'disabled' : ''}>
+              Anterior
+            </button>
+            <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-xl text-gray-700 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardNextPage" ${page >= totalPages ? 'disabled' : ''}>
+              Próxima
+            </button>
+          </div>
+        ` : ''}
       </div>
     `;
   }
@@ -1581,6 +1860,8 @@
           </div>
         </header>
 
+        ${renderBuyerAcceptSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
+
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
             <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-info-circle text-primary-500"></i> Resumo</h2>
@@ -1647,7 +1928,6 @@
         </div>
 
         ${renderLogisticsSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
-        ${renderBuyerAcceptSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
         ${renderPaymentSection(negotiation, { isBuyer: isBuyerRole })}
         ${renderPaymentsSection(negotiation)}
         ${renderAdminActionsSection(negotiation)}
@@ -1798,14 +2078,14 @@
       <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
         <div class="bg-white rounded-2xl shadow-card-xl max-w-md w-full overflow-hidden animate-slide-up">
           <div class="h-1 bg-gradient-to-r from-danger-500 to-danger-400"></div>
-          <header class="flex items-center justify-between p-6 border-b border-gray-100">
+          <header class="flex items-center justify-between p-4 sm:p-6 border-b border-gray-100">
             <div>
               <h2 class="text-xl font-bold text-gray-900">Recusar Negociação</h2>
               <p class="text-gray-500 text-sm">Informe o motivo da recusa</p>
             </div>
             <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeRejectModal">✕</button>
           </header>
-          <form data-action="rejectNegotiationBuyer" class="p-6 space-y-4">
+          <form data-action="rejectNegotiationBuyer" class="p-4 sm:p-6 space-y-4">
             <input type="hidden" name="negotiation_id" value="${state.rejectNegotiationId || ''}">
             <label class="flex flex-col gap-1">
               <span class="text-sm text-gray-700 font-medium">Motivo da recusa *</span>
@@ -1866,7 +2146,7 @@
         // Vendedor pode adicionar código pela primeira vez
         sections.push(`
           <form class="flex flex-wrap items-end gap-3 mt-4" data-action="updateTracking" data-id="${neg.id}" data-type="seller">
-            <label class="flex flex-col gap-1 flex-1 min-w-[200px]">
+            <label class="flex flex-col gap-1 flex-1 min-w-0 sm:min-w-[200px]">
               <span class="text-sm text-gray-600 font-medium"><i class="fas fa-truck mr-1"></i>Código de rastreio para intermediadora</span>
               <input type="text" name="tracking_code" placeholder="Ex: BR123456789" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
             </label>
@@ -1877,7 +2157,7 @@
         // Admin pode editar
         sections.push(`
           <form class="flex flex-wrap items-end gap-3 mt-4" data-action="updateTracking" data-id="${neg.id}" data-type="seller">
-            <label class="flex flex-col gap-1 flex-1 min-w-[200px]">
+            <label class="flex flex-col gap-1 flex-1 min-w-0 sm:min-w-[200px]">
               <span class="text-sm text-gray-600 font-medium"><i class="fas fa-truck mr-1"></i>Rastreio para intermediadora (Admin)</span>
               <input type="text" name="tracking_code" placeholder="Ex: BR123456789" value="${escapeAttr(trackSeller)}" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
             </label>
@@ -1889,8 +2169,8 @@
         sections.push(`
           <div class="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-100">
             <span class="text-sm text-gray-600 font-medium"><i class="fas fa-truck mr-1"></i>Rastreio para intermediadora</span>
-            <div class="mt-1 flex items-center gap-2">
-              <code class="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 font-mono">${escapeHtml(trackSeller)}</code>
+            <div class="mt-1 flex flex-col sm:flex-row sm:items-center items-start gap-2">
+              <code class="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 font-mono break-all">${escapeHtml(trackSeller)}</code>
               <a href="https://www.google.com/search?q=${encodeURIComponent(trackSeller + ' rastreio')}" target="_blank" class="text-primary-600 hover:text-primary-700 text-sm"><i class="fas fa-external-link-alt"></i> Rastrear</a>
             </div>
           </div>
@@ -1904,7 +2184,7 @@
         // Admin pode editar
         sections.push(`
           <form class="flex flex-wrap items-end gap-3 mt-4" data-action="updateTracking" data-id="${neg.id}" data-type="buyer">
-            <label class="flex flex-col gap-1 flex-1 min-w-[200px]">
+            <label class="flex flex-col gap-1 flex-1 min-w-0 sm:min-w-[200px]">
               <span class="text-sm text-gray-600 font-medium"><i class="fas fa-shipping-fast mr-1"></i>Rastreio para comprador (Admin)</span>
               <input type="text" name="tracking_code" placeholder="Ex: BR987654321" value="${escapeAttr(trackBuyer)}" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
             </label>
@@ -1916,8 +2196,8 @@
         sections.push(`
           <div class="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-100">
             <span class="text-sm text-gray-600 font-medium"><i class="fas fa-shipping-fast mr-1"></i>Rastreio para comprador</span>
-            <div class="mt-1 flex items-center gap-2">
-              <code class="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 font-mono">${escapeHtml(trackBuyer)}</code>
+            <div class="mt-1 flex flex-col sm:flex-row sm:items-center items-start gap-2">
+              <code class="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 font-mono break-all">${escapeHtml(trackBuyer)}</code>
               <a href="https://www.google.com/search?q=${encodeURIComponent(trackBuyer + ' rastreio')}" target="_blank" class="text-primary-600 hover:text-primary-700 text-sm"><i class="fas fa-external-link-alt"></i> Rastrear</a>
             </div>
           </div>
@@ -1940,7 +2220,7 @@
       }[payment.type] || 'Pagamento');
       const status = payment.confirmed_at ? `Confirmado em ${formatDate(payment.confirmed_at)}` : 'Pendente';
       return `
-        <div class="grid grid-cols-3 gap-4 py-2 border-b border-slate-700 last:border-b-0">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-4 py-2 border-b border-slate-700 last:border-b-0">
           <span class="text-white">${escapeHtml(label)}</span>
           <span class="text-success-600 font-bold">${formatCurrency(payment.amount)}</span>
           <span class="text-gray-500">${escapeHtml(status)}</span>
@@ -2061,7 +2341,7 @@
           
           <div class="space-y-4">
             <!-- Checklist -->
-            <div class="grid grid-cols-2 gap-2">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
               ${INSPECTION_CHECKLIST.map(item => `
                 <div class="flex items-center gap-2 text-sm ${checklist[item.id] ? 'text-success-600' : 'text-danger-500'}">
                   <i class="fas ${checklist[item.id] ? 'fa-check-circle' : 'fa-times-circle'}"></i>
@@ -2082,7 +2362,7 @@
             ${reportPhotos.length ? `
               <div>
                 <h4 class="text-sm font-medium text-gray-700 mb-2">Fotos da inspeção:</h4>
-                <div class="grid grid-cols-3 gap-2">
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   ${reportPhotos.map((url, idx) => `
                     <img src="${escapeAttr(resolvePhotoUrl(url))}" alt="Foto ${idx + 1}" class="w-full h-20 object-cover rounded-lg">
                   `).join('')}
@@ -2120,7 +2400,7 @@
           <!-- Upload de fotos -->
           <div>
             <h3 class="text-sm font-medium text-gray-700 mb-2">Fotos da inspeção (até 3)</h3>
-            <div class="grid grid-cols-4 gap-2">
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
               ${currentPhotos.map((photo, idx) => `
                 <div class="relative group">
                   <img src="${photo.preview || resolvePhotoUrl(photo)}" alt="Foto ${idx + 1}" class="w-full h-20 object-cover rounded-lg border border-gray-200">
@@ -2344,9 +2624,9 @@
             <h1 class="text-3xl font-bold text-gray-900">Painel administrativo</h1>
             <p class="text-gray-500">Visão completa de negociações e usuários.</p>
           </div>
-          <div class="flex gap-3">
-            <button class="px-4 py-2 bg-white border border-gray-200 hover:border-primary-400 rounded-lg text-gray-700 font-medium transition shadow-sm flex items-center gap-2" data-action="adminRefresh"><i class="fas fa-sync-alt"></i> Atualizar</button>
-            <button class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium flex items-center gap-2 transition" data-action="openPendingModal"><i class="fas fa-bell"></i> Pendências (${state.pendingCount})</button>
+          <div class="flex flex-wrap gap-3">
+            <button class="w-full sm:w-auto justify-center px-4 py-2 bg-white border border-gray-200 hover:border-primary-400 rounded-lg text-gray-700 font-medium transition shadow-sm flex items-center gap-2" data-action="adminRefresh"><i class="fas fa-sync-alt"></i> Atualizar</button>
+            <button class="w-full sm:w-auto justify-center px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium flex items-center gap-2 transition" data-action="openPendingModal"><i class="fas fa-bell"></i> Pendências (<span data-pending-count-inline>${state.pendingCount}</span>)</button>
           </div>
         </header>
         ${renderAdminTabs()}
@@ -2357,12 +2637,11 @@
 
   function renderAdminTabs() {
     const tabs = [
-      { key: 'overview', label: 'Resumo', icon: 'fa-chart-pie' },
       { key: 'negotiations', label: 'Negociações', icon: 'fa-handshake' },
       { key: 'users', label: 'Usuários', icon: 'fa-users' }
     ];
     return `
-      <nav class="flex gap-2 bg-white rounded-xl p-2 shadow-card">
+      <nav class="flex flex-col sm:flex-row gap-2 bg-white rounded-xl p-2 shadow-card">
         ${tabs.map((tab) => `
           <button class="flex-1 px-4 py-3 rounded-lg text-sm font-medium transition flex items-center justify-center gap-2 ${state.adminTab === tab.key ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white' : 'text-gray-600 hover:text-primary-600 hover:bg-primary-50'}" data-action="adminSelectTab" data-tab="${tab.key}">
             <i class="fas ${tab.icon}"></i> ${tab.label}
@@ -2378,9 +2657,8 @@
         return renderAdminUsers();
       case 'negotiations':
         return renderAdminNegotiations();
-      case 'overview':
       default:
-        return renderAdminOverview();
+        return renderAdminNegotiations();
     }
   }
 
@@ -2430,12 +2708,26 @@
     }
     const rows = list.map((neg) => {
       const canApprove = neg.status === 'awaiting_admin_approval';
+      const productTitle = neg.product_title || neg.product_name || neg.title || 'Produto';
+      const buyerName = neg.buyer?.name || '—';
+      const buyerEmail = neg.buyer?.email || '';
+      const sellerName = neg.seller?.name || '—';
+      const sellerEmail = neg.seller?.email || '';
       return `
       <div class="grid grid-cols-7 gap-4 px-6 py-4 border-t border-gray-100 items-center hover:bg-primary-50 transition">
         <span class="text-gray-500 font-medium">#${neg.id}</span>
-        <span class="truncate text-gray-800 font-medium">${escapeHtml(neg.product_title || neg.product_name || neg.title || 'Produto')}</span>
-        <span class="truncate text-gray-600">${escapeHtml(neg.buyer?.name || '—')}</span>
-        <span class="truncate text-gray-600">${escapeHtml(neg.seller?.name || '—')}</span>
+        <span class="min-w-0">
+          <div class="truncate text-gray-800 font-medium">${escapeHtml(productTitle)}</div>
+          <div class="text-xs text-gray-400">Negociação ID: #${neg.id}</div>
+        </span>
+        <span class="min-w-0">
+          <div class="truncate text-gray-600">${escapeHtml(buyerName)}</div>
+          ${buyerEmail ? `<div class="text-xs text-gray-400 break-all">${escapeHtml(buyerEmail)}</div>` : ''}
+        </span>
+        <span class="min-w-0">
+          <div class="truncate text-gray-600">${escapeHtml(sellerName)}</div>
+          ${sellerEmail ? `<div class="text-xs text-gray-400 break-all">${escapeHtml(sellerEmail)}</div>` : ''}
+        </span>
         <span>${renderStatusBadge(neg.status)}</span>
         <span class="text-gray-500 text-sm">${formatDateTime(neg.updated_at)}</span>
         <span class="flex flex-wrap gap-1">
@@ -2449,17 +2741,19 @@
     `;
     }).join('');
     return `
-      <section class="bg-white rounded-2xl shadow-card overflow-hidden border border-gray-100">
-        <div class="grid grid-cols-7 gap-4 px-6 py-4 bg-gradient-to-r from-gray-50 to-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100">
-          <span>ID</span>
-          <span>Produto</span>
-          <span>Comprador</span>
-          <span>Vendedor</span>
-          <span>Status</span>
-          <span>Atualizado</span>
-          <span></span>
+      <section class="bg-white rounded-2xl shadow-card overflow-x-auto border border-gray-100">
+        <div class="min-w-[860px]">
+          <div class="grid grid-cols-7 gap-4 px-6 py-4 bg-gradient-to-r from-gray-50 to-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100">
+            <span>ID</span>
+            <span>Produto</span>
+            <span>Comprador</span>
+            <span>Vendedor</span>
+            <span>Status</span>
+            <span>Atualizado</span>
+            <span></span>
+          </div>
+          ${rows}
         </div>
-        ${rows}
       </section>
     `;
   }
@@ -2467,24 +2761,24 @@
   function renderAdminUsers() {
     const users = Array.isArray(state.adminUsers) ? state.adminUsers : [];
     return `
-      <section class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+      <section class="bg-white rounded-2xl p-4 sm:p-6 shadow-card border border-gray-100">
         <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-user-plus text-success-500"></i> Gerenciar Usuários</h2>
         <form class="flex flex-wrap gap-3 mb-6" data-action="adminCreateInvitation">
-          <input type="text" name="name" placeholder="Nome completo" required class="flex-1 min-w-[160px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
-          <input type="email" name="email" placeholder="email@exemplo.com" required class="flex-1 min-w-[180px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
-          <select name="role" class="min-w-[140px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          <input type="text" name="name" placeholder="Nome completo" required class="w-full sm:flex-1 sm:min-w-[160px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          <input type="email" name="email" placeholder="email@exemplo.com" required class="w-full sm:flex-1 sm:min-w-[180px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          <select name="role" class="w-full sm:w-auto sm:min-w-[140px] px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
             <option value="buyer">Comprador</option>
             <option value="seller">Vendedor</option>
             <option value="admin">Administrador</option>
           </select>
-          <button type="submit" class="px-6 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition"><i class="fas fa-plus mr-2"></i>Criar convite</button>
+          <button type="submit" class="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition"><i class="fas fa-plus mr-2"></i>Criar convite</button>
         </form>
         <div class="space-y-2 mt-4">
           ${users.length ? users.map((user) => `
-            <div class="grid grid-cols-5 gap-4 items-center py-4 px-4 bg-gradient-to-r from-gray-50 to-white rounded-xl border border-gray-100 hover:shadow-md transition">
-              <span class="text-gray-800 font-medium">${escapeHtml(user.name || user.email || 'Usuário')}</span>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 sm:gap-4 items-center py-4 px-4 bg-gradient-to-r from-gray-50 to-white rounded-xl border border-gray-100 hover:shadow-md transition">
+              <span class="text-gray-800 font-medium">${escapeHtml(user.name || user.email || 'Usuário')} <span class="text-xs text-gray-400 font-semibold">#${escapeHtml(user.id ?? '—')}</span></span>
               <span>
-                <div class="text-gray-500">${escapeHtml(user.email || '—')}</div>
+                <div class="text-gray-500 break-all">${escapeHtml(user.email || '—')}</div>
                 <div class="text-gray-400 text-xs">${escapeHtml(user.address_city || '—')} / ${escapeHtml(user.address_state || '—')}</div>
               </span>
               <span class="px-2 py-1 bg-primary-100 text-primary-700 rounded-full text-xs font-medium inline-block w-fit">${ROLE_LABELS[user.role] || user.role || '—'}</span>
@@ -2508,17 +2802,17 @@
       <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
         <div class="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-card-xl overflow-hidden animate-slide-up">
           <div class="h-1 bg-gradient-to-r from-primary-500 to-secondary-500"></div>
-          <header class="flex items-start justify-between p-6 border-b border-gray-100">
+          <header class="flex items-start justify-between p-4 sm:p-6 border-b border-gray-100">
             <div>
               <h2 class="text-xl font-bold text-gray-900 flex items-center gap-2"><i class="fas fa-bell text-primary-500"></i> Pendências</h2>
               <p class="text-gray-500 text-sm">Negociações aguardando ação da intermediadora.</p>
             </div>
             <button class="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition" data-action="closePendingModal">✕</button>
           </header>
-          <section class="flex-1 overflow-y-auto p-6">
-            <label class="flex items-center gap-3 mb-4">
+          <section class="flex-1 overflow-y-auto p-4 sm:p-6">
+            <label class="flex flex-col sm:flex-row sm:items-center items-start gap-3 mb-4">
               <span class="text-gray-700 text-sm font-medium">Filtrar por mês</span>
-              <select data-action="selectPendingFilter" class="px-4 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+              <select data-action="selectPendingFilter" class="w-full sm:w-auto px-4 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
                 ${options.map((opt) => `<option value="${opt.value}" ${opt.value === state.pendingFilter ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`).join('')}
               </select>
             </label>
@@ -2533,7 +2827,9 @@
 
   function renderPendingNoticeCard(neg) {
     const buyer = neg?.buyer?.name || '—';
+    const buyerEmail = neg?.buyer?.email || '';
     const seller = neg?.seller?.name || '—';
+    const sellerEmail = neg?.seller?.email || '';
     const product = neg?.product_title || neg?.product_name || neg?.title || 'Produto';
     return `
       <article class="bg-gradient-to-r from-primary-50 to-secondary-50 rounded-xl p-4 border border-primary-200 hover:shadow-card transition-all duration-200">
@@ -2542,10 +2838,10 @@
           <span class="text-gray-500 text-sm">${formatRelativeTime(neg.created_at)}</span>
         </header>
         <div class="space-y-2 mb-4">
-          <strong class="block text-gray-800">${escapeHtml(product)}</strong>
+          <strong class="block text-gray-800">${escapeHtml(product)} <span class="text-xs text-gray-400 font-semibold">(#${neg.id})</span></strong>
           <div class="flex flex-wrap gap-4 text-sm text-gray-500">
-            <span><i class="fas fa-shopping-cart mr-1"></i> ${escapeHtml(buyer)}</span>
-            <span><i class="fas fa-store mr-1"></i> ${escapeHtml(seller)}</span>
+            <span><i class="fas fa-shopping-cart mr-1"></i> ${escapeHtml(buyer)}${buyerEmail ? ` <span class=\"text-xs text-gray-400 break-all\">(${escapeHtml(buyerEmail)})</span>` : ''}</span>
+            <span><i class="fas fa-store mr-1"></i> ${escapeHtml(seller)}${sellerEmail ? ` <span class=\"text-xs text-gray-400 break-all\">(${escapeHtml(sellerEmail)})</span>` : ''}</span>
           </div>
           <div>Status: ${renderStatusBadge(neg.status)}</div>
         </div>
@@ -2564,14 +2860,14 @@
       <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
         <div class="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-card-xl overflow-hidden animate-slide-up">
           <div class="h-1 bg-gradient-to-r from-secondary-500 to-primary-500"></div>
-          <header class="flex items-start justify-between p-6 border-b border-gray-100">
+          <header class="flex items-start justify-between p-4 sm:p-6 border-b border-gray-100">
             <div>
               <h2 class="text-xl font-bold text-gray-900 flex items-center gap-2"><i class="fas fa-stream text-secondary-500"></i> Linha do tempo</h2>
               <p class="text-gray-500 text-sm mt-1">Acompanhamento dos eventos da negociação.</p>
             </div>
             <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeTimeline">✕</button>
           </header>
-          <section class="p-6 overflow-y-auto flex-1 space-y-2">
+          <section class="p-4 sm:p-6 overflow-y-auto flex-1 space-y-2">
             ${timeline.length ? timeline.map((item) => renderTimelineItem(item)).join('') : '<p class="text-gray-400 text-center py-8">Sem eventos registrados.</p>'}
           </section>
         </div>
@@ -2704,6 +3000,9 @@
     if (state.showPendingModal && isAdmin()) {
       parts.push(renderPendingModal());
     }
+    if (state.currentPage === 'dashboard' && state.showDashboardFiltersModal) {
+      parts.push(renderDashboardFiltersModal());
+    }
     if (state.timelineNegotiationId) {
       parts.push(renderTimelineModal());
     }
@@ -2711,6 +3010,81 @@
       parts.push(renderGalleryModal());
     }
     return parts.join('');
+  }
+
+  function renderDashboardFiltersModal() {
+    const draft = state.dashboardFiltersDraft || state.negotiationFilters || {};
+    const status = draft.status || 'all';
+    const role = draft.role || 'all';
+    const query = draft.query || '';
+
+    const statusOptions = [
+      { key: 'all', label: 'Todos' },
+      { key: 'awaiting_admin_approval', label: 'Aguardando revisão' },
+      { key: 'pending_acceptance', label: 'Convites pendentes' },
+      { key: 'waiting_payment', label: 'Pagamento pendente' },
+      { key: 'waiting_shipment', label: 'Aguardando envio' },
+      { key: 'shipped', label: 'Em trânsito' },
+      { key: 'at_intermediary', label: 'Na intermediadora' },
+      { key: 'approved', label: 'Inspeção aprovada' },
+      { key: 'delivered', label: 'Entregues' },
+      { key: 'cancelled', label: 'Canceladas' }
+    ];
+
+    return `
+      <div class="fixed inset-0 z-50 sm:hidden">
+        <div class="absolute inset-0 bg-black/60" data-action="closeDashboardFiltersModal"></div>
+        <div class="absolute inset-x-0 bottom-0 bg-white rounded-t-2xl shadow-card-xl p-4" data-action="noop">
+          <div class="flex items-center justify-between">
+            <h3 class="text-lg font-extrabold text-gray-900">Filtrar negociações</h3>
+            <button type="button" class="w-10 h-10 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700" data-action="closeDashboardFiltersModal">✕</button>
+          </div>
+
+          <div class="mt-4 space-y-4">
+            <div>
+              <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Status</label>
+              <select class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800" data-action="updateDashboardFiltersDraft" data-field="status">
+                ${statusOptions.map((opt) => `<option value="${escapeAttr(opt.key)}" ${opt.key === status ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`).join('')}
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Papel</label>
+              <select class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800" data-action="updateDashboardFiltersDraft" data-field="role">
+                <option value="all" ${role === 'all' ? 'selected' : ''}>Todos</option>
+                <option value="buyer" ${role === 'buyer' ? 'selected' : ''}>Como comprador</option>
+                <option value="seller" ${role === 'seller' ? 'selected' : ''}>Como vendedor</option>
+              </select>
+              <p class="text-xs text-gray-500 mt-1">Mostra apenas negociações em que você é comprador/vendedor.</p>
+            </div>
+
+            <div>
+              <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Buscar</label>
+              <div class="relative">
+                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+                <input
+                  type="search"
+                  class="w-full pl-9 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder-gray-400"
+                  placeholder="Título, participante ou #id"
+                  value="${escapeAttr(query)}"
+                  data-action="updateDashboardFiltersDraft"
+                  data-field="query"
+                >
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-5 flex gap-3">
+            <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-xl text-gray-700 font-semibold" data-action="clearDashboardFiltersModal">
+              Limpar
+            </button>
+            <button type="button" class="flex-1 px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-xl text-white font-semibold" data-action="applyDashboardFiltersModal">
+              Aplicar
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   function renderToast() {
@@ -2725,6 +3099,8 @@
     const colorClass = typeColors[toast.type] || typeColors.info;
     return `<div class="fixed bottom-6 right-6 px-6 py-3 rounded-xl shadow-card-lg ${colorClass} z-50 animate-slide-up">${escapeHtml(toast.message)}</div>`;
   }
+
+  //#region Global Event Delegation (submit/click/input)
 
   function attachGlobalHandlers() {
     if (window.__intermediacaoGlobalHandlersAttached) {
@@ -2802,6 +3178,12 @@
     const dataset = { ...target.dataset };
     handler({ element: target, value: target.value, dataset, event });
   }
+
+  //#endregion Global Event Delegation (submit/click/input)
+
+  //#endregion PART 2/3: Render, UI e Handlers
+
+  //#region PART 3/3: Actions e Integração API
 
   async function withLoader(task, message = null) {
     setState({ isLoading: true, loadingMessage: message, errorMessage: null });
@@ -2984,10 +3366,9 @@
     if (!isAdmin()) return;
     const params = buildPendingParams(filter);
     try {
-      setState({ pendingFilter: filter });
       const data = await apiCall(`/intermediation/admin/pending?${params}`);
       const notices = Array.isArray(data?.data) ? data.data : data || [];
-      setState({ pendingNotices: notices });
+      setState({ pendingFilter: filter, pendingNotices: notices });
       await apiCall('/intermediation/admin/pending/opened', { method: 'POST', body: {} }).catch(() => null);
     } catch (error) {
       handleError(error, 'Não foi possível carregar pendências.');
@@ -3258,64 +3639,78 @@
     return result;
   }
 
-  // Status que requerem ação do usuário (prioridade alta)
-  const ACTION_REQUIRED_STATUSES = [
-    'awaiting_admin_approval',
-    'pending_buyer_acceptance', 
-    'waiting_payment',
-    'waiting_shipment',
-    'at_intermediary',
-    'shipped_to_buyer'
-  ];
+  function negotiationRequiresUserAction(neg) {
+    const status = neg?.status;
+    const userId = state.user?.id;
+    const isBuyerUser = Boolean(userId && neg?.buyer?.id === userId);
+    const isSellerUser = Boolean(userId && neg?.seller?.id === userId);
+
+    if (isAdmin()) {
+      // Intermediadora/Admin: precisa aprovar ou atuar quando o produto está com a intermediadora
+      return status === 'awaiting_admin_approval' || status === 'at_intermediary';
+    }
+
+    if (isBuyerUser) {
+      // Comprador: aceitar convite / pagar / confirmar recebimento após aprovação
+      if (status === 'pending_acceptance') return true;
+      if (status === 'waiting_payment') return true;
+      if (status === 'approved' && !neg?.buyer_confirmed_at) return true;
+      return false;
+    }
+
+    if (isSellerUser) {
+      // Vendedor: enviar (inserir rastreio) quando aguardando envio
+      if (status === 'waiting_shipment') return true;
+      return false;
+    }
+
+    return false;
+  }
 
   function getStatusPriority(status, neg) {
-    const userId = state.user?.id;
-    const isBuyer = neg?.buyer?.id === userId;
-    const isSeller = neg?.seller?.id === userId;
-    const admin = isAdmin();
+    // 0) Sempre primeiro: convites pendentes
+    if (status === 'pending_acceptance') return 0;
 
-    // Admin: prioridade para aprovação
-    if (admin && status === 'awaiting_admin_approval') return 0;
-    if (admin && status === 'at_intermediary') return 1;
-    
-    // Comprador: precisa aceitar ou pagar
-    if (isBuyer && status === 'pending_buyer_acceptance') return 0;
-    if (isBuyer && status === 'waiting_payment') return 1;
-    if (isBuyer && status === 'shipped_to_buyer') return 2;
-    
-    // Vendedor: precisa enviar
-    if (isSeller && status === 'waiting_shipment') return 0;
-    
-    // Outros status ativos
-    if (ACTION_REQUIRED_STATUSES.includes(status)) return 5;
-    
-    // Status finalizados ou cancelados
-    if (['completed', 'delivered', 'cancelled'].includes(status)) return 10;
-    
-    return 7;
+    // 1..2) Depois: prioridade do que requer ação do usuário
+    if (isAdmin()) {
+      if (status === 'awaiting_admin_approval') return 1;
+      if (status === 'at_intermediary') return 2;
+    } else if (negotiationRequiresUserAction(neg)) {
+      if (status === 'waiting_payment') return 1;
+      if (status === 'waiting_shipment') return 1;
+      return 2;
+    }
+
+    // 9) Finalizados/cancelados vão pro fim
+    if (['delivered', 'cancelled', 'rejected_by_admin', 'expired'].includes(status)) return 9;
+
+    // 5) Demais ativos
+    return 5;
   }
 
   function getFilteredNegotiations() {
     const list = Array.isArray(state.negotiations) ? state.negotiations : [];
-    const { status, query, mineOnly } = state.negotiationFilters;
+    const { status, role, query } = state.negotiationFilters;
     return list
       .filter((item) => {
-        if (mineOnly) {
-          const userId = state.user?.id;
-          if (!userId) return false;
-          const isParticipant = item?.buyer?.id === userId || item?.seller?.id === userId || item?.created_by?.id === userId;
-          if (!isParticipant) return false;
-        }
         if (status && status !== 'all') {
           if (item?.status !== status) return false;
         }
+
+        if (!isAdmin() && role && role !== 'all') {
+          if (role === 'buyer' && !isBuyer(item)) return false;
+          if (role === 'seller' && !isSeller(item)) return false;
+        }
+
         if (query) {
           const q = query.toLowerCase();
           const haystack = [
             item?.product_title,
             item?.product_name,
             item?.buyer?.name,
+            item?.buyer?.email,
             item?.seller?.name,
+            item?.seller?.email,
             item?.id ? `#${item.id}` : ''
           ].map((value) => (value || '').toString().toLowerCase()).join(' ');
           if (!haystack.includes(q)) return false;
@@ -3338,7 +3733,8 @@
   function storeAuth(token, user) {
     localStorage.setItem(STORAGE_KEYS.token, token);
     localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(user));
-    setState({ token, user, currentPage: 'dashboard' });
+    const targetPage = user?.role === 'admin' ? 'admin' : 'dashboard';
+    setState({ token, user, currentPage: targetPage });
   }
 
   function logout(silent = false) {
@@ -3380,10 +3776,17 @@
       page = 'dashboard';
     }
 
+    // Admin não usa dashboard; o "Admin" é o histórico.
+    if (isAdmin() && page === 'dashboard') {
+      page = 'admin';
+    }
+
     setState({
       currentPage: page,
       errorMessage: null,
-      successMessage: null
+      successMessage: null,
+      showDashboardFiltersModal: false,
+      filtersExpanded: false
     });
 
     if (page === 'dashboard') {
@@ -3391,6 +3794,9 @@
         loadNegotiations({ force: true });
       }
     } else if (page === 'admin') {
+      if (state.adminTab !== 'negotiations') {
+        setState({ adminTab: 'negotiations' });
+      }
       if (!state.adminNegotiations.length) {
         loadAdminSnapshot({ force: true });
       }
@@ -3608,10 +4014,12 @@
   }
 
   const actions = {
+    //#region Actions: Navegação e Máscaras
     navigate({ dataset }) {
       if (!dataset || !dataset.page) return;
       navigate(dataset.page, dataset);
     },
+    noop() {},
     formatPhoneInput({ element, event }) {
       if (!(element instanceof HTMLInputElement)) return;
       if (event && event.isComposing) return;
@@ -3632,12 +4040,18 @@
       const formatted = formatCepDigits(digits);
       applyFormattedValuePreservingCaret(element, formatted, digitsBeforeCaret);
     },
+    //#endregion Actions: Navegação e Máscaras
+
+    //#region Actions: Registro (cidade/estado)
     filterRegisterCity({ value }) {
       setState({ registerCityFilter: value || '' });
     },
     selectRegisterCity({ value }) {
       setState({ registerSelectedCity: value || '' });
     },
+    //#endregion Actions: Registro (cidade/estado)
+
+    //#region Actions: Autenticação
     logout() {
       logout();
     },
@@ -3713,6 +4127,7 @@
         }
       }, 'Criando conta...');
     },
+    //#endregion Actions: Autenticação
 
     async verifyEmailCode({ values }) {
       const code = String(values.code || '').replace(/\D+/g, '').slice(0, 6);
@@ -3788,17 +4203,59 @@
     },
     dashboardStatusFilter({ dataset }) {
       if (!dataset || dataset.status === undefined) return;
-      setState({ negotiationFilters: { ...state.negotiationFilters, status: dataset.status } });
+      const shouldCollapse = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width: 1023px)').matches;
+      setState({
+        negotiationFilters: { ...state.negotiationFilters, status: dataset.status },
+        dashboardPage: 1,
+        ...(shouldCollapse ? { filtersExpanded: false } : {})
+      });
     },
     dashboardSearch({ value }) {
-      setState({ negotiationFilters: { ...state.negotiationFilters, query: value || '' } });
+      setState({ negotiationFilters: { ...state.negotiationFilters, query: value || '' }, dashboardPage: 1 });
     },
-    dashboardMine({ element }) {
-      const checked = element instanceof HTMLInputElement ? element.checked : false;
-      setState({ negotiationFilters: { ...state.negotiationFilters, mineOnly: checked } });
+    dashboardPrevPage() {
+      const next = Math.max(1, (Number(state.dashboardPage) || 1) - 1);
+      if (next !== state.dashboardPage) setState({ dashboardPage: next });
+    },
+    dashboardNextPage() {
+      const total = getFilteredNegotiations().length;
+      const size = Math.max(1, Number(state.dashboardPageSize) || 6);
+      const totalPages = Math.max(1, Math.ceil(total / size));
+      const next = Math.min(totalPages, (Number(state.dashboardPage) || 1) + 1);
+      if (next !== state.dashboardPage) setState({ dashboardPage: next });
     },
     toggleFilters() {
       setState({ filtersExpanded: !state.filtersExpanded });
+    },
+    openDashboardFiltersModal() {
+      setState({
+        showDashboardFiltersModal: true,
+        dashboardFiltersDraft: { ...state.negotiationFilters },
+        filtersExpanded: false
+      });
+    },
+    closeDashboardFiltersModal() {
+      setState({ showDashboardFiltersModal: false });
+    },
+    updateDashboardFiltersDraft({ dataset, value }) {
+      const field = dataset?.field;
+      if (!field) return;
+      setState({ dashboardFiltersDraft: { ...(state.dashboardFiltersDraft || {}), [field]: value ?? '' } });
+    },
+    clearDashboardFiltersModal() {
+      setState({ dashboardFiltersDraft: { status: 'all', role: 'all', query: '' } });
+    },
+    applyDashboardFiltersModal() {
+      const draft = state.dashboardFiltersDraft || {};
+      setState({
+        negotiationFilters: {
+          status: draft.status || 'all',
+          role: draft.role || 'all',
+          query: draft.query || ''
+        },
+        dashboardPage: 1,
+        showDashboardFiltersModal: false
+      });
     },
     openCreateNegotiation() {
       setState({ 
@@ -4279,4 +4736,6 @@
       openResetPage(dataset?.token, dataset?.email);
     }
   };
+
+  //#endregion PART 3/3: Actions e Integração API
 })();
