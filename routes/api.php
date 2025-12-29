@@ -36,6 +36,8 @@ Route::middleware('auth:api')->group(function () {
     Route::post('/intermediation/{id}/approve', [IntermediationController::class, 'approve']);
     Route::post('/intermediation/{id}/mark-received', [IntermediationController::class, 'markReceived']);
     Route::post('/intermediation/{id}/buyer-confirm', [IntermediationController::class, 'buyerConfirm']);
+    Route::post('/intermediation/{id}/seller-feedback', [IntermediationController::class, 'sellerFeedback']);
+    Route::post('/intermediation/{id}/intermediary-feedback', [IntermediationController::class, 'intermediaryFeedback']);
     Route::post('/intermediation/{id}/buyer-reject', [IntermediationController::class, 'buyerReject']);
     Route::post('/intermediation/{id}/confirm-payment', [IntermediationController::class, 'confirmPayment']);
     Route::post('/intermediation/{id}/tracking', [IntermediationController::class, 'tracking']);

@@ -38,6 +38,13 @@ class Negotiation extends Model
         'shipped_at',
         'received_at',
         'delivered_at',
+        'buyer_confirmed_at',
+        'buyer_rating',
+        'buyer_rating_note',
+        'seller_rating',
+        'seller_rating_note',
+        'intermediary_rating',
+        'intermediary_rating_note',
     ];
 
     protected function casts(): array
@@ -55,6 +62,7 @@ class Negotiation extends Model
             'shipped_at' => 'datetime',
             'received_at' => 'datetime',
             'delivered_at' => 'datetime',
+            'buyer_confirmed_at' => 'datetime',
         ];
     }
 

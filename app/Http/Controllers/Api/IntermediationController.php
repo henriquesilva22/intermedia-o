@@ -376,9 +376,85 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Confirmação de entrega disponível apenas após aprovação da intermediadora.'], 422);
         }
 
+        $data = Validator::make($request->all(), [
+            'rating' => ['nullable', 'integer', 'min:1', 'max:10'],
+            'comment' => ['nullable', 'string', 'max:500'],
+        ])->validate();
+
+        $rating = array_key_exists('rating', $data) ? $data['rating'] : null;
+        $comment = array_key_exists('comment', $data) ? $data['comment'] : null;
+
         $negotiation->update([
             'status' => 'delivered',
             'delivered_at' => now(),
+            'buyer_confirmed_at' => now(),
+            'buyer_rating' => $rating ?? $negotiation->buyer_rating,
+            'buyer_rating_note' => is_string($comment) ? trim($comment) : $negotiation->buyer_rating_note,
+        ]);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Seller feedback (experience rating).
+     */
+    public function sellerFeedback(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $negotiation = Negotiation::find($id);
+
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $negotiation->isSeller($user)) {
+            return response()->json(['message' => 'Apenas o vendedor pode enviar feedback.'], 403);
+        }
+
+        if ($negotiation->status !== 'delivered') {
+            return response()->json(['message' => 'Feedback disponível apenas após a entrega ser confirmada.'], 422);
+        }
+
+        $data = Validator::make($request->all(), [
+            'rating' => ['required', 'integer', 'min:1', 'max:10'],
+            'comment' => ['nullable', 'string', 'max:500'],
+        ])->validate();
+
+        $negotiation->update([
+            'seller_rating' => $data['rating'],
+            'seller_rating_note' => isset($data['comment']) ? trim((string) $data['comment']) : null,
+        ]);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Intermediary feedback (admin/inspector experience rating).
+     */
+    public function intermediaryFeedback(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if ($user->role !== 'admin' && $user->role !== 'inspector') {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        $negotiation = Negotiation::find($id);
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if ($negotiation->status !== 'delivered') {
+            return response()->json(['message' => 'Feedback disponível apenas após a entrega ser confirmada.'], 422);
+        }
+
+        $data = Validator::make($request->all(), [
+            'rating' => ['required', 'integer', 'min:1', 'max:10'],
+            'comment' => ['nullable', 'string', 'max:500'],
+        ])->validate();
+
+        $negotiation->update([
+            'intermediary_rating' => $data['rating'],
+            'intermediary_rating_note' => isset($data['comment']) ? trim((string) $data['comment']) : null,
         ]);
 
         return response()->json(['success' => true]);
@@ -396,11 +472,15 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
         }
 
-        if (! $negotiation->isSeller($user) && $user->role !== 'admin') {
+        $isAdmin = $user->role === 'admin';
+
+        if (! $negotiation->isSeller($user) && ! $isAdmin) {
             return response()->json(['message' => 'Apenas o vendedor pode adicionar rastreio.'], 403);
         }
 
-        if ($negotiation->status !== 'waiting_shipment') {
+        // Vendedor só pode registrar o envio quando estiver em "Aguardando Envio".
+        // Admin pode corrigir/editar o código mesmo em outros status (sem alterar o status automaticamente).
+        if (! $isAdmin && $negotiation->status !== 'waiting_shipment') {
             return response()->json(['message' => 'Rastreio disponível apenas após confirmação do pagamento (Aguardando Envio).'], 422);
         }
 
@@ -409,12 +489,18 @@ class IntermediationController extends Controller
             'tracking_carrier' => ['nullable', 'string', 'max:100'],
         ])->validate();
 
-        $negotiation->update([
+        $update = [
             'tracking_code' => $data['tracking_code'],
             'tracking_carrier' => $data['tracking_carrier'] ?? null,
-            'status' => 'shipped',
-            'shipped_at' => now(),
-        ]);
+        ];
+
+        // Só força transição de status quando estiver no fluxo normal de envio.
+        if ($negotiation->status === 'waiting_shipment') {
+            $update['status'] = 'shipped';
+            $update['shipped_at'] = $negotiation->shipped_at ?? now();
+        }
+
+        $negotiation->update($update);
 
         return response()->json(['success' => true]);
     }
@@ -501,7 +587,8 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
         }
 
-        if ($negotiation->buyer_id !== $user->id) {
+        $isAdmin = $user && $user->role === 'admin';
+        if (! $isAdmin && $negotiation->buyer_id !== $user->id) {
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
@@ -841,7 +928,13 @@ class IntermediationController extends Controller
             'intermediary_received_status' => (bool) $negotiation->received_at,
             'intermediary_approval_confirmed_at' => $this->toIso8601StringOrNull($negotiation->intermediary_approval_confirmed_at),
             'sent_to_buyer_at' => $this->toIso8601StringOrNull($negotiation->sent_to_buyer_at),
-            'buyer_confirmed_at' => $this->toIso8601StringOrNull($negotiation->delivered_at),
+            'buyer_confirmed_at' => $this->toIso8601StringOrNull($negotiation->buyer_confirmed_at ?? $negotiation->delivered_at),
+            'buyer_rating' => $negotiation->buyer_rating,
+            'buyer_rating_note' => $negotiation->buyer_rating_note,
+            'seller_rating' => $negotiation->seller_rating,
+            'seller_rating_note' => $negotiation->seller_rating_note,
+            'intermediary_rating' => $negotiation->intermediary_rating,
+            'intermediary_rating_note' => $negotiation->intermediary_rating_note,
             'tracking_code' => $negotiation->tracking_code,
             'tracking_carrier' => $negotiation->tracking_carrier,
             'buyer_tracking_code' => $negotiation->buyer_tracking_code,

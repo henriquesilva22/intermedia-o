@@ -88,7 +88,11 @@
     timelineNegotiationId: null,
     timelineData: null,
     gallery: null,
+    showIntermediaryReportModal: false,
     adminTab: 'negotiations',
+    adminNegotiationsView: 'active',
+    adminNegotiationsPage: 1,
+    adminNegotiationsPageSize: 10,
     adminNegotiations: [],
     adminUsers: [],
     adminOverview: null,
@@ -171,6 +175,9 @@
   ];
 
   let pendingPollingHandle = null;
+  let pendingNoticesLoading = false;
+  let pendingNoticesLoadedAt = 0;
+  let pendingNoticesLastFilter = null;
   let confirmationIntervalHandle = null;
   let toastTimer = null;
   let saoPauloCitiesPromise = null;
@@ -283,6 +290,12 @@
         /* Toast notifications */
         .toast-enter { animation: slideInRight 0.3s ease-out; }
         @keyframes slideInRight { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+        /* Mobile admin cards (details/summary) */
+        details > summary { list-style: none; }
+        details > summary::-webkit-details-marker { display: none; }
+        .admin-card-chevron { transition: transform 0.2s ease; }
+        details[open] .admin-card-chevron { transform: rotate(180deg); }
       `;
       document.head.insertBefore(criticalStyle, document.head.firstChild);
     }
@@ -475,7 +488,7 @@
     }
     const isAuthenticated = Boolean(state.token && state.user);
     const content = `
-      <div class="min-h-screen bg-gray-50 text-gray-800 flex flex-col">
+      <div class="min-h-screen bg-gray-50 text-gray-800 flex flex-col overflow-x-hidden">
         ${renderHeader(isAuthenticated)}
         ${renderNotifications()}
         ${isAuthenticated ? renderProtectedView() : renderPublicLayout()}
@@ -1090,7 +1103,11 @@
   }
 
   function renderProtectedView() {
-    return `<main class="flex-1 w-full max-w-6xl mx-auto p-4 sm:p-6">${renderProtectedPage()}</main>`;
+    return `
+      <main class="flex-1 w-full p-4 sm:p-6 overflow-x-hidden">
+        <div class="w-full max-w-6xl mx-auto">${renderProtectedPage()}</div>
+      </main>
+    `;
   }
 
   function renderProtectedPage() {
@@ -1105,7 +1122,7 @@
 
   function renderDashboardPage() {
     const negotiations = getFilteredNegotiations();
-    const pageSize = Math.max(1, Number(state.dashboardPageSize) || 6);
+    const pageSize = getDashboardPageSize();
     const totalPages = Math.max(1, Math.ceil(negotiations.length / pageSize));
     const currentPage = Math.min(Math.max(1, Number(state.dashboardPage) || 1), totalPages);
     const startIndex = (currentPage - 1) * pageSize;
@@ -1145,12 +1162,8 @@
           <!-- COLUNA DIREITA: Cards de resumo + Tabela -->
           <div class="flex-1 min-w-0 space-y-6">
             ${renderDashboardMobileFilterBar()}
-            ${renderDashboardSummary()}
-            <div class="sm:hidden">
+            <div>
               ${renderNegotiationsCardsMobile(pageItems, pageMeta)}
-            </div>
-            <div class="hidden sm:block">
-              ${renderNegotiationsTable(pageItems, pageMeta)}
             </div>
           </div>
         </div>
@@ -1188,12 +1201,20 @@
     `;
   }
 
+  function getDashboardPageSize() {
+    const isMobile = typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia('(max-width: 639px)').matches
+      : false;
+    return isMobile ? 3 : Math.max(1, Number(state.dashboardPageSize) || 6);
+  }
+
   function renderFilterSidebar() {
   const { status, query } = state.negotiationFilters;
+  const counts = getDashboardStatusCounts();
   const statusOptions = [
     { key: 'all', label: 'Todos', icon: 'fa-th-list', color: 'text-gray-600' },
-    { key: 'awaiting_admin_approval', label: 'Aguardando revisão', icon: 'fa-hourglass-half', color: 'text-primary-600' },
     { key: 'pending_acceptance', label: 'Convites pendentes', icon: 'fa-user-plus', color: 'text-secondary-600' },
+    { key: 'awaiting_admin_approval', label: 'Aguardando revisão', icon: 'fa-hourglass-half', color: 'text-primary-600' },
     { key: 'waiting_payment', label: 'Pagamento pendente', icon: 'fa-credit-card', color: 'text-warning-600' },
     { key: 'waiting_shipment', label: 'Aguardando envio', icon: 'fa-box', color: 'text-gray-600' },
     { key: 'shipped', label: 'Em trânsito', icon: 'fa-truck', color: 'text-secondary-600' },
@@ -1227,14 +1248,16 @@
 
         <div id="${filterPanelId}" class="lg:block ${expanded ? 'block' : 'hidden'} space-y-6">
           <div>
-            <span class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Buscar negociação</span>
+            <span class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Buscar negociações</span>
             <div class="relative">
               <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
               <input 
                 type="search" 
+                name="dashboard_query"
                 placeholder="Filtrar por título, comprador ou vendedor" 
                 value="${escapeAttr(query)}" 
                 data-action="dashboardSearch" 
+                data-focus-key="dashboard-search"
                 class="w-full pl-9 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all duration-150"
               >
             </div>
@@ -1245,6 +1268,8 @@
             <nav class="flex flex-col gap-1.5">
               ${statusOptions.map((opt) => {
                 const isActive = status === opt.key;
+                const count = opt.key === 'all' ? (Number(counts.total) || 0) : (Number(counts.byStatus?.[opt.key]) || 0);
+                const showCount = opt.key === 'all' || count > 0;
                 return `
                   <button
                     type="button"
@@ -1258,7 +1283,7 @@
                       <i class="fas ${opt.icon} ${isActive ? 'text-white' : opt.color}"></i>
                       <span class="truncate">${escapeHtml(opt.label)}</span>
                     </span>
-                    ${isActive ? '<i class="fas fa-check text-xs"></i>' : ''}
+                    ${showCount ? `<span class="inline-flex items-center justify-center min-w-6 h-6 px-2 rounded-full text-xs font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'}">${count}</span>` : ''}
                   </button>
                 `;
               }).join('')}
@@ -1549,7 +1574,7 @@
     return `
       <div class="bg-white rounded-2xl border border-gray-100 shadow-card overflow-hidden">
         <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between bg-gray-50">
-          <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Negociações</h2>
+          <h2 class="text-base font-bold text-gray-900">Negociações</h2>
           <span class="text-xs text-gray-500">${showingLabel || totalLabel}${totalPages > 1 ? ` • Página ${page}/${totalPages}` : ''}</span>
         </div>
         <div class="overflow-x-auto">
@@ -1655,11 +1680,16 @@
       const updatedAbsolute = updatedRaw ? formatDateTime(updatedRaw) : '—';
       const priority = getStatusPriority(status, neg);
       const needsAction = priority <= 2;
-      const counterparty = getRelevantCounterparty(neg);
       const cta = getMobilePrimaryCta(neg);
+      const buyerName = neg?.buyer?.name || '—';
+
 
       return `
-        <article class="bg-white rounded-2xl border border-gray-100 shadow-card p-4 space-y-3">
+        <article
+          class="bg-white rounded-2xl border border-gray-100 shadow-card p-4 hover:shadow-card-lg transition cursor-pointer"
+          data-action="openNegotiation"
+          data-id="${neg?.id}"
+        >
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
               <div class="text-xs text-gray-500 font-semibold">Negociação ${escapeHtml(idLabel)}</div>
@@ -1670,33 +1700,28 @@
             <div class="flex-shrink-0">${renderStatusBadgeEnhanced(status)}</div>
           </div>
 
-          <div class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 border border-gray-100">
-            <div class="w-10 h-10 rounded-full bg-white border border-gray-200 text-gray-700 font-semibold flex items-center justify-center uppercase">
-              ${escapeHtml(getInitials(counterparty.name))}
-            </div>
+          <div class="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div class="min-w-0">
-              <div class="text-xs text-gray-500">${escapeHtml(counterparty.label)}</div>
-              <div class="text-sm font-semibold text-gray-900 truncate">${escapeHtml(counterparty.name)}</div>
-              ${counterparty.email ? `<div class="text-xs text-gray-500 break-all">${escapeHtml(counterparty.email)}</div>` : ''}
+              <div class="text-xs text-gray-500">Comprador</div>
+              <div class="text-sm font-semibold text-gray-900 truncate">${escapeHtml(buyerName)}</div>
+              <div class="text-xs text-gray-500 truncate hidden sm:block">Atualizado em: ${escapeHtml(updatedAbsolute)}</div>
+            </div>
+
+            <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:flex-shrink-0">
+              ${needsAction ? `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-xs font-semibold"><i class="fas fa-exclamation-triangle"></i>Ação</span>` : ''}
+              <button
+                type="button"
+                class="w-full sm:w-auto justify-center px-3 py-2 rounded-lg bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white text-sm font-semibold shadow-sm transition flex items-center gap-2"
+                data-action="openNegotiation"
+                data-id="${neg?.id}"
+              >
+                <i class="fas ${cta.icon}"></i>
+                ${escapeHtml(cta.label)}
+              </button>
+              <div class="text-[11px] text-gray-500 sm:hidden">Atualizado: ${escapeHtml(updatedAbsolute)}</div>
             </div>
           </div>
 
-          <div class="flex items-center justify-between gap-2 text-xs text-gray-500">
-            <span class="truncate">Atualizado em: ${escapeHtml(updatedAbsolute)}</span>
-            ${needsAction ? `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-semibold"><i class="fas fa-exclamation-triangle"></i>Ação</span>` : ''}
-          </div>
-
-          <div class="flex gap-3">
-            <button
-              type="button"
-              class="w-full px-4 py-3 rounded-xl bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white font-semibold shadow-md transition flex items-center justify-center gap-2"
-              data-action="openNegotiation"
-              data-id="${neg?.id}"
-            >
-              <i class="fas ${cta.icon}"></i>
-              ${escapeHtml(cta.label)}
-            </button>
-          </div>
         </article>
       `;
     }).join('');
@@ -1738,6 +1763,7 @@
     const actionBadge = needsAction
       ? `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-600 border border-amber-200"><i class="fas fa-exclamation-triangle"></i>Ação necessária</span>`
       : '';
+
     
     return `
       <tr class="hover:bg-gray-50 transition cursor-pointer ${needsAction ? 'bg-orange-50' : ''}" data-action="openNegotiation" data-id="${neg?.id}">
@@ -1846,6 +1872,44 @@
     const isSellerRole = isSeller(negotiation);
     const status = negotiation.status || '—';
 
+    const productPhotos = Array.isArray(negotiation?.product_photos || negotiation?.photos)
+      ? (negotiation.product_photos || negotiation.photos)
+      : [];
+    const hasProductPhotos = productPhotos.length > 0;
+
+    const intermediaryChecklist = negotiation?.inspection_report?.checklist ?? negotiation?.intermediary_checklist ?? null;
+    const hasChecklist = Boolean(intermediaryChecklist) && (
+      Array.isArray(intermediaryChecklist)
+        ? intermediaryChecklist.length
+        : Object.keys(intermediaryChecklist || {}).length
+    );
+    const hasIntermediaryReportData = Boolean(
+      negotiation?.inspection_report
+      || (Array.isArray(negotiation?.intermediary_photos) && negotiation.intermediary_photos.length)
+      || hasChecklist
+      || (negotiation?.intermediary_notes && String(negotiation.intermediary_notes).trim())
+    );
+
+    const productAmount = Number(negotiation?.product_price ?? negotiation?.price ?? 0) || 0;
+    const buyerFee = 15;
+    const buyerTotal = productAmount + buyerFee;
+    const description = negotiation.product_description || negotiation.description || '';
+
+    const productImageButton = `
+      <button
+        type="button"
+        class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+        data-action="openGallery"
+        data-id="${negotiation.id}"
+        data-index="0"
+        data-type="product"
+        ${hasProductPhotos ? '' : 'disabled'}
+        title="${hasProductPhotos ? 'Ver fotos do produto' : 'Este produto não tem fotos'}"
+      >
+        Imagem do produto
+      </button>
+    `;
+
     return `
       <section class="space-y-6">
         <header class="flex flex-wrap items-start justify-between gap-4">
@@ -1854,46 +1918,63 @@
             <h1 class="text-3xl font-bold text-gray-900">Negociação #${negotiation.id}</h1>
             <p class="text-gray-500">${escapeHtml(productTitle)}</p>
           </div>
-          <div class="flex items-center gap-3">
-            <span>${renderStatusBadge(status)}</span>
-            <button class="px-4 py-2 bg-white border border-gray-200 hover:border-primary-400 rounded-lg text-gray-700 font-medium transition shadow-sm flex items-center gap-2" data-action="openTimeline" data-id="${negotiation.id}"><i class="fas fa-stream"></i> Linha do tempo</button>
+          <div class="flex items-center gap-2">
+            ${renderStatusBadgeEnhanced(status)}
           </div>
         </header>
 
-        ${renderBuyerAcceptSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
-
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
-            <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-info-circle text-primary-500"></i> Resumo</h2>
-            <dl class="grid grid-cols-2 gap-4 text-sm">
+            <div class="flex items-start justify-between gap-3 mb-4">
+              <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2"><i class="fas fa-receipt text-primary-500"></i> Resumo</h2>
+              ${hasIntermediaryReportData ? `
+                <button
+                  type="button"
+                  class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white"
+                  data-action="openIntermediaryReport"
+                >
+                  Relatório do intermediador
+                </button>
+              ` : ''}
+            </div>
+
+            <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <dt class="text-gray-500">Valor</dt>
-                <dd class="text-gray-800 font-bold text-lg">${formatCurrency(negotiation.product_price || negotiation.price)}</dd>
+                <dt class="text-gray-500">Valor do produto</dt>
+                <dd class="text-gray-700">${formatCurrency(productAmount)}</dd>
               </div>
               <div>
-                <dt class="text-gray-500">Atualizado</dt>
-                <dd class="text-gray-700">${formatDateTime(negotiation.updated_at || negotiation.created_at)}</dd>
+                <dt class="text-gray-500">Taxa (comprador)</dt>
+                <dd class="text-gray-700">${formatCurrency(buyerFee)}</dd>
+              </div>
+              <div>
+                <dt class="text-gray-500">Total (comprador)</dt>
+                <dd class="text-gray-700">${formatCurrency(buyerTotal)}</dd>
               </div>
               <div>
                 <dt class="text-gray-500">Entrega combinada</dt>
                 <dd class="text-gray-700">${negotiation.delivery_days ? `${negotiation.delivery_days} dias` : '—'}</dd>
               </div>
-              <div>
-                <dt class="text-gray-500">Status atual</dt>
-                <dd>${renderStatusBadge(status)}</dd>
-              </div>
             </dl>
-            ${negotiation.product_description || negotiation.description ? `
+
+            ${description ? `
               <section class="mt-6 pt-4 border-t border-gray-100">
                 <h3 class="text-sm font-medium text-gray-600 mb-2">Descrição enviada pelo vendedor</h3>
-                <p class="text-gray-500">${escapeHtml(negotiation.product_description || negotiation.description)}</p>
+                <p class="text-gray-500">${escapeHtml(description)}</p>
+                <div class="mt-4 flex justify-end">
+                  ${productImageButton}
+                </div>
               </section>
-            ` : ''}
+            ` : `
+              <div class="mt-6 flex justify-end">
+                ${productImageButton}
+              </div>
+            `}
           </article>
 
           <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
             <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-users text-secondary-500"></i> Participantes</h2>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="grid grid-cols-1 gap-4">
               <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
                 <header class="flex items-center gap-2 mb-2">
                   <span class="px-2 py-0.5 bg-warning-500 text-white text-xs rounded-full font-medium">Vendedor</span>
@@ -1902,6 +1983,7 @@
                 <strong class="block text-gray-800">${escapeHtml(seller.name || '—')}</strong>
                 <span class="block text-gray-500 text-sm break-all">${escapeHtml(seller.email || '—')}</span>
                 <span class="block text-gray-500 text-sm">${formatPhone(seller.phone)}</span>
+                ${renderRatingInline('Avaliação do vendedor', negotiation.seller_rating)}
                 ${renderAddressDetails(seller)}
               </div>
               <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
@@ -1912,6 +1994,7 @@
                 <strong class="block text-gray-800">${escapeHtml(buyer.name || '—')}</strong>
                 <span class="block text-gray-500 text-sm break-all">${escapeHtml(buyer.email || '—')}</span>
                 <span class="block text-gray-500 text-sm">${formatPhone(buyer.phone)}</span>
+                ${renderRatingInline('Avaliação do comprador', negotiation.buyer_rating)}
                 ${renderAddressDetails(buyer)}
               </div>
               <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
@@ -1921,18 +2004,21 @@
                 <strong class="block text-gray-800">IntermediaçãoPro</strong>
                 <span class="block text-gray-500 text-sm break-all">contato@intermediacaopro.com</span>
                 <span class="block text-gray-500 text-sm">${formatPhone('(11) 99999-9999')}</span>
+                ${renderRatingInline('Avaliação da intermediadora', negotiation.intermediary_rating)}
                 ${renderAddressDetails(INTERMEDIARY_ADDRESS, 'Endereço não informado.')}
               </div>
             </div>
           </article>
         </div>
 
+        ${renderParticipantActions(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole, isIntermediary: isAdmin() })}
+
+        ${renderBuyerAcceptSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
+        ${renderPaymentSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
         ${renderLogisticsSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
-        ${renderPaymentSection(negotiation, { isBuyer: isBuyerRole })}
         ${renderPaymentsSection(negotiation)}
         ${renderAdminActionsSection(negotiation)}
         ${renderInspectionReportSection(negotiation)}
-        ${renderParticipantActions(negotiation, { isBuyer: isBuyerRole })}
         ${renderAttachmentSection(negotiation)}
         ${renderNegotiationLogs(negotiation)}
       </section>
@@ -1940,23 +2026,62 @@
     `;
   }
 
+  function renderRatingInline(label, value) {
+    const rating10 = Number(value);
+    const has = Number.isFinite(rating10) && rating10 >= 1 && rating10 <= 10;
+    if (!has) {
+      return `
+        <div class="mt-3">
+          <div class="text-xs text-gray-500">${escapeHtml(label)}</div>
+          <div class="text-sm text-gray-700 font-medium">—</div>
+        </div>
+      `;
+    }
+
+    const stars = Math.max(1, Math.min(5, Math.round(rating10 / 2)));
+    const starsHtml = Array.from({ length: 5 }).map((_, i) => {
+      const filled = i < stars;
+      return `<i class="fas fa-star ${filled ? 'text-warning-400' : 'text-gray-300'}"></i>`;
+    }).join('');
+
+    return `
+      <div class="mt-3">
+        <div class="text-xs text-gray-500">${escapeHtml(label)}</div>
+        <div class="flex items-center gap-2">
+          <div class="flex items-center gap-1">${starsHtml}</div>
+          <div class="text-xs text-gray-600">${escapeHtml(String(rating10))}/10</div>
+        </div>
+      </div>
+    `;
+  }
+
   function renderLogisticsSection(neg, { isBuyer, isSeller }) {
     const trackSeller = neg.tracking_to_intermediary || neg.tracking_code || '';
     const trackBuyer = neg.tracking_to_buyer || neg.buyer_tracking_code || '';
+    const hasBuyerTracking = Boolean(trackBuyer);
+
     return `
       <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
-        <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-truck text-success-500"></i> Logística</h2>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
-            <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para intermediadora</h3>
-            <p class="text-sm text-gray-800 font-medium">${trackSeller ? escapeHtml(trackSeller) : 'Não informado'}</p>
-            ${neg.sent_to_intermediary_at || neg.shipped_at ? `<small class="text-xs text-gray-500">Postado em ${formatDate(neg.sent_to_intermediary_at || neg.shipped_at)}</small>` : ''}
-          </div>
-          <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
-            <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para comprador</h3>
-            <p class="text-sm text-gray-800 font-medium">${trackBuyer ? escapeHtml(trackBuyer) : 'Não informado'}</p>
-            ${neg.sent_to_buyer_at ? `<small class="text-xs text-gray-500">Despachado em ${formatDate(neg.sent_to_buyer_at)}</small>` : ''}
-          </div>
+        <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-truck text-success-500"></i> Rastreio</h2>
+        <div class="grid grid-cols-1 ${hasBuyerTracking ? '' : 'md:grid-cols-2'} gap-4">
+          ${hasBuyerTracking ? `
+            <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
+              <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para comprador</h3>
+              <p class="text-sm text-gray-800 font-medium">${escapeHtml(trackBuyer)}</p>
+              ${neg.sent_to_buyer_at ? `<small class="text-xs text-gray-500">Despachado em ${formatDate(neg.sent_to_buyer_at)}</small>` : ''}
+            </div>
+          ` : `
+            <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
+              <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para intermediadora</h3>
+              <p class="text-sm text-gray-800 font-medium">${trackSeller ? escapeHtml(trackSeller) : 'Não informado'}</p>
+              ${neg.sent_to_intermediary_at || neg.shipped_at ? `<small class="text-xs text-gray-500">Postado em ${formatDate(neg.sent_to_intermediary_at || neg.shipped_at)}</small>` : ''}
+            </div>
+            <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
+              <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para comprador</h3>
+              <p class="text-sm text-gray-800 font-medium">${trackBuyer ? escapeHtml(trackBuyer) : 'Não informado'}</p>
+              ${neg.sent_to_buyer_at ? `<small class="text-xs text-gray-500">Despachado em ${formatDate(neg.sent_to_buyer_at)}</small>` : ''}
+            </div>
+          `}
         </div>
         ${renderTrackingForms(neg, { isBuyer, isSeller })}
       </article>
@@ -1997,18 +2122,50 @@
     `;
   }
 
-  function renderPaymentSection(neg, { isBuyer }) {
-    // Mostra QR Code para pagamento quando o status for waiting_payment e o usuário for comprador
-    if (neg.status !== 'waiting_payment' || !isBuyer) return '';
+  function renderPaymentSection(neg, { isBuyer, isSeller } = {}) {
+    // Mostra Pix quando o status for waiting_payment e o usuário for comprador ou vendedor
+    if (neg.status !== 'waiting_payment' || (!isBuyer && !isSeller)) return '';
 
-    const amount = neg.product_price || neg.price || 0;
-    const fee = amount * 0.05; // Taxa de 5%
-    const total = amount + fee;
-    
-    // Dados para QR Code Pix (usa código vindo da API, com fallback simulado)
-    const pixKey = 'pix@intermediacao.com.br';
-    const fallbackPixCode = `00020126580014br.gov.bcb.pix0136${pixKey}5204000053039865406${total.toFixed(2)}5802BR5925INTERMEDIACAO PRO LTDA6009SAO PAULO62070503***6304`;
-    const pixCode = String(neg.pix_code || fallbackPixCode);
+    const role = isSeller ? 'seller' : 'buyer';
+    const { amount, fee, total, pixKey, pixCode } = getPixPaymentInfo(neg, { role });
+
+    if (role === 'seller') {
+      return `
+        <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+          <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-qrcode text-secondary-600"></i> Pagamento via Pix</h2>
+
+          <div class="space-y-3 mb-4">
+            <div class="p-3 bg-white rounded-lg border border-secondary-200">
+              <span class="text-xs text-gray-500 block mb-1">Pix copia e cola</span>
+              <div class="flex items-start gap-2">
+                <code class="text-xs text-gray-800 flex-1 break-all leading-relaxed">${escapeHtml(pixCode)}</code>
+                <button class="px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600" data-action="copyText" data-value="${escapeAttr(pixCode)}">
+                  <i class="fas fa-copy"></i>
+                </button>
+              </div>
+            </div>
+
+            <div class="p-3 bg-white rounded-lg border border-secondary-200">
+              <span class="text-xs text-gray-500 block mb-1">Chave Pix (E-mail)</span>
+              <div class="flex items-center gap-2">
+                <code class="text-sm text-gray-800 flex-1">${escapeHtml(pixKey)}</code>
+                <button class="px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600" data-action="copyText" data-value="${escapeAttr(pixKey)}">
+                  <i class="fas fa-copy"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-gray-50 p-4 rounded-xl border border-gray-100">
+            <h3 class="text-sm font-medium text-gray-700 mb-3">Taxa do vendedor</h3>
+            <div class="flex justify-between text-sm text-gray-700">
+              <span class="text-gray-600">Valor</span>
+              <span class="text-secondary-600 font-bold text-lg">${formatCurrency(fee)}</span>
+            </div>
+          </div>
+        </article>
+      `;
+    }
 
     return `
       <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
@@ -2016,6 +2173,28 @@
         
         <div class="grid md:grid-cols-2 gap-4">
           <div>
+            <div class="space-y-3 mb-4">
+              <div class="p-3 bg-white rounded-lg border border-secondary-200">
+                <span class="text-xs text-gray-500 block mb-1">Pix copia e cola</span>
+                <div class="flex items-start gap-2">
+                  <code class="text-xs text-gray-800 flex-1 break-all leading-relaxed">${escapeHtml(pixCode)}</code>
+                  <button class="px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600" data-action="copyText" data-value="${escapeAttr(pixCode)}">
+                    <i class="fas fa-copy"></i>
+                  </button>
+                </div>
+              </div>
+
+              <div class="p-3 bg-white rounded-lg border border-secondary-200">
+                <span class="text-xs text-gray-500 block mb-1">Chave Pix (E-mail)</span>
+                <div class="flex items-center gap-2">
+                  <code class="text-sm text-gray-800 flex-1">${escapeHtml(pixKey)}</code>
+                  <button class="px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600" data-action="copyText" data-value="${escapeAttr(pixKey)}">
+                    <i class="fas fa-copy"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div class="bg-gray-50 p-4 rounded-xl border border-gray-100 mb-4">
               <h3 class="text-sm font-medium text-gray-700 mb-3">Resumo do pagamento</h3>
               <div class="space-y-2 text-sm text-gray-700">
@@ -2024,7 +2203,7 @@
                   <span class="text-gray-800 font-medium">${formatCurrency(amount)}</span>
                 </div>
                 <div class="flex justify-between">
-                  <span class="text-gray-600">Taxa de intermediação (5%)</span>
+                  <span class="text-gray-600">Taxa do comprador</span>
                   <span class="text-gray-800 font-medium">${formatCurrency(fee)}</span>
                 </div>
                 <div class="flex justify-between pt-2 border-t border-gray-200">
@@ -2033,18 +2212,8 @@
                 </div>
               </div>
             </div>
-            
+
             <div class="space-y-3">
-              <div class="p-3 bg-white rounded-lg border border-secondary-200">
-                <span class="text-xs text-gray-500 block mb-1">Chave Pix (E-mail)</span>
-                <div class="flex items-center gap-2">
-                  <code class="text-sm text-gray-800 flex-1">${pixKey}</code>
-                  <button class="px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600" data-action="copyText" data-value="${pixKey}">
-                    <i class="fas fa-copy"></i>
-                  </button>
-                </div>
-              </div>
-              
               <button class="w-full px-4 py-3 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-white font-bold transition shadow-md" data-action="confirmPayment" data-id="${neg.id}">
                 <i class="fas fa-check mr-2"></i>Já realizei o pagamento
               </button>
@@ -2119,16 +2288,11 @@
     const admin = isAdmin();
     const trackSeller = neg.tracking_to_intermediary || neg.tracking_code || '';
     const trackBuyer = neg.tracking_to_buyer || neg.buyer_tracking_code || '';
+
+    const hideSellerTrackingForUser = Boolean(trackBuyer) && !admin;
     
-    // Status onde o vendedor pode/deve adicionar código de rastreio
-    const sellerTrackingStatuses = [
-      'waiting_shipment', 
-      'awaiting_shipment', 
-      'pending_shipment',
-      'approved',
-      'payment_confirmed',
-      'awaiting_seller_shipment'
-    ];
+    // O backend aceita envio do vendedor somente em `waiting_shipment`.
+    const sellerTrackingStatuses = ['waiting_shipment'];
     
     // Vendedor pode adicionar código apenas UMA VEZ (se ainda não tem código)
     // Admin pode sempre editar
@@ -2141,7 +2305,7 @@
     const sections = [];
 
     // Seção de rastreio para intermediadora (vendedor → intermediadora)
-    if (trackSeller || sellerCanAddCode || adminCanEditSellerCode) {
+    if (!hideSellerTrackingForUser && (trackSeller || sellerCanAddCode || adminCanEditSellerCode)) {
       if (sellerCanAddCode) {
         // Vendedor pode adicionar código pela primeira vez
         sections.push(`
@@ -2241,6 +2405,7 @@
     if (!isAdmin()) return '';
     const awaitingAdmin = neg.status === 'awaiting_admin_approval';
     const atIntermediary = neg.status === 'at_intermediary';
+    const waitingPayment = neg.status === 'waiting_payment';
     const showApproveReject = awaitingAdmin;
     const showInspectionForm = atIntermediary && Boolean(neg.inspection_saved_at) && !neg.intermediary_approval_confirmed_at;
     const showFinalize = neg.status === 'delivered';
@@ -2256,6 +2421,18 @@
             <button class="px-4 py-2 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-white font-medium transition shadow-md" data-action="adminApproveNegotiation" data-id="${neg.id}"><i class="fas fa-check mr-2"></i>Aprovar negociação</button>
             <button class="px-4 py-2 bg-gradient-to-r from-danger-500 to-danger-600 hover:from-danger-600 hover:to-danger-700 rounded-lg text-white font-medium transition shadow-md" data-action="adminRejectNegotiation" data-id="${neg.id}"><i class="fas fa-times mr-2"></i>Reprovar</button>
           </div>
+        </section>
+      `);
+    }
+
+    if (waitingPayment) {
+      sections.push(`
+        <section class="pt-4 border-t border-gray-100 first:border-t-0 first:pt-0">
+          <h3 class="text-sm font-medium text-gray-700 mb-3">Pagamento (simulação)</h3>
+          <p class="text-sm text-gray-500 mb-3">Use apenas para testes. Isso avança a negociação para <strong>Aguardando envio</strong>.</p>
+          <button class="px-4 py-2 bg-gradient-to-r from-warning-500 to-orange-500 hover:from-warning-600 hover:to-orange-600 rounded-lg text-white font-bold transition shadow-md" data-action="adminSimulatePayment" data-id="${neg.id}">
+            <i class="fas fa-bolt mr-2"></i>Simular confirmação de pagamento
+          </button>
         </section>
       `);
     }
@@ -2519,7 +2696,7 @@
     return labels[type] || 'Nota';
   }
 
-  function renderParticipantActions(neg, { isBuyer }) {
+  function renderParticipantActions(neg, { isBuyer, isSeller, isIntermediary } = {}) {
     const sections = [];
 
     if (isBuyer && neg.status === 'approved' && !neg.buyer_confirmed_at) {
@@ -2542,6 +2719,44 @@
             <div>
               <label class="block text-sm text-gray-600 font-medium mb-2">Comentário (opcional)</label>
               <textarea name="buyer_rating_comment" rows="3" maxlength="500" placeholder="Conte como foi sua experiência" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none"></textarea>
+            </div>
+            <button type="submit" class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium transition"><i class="fas fa-paper-plane mr-2"></i>Enviar feedback</button>
+          </form>
+        </section>
+      `);
+    }
+
+    if (isSeller && neg.status === 'delivered' && !neg.seller_rating) {
+      sections.push(`
+        <section class="pt-4 border-t border-gray-100 first:border-t-0 first:pt-0">
+          <h3 class="text-sm font-medium text-gray-700 mb-3">Avaliação da experiência</h3>
+          <form data-action="submitSellerFeedback" data-id="${neg.id}" class="space-y-4">
+            <div>
+              <label class="block text-sm text-gray-600 font-medium mb-2">Nota (1 a 10)</label>
+              <input type="number" name="seller_rating" min="1" max="10" value="${neg.seller_rating ?? 10}" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all w-24">
+            </div>
+            <div>
+              <label class="block text-sm text-gray-600 font-medium mb-2">Comentário (opcional)</label>
+              <textarea name="seller_rating_comment" rows="3" maxlength="500" placeholder="Conte como foi sua experiência" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none"></textarea>
+            </div>
+            <button type="submit" class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium transition"><i class="fas fa-paper-plane mr-2"></i>Enviar feedback</button>
+          </form>
+        </section>
+      `);
+    }
+
+    if (isIntermediary && neg.status === 'delivered' && !neg.intermediary_rating) {
+      sections.push(`
+        <section class="pt-4 border-t border-gray-100 first:border-t-0 first:pt-0">
+          <h3 class="text-sm font-medium text-gray-700 mb-3">Avaliação da experiência (intermediadora)</h3>
+          <form data-action="submitIntermediaryFeedback" data-id="${neg.id}" class="space-y-4">
+            <div>
+              <label class="block text-sm text-gray-600 font-medium mb-2">Nota (1 a 10)</label>
+              <input type="number" name="intermediary_rating" min="1" max="10" value="${neg.intermediary_rating ?? 10}" required class="px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all w-24">
+            </div>
+            <div>
+              <label class="block text-sm text-gray-600 font-medium mb-2">Comentário (opcional)</label>
+              <textarea name="intermediary_rating_comment" rows="3" maxlength="500" placeholder="Conte como foi sua experiência" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none"></textarea>
             </div>
             <button type="submit" class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium transition"><i class="fas fa-paper-plane mr-2"></i>Enviar feedback</button>
           </form>
@@ -2600,18 +2815,6 @@
           </section>
         ` : ''}
         
-        ${photos.length ? `
-          <section>
-            <h3 class="text-sm font-medium text-gray-700 mb-3">Fotos da Inspeção</h3>
-            <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
-              ${photos.map((url, index) => `
-                <button class="aspect-square rounded-xl overflow-hidden bg-gray-100 hover:ring-2 hover:ring-primary-500 transition shadow-md" data-action="openGallery" data-id="${neg.id}" data-index="${index}">
-                  <img src="${escapeAttr(resolvePhotoUrl(url))}" alt="Foto ${index + 1}" class="w-full h-full object-cover">
-                </button>
-              `).join('')}
-            </div>
-          </section>
-        ` : ''}
       </article>
     `;
   }
@@ -2693,6 +2896,54 @@
     `;
   }
 
+  const ADMIN_CONCLUDED_STATUSES = new Set(['delivered', 'rejected_by_admin', 'cancelled', 'expired']);
+
+  function isAdminConcludedStatus(status) {
+    return ADMIN_CONCLUDED_STATUSES.has(status);
+  }
+
+  function splitAdminNegotiations(list) {
+    const safeList = Array.isArray(list) ? list : [];
+    const active = [];
+    const concluded = [];
+    for (const item of safeList) {
+      if (isAdminConcludedStatus(item?.status)) concluded.push(item);
+      else active.push(item);
+    }
+    return { active, concluded };
+  }
+
+  function renderAdminNegotiationsPagination(meta) {
+    if (!meta || meta.totalPages <= 1) return '';
+    return `
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white rounded-xl p-4 shadow-card border border-gray-100">
+        <div class="text-sm text-gray-600">
+          Mostrando <strong class="text-gray-900">${meta.startIndex + 1}-${meta.endIndex}</strong> de <strong class="text-gray-900">${meta.totalCount}</strong>
+          <span class="text-gray-400">•</span>
+          Página <strong class="text-gray-900">${meta.page}</strong> de <strong class="text-gray-900">${meta.totalPages}</strong>
+        </div>
+        <div class="flex gap-2">
+          <button
+            type="button"
+            class="px-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-700 font-medium transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            data-action="adminNegotiationsPrevPage"
+            ${meta.page <= 1 ? 'disabled' : ''}
+          >
+            <i class="fas fa-chevron-left mr-2"></i>Anterior
+          </button>
+          <button
+            type="button"
+            class="px-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-700 font-medium transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            data-action="adminNegotiationsNextPage"
+            ${meta.page >= meta.totalPages ? 'disabled' : ''}
+          >
+            Próxima<i class="fas fa-chevron-right ml-2"></i>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
   function renderAdminNegotiations() {
     const list = Array.isArray(state.adminNegotiations) ? state.adminNegotiations : [];
     if (!list.length) {
@@ -2706,7 +2957,51 @@
         </div>
       `;
     }
-    const rows = list.map((neg) => {
+
+    const { active, concluded } = splitAdminNegotiations(list);
+    const view = state.adminNegotiationsView === 'concluded' ? 'concluded' : 'active';
+    const viewList = view === 'concluded' ? concluded : active;
+    const pageSize = Math.max(1, Number(state.adminNegotiationsPageSize) || 10);
+    const totalPages = Math.max(1, Math.ceil(viewList.length / pageSize));
+    const currentPage = Math.min(Math.max(1, Number(state.adminNegotiationsPage) || 1), totalPages);
+    const startIndex = (currentPage - 1) * pageSize;
+    const endIndex = Math.min(viewList.length, startIndex + pageSize);
+    const pageItems = viewList.slice(startIndex, endIndex);
+    const pageMeta = {
+      totalCount: viewList.length,
+      page: currentPage,
+      pageSize,
+      totalPages,
+      startIndex,
+      endIndex
+    };
+
+    const viewTabs = `
+      <nav class="flex flex-col sm:flex-row gap-2 bg-white rounded-xl p-2 shadow-card border border-gray-100">
+        <button
+          class="flex-1 px-4 py-3 rounded-lg text-sm font-medium transition flex items-center justify-center gap-2 ${view === 'active' ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white' : 'text-gray-600 hover:text-primary-600 hover:bg-primary-50'}"
+          data-action="adminSelectNegotiationsView"
+          data-view="active"
+        >
+          <i class="fas fa-list"></i> Em andamento (${active.length})
+        </button>
+        <button
+          class="flex-1 px-4 py-3 rounded-lg text-sm font-medium transition flex items-center justify-center gap-2 ${view === 'concluded' ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white' : 'text-gray-600 hover:text-primary-600 hover:bg-primary-50'}"
+          data-action="adminSelectNegotiationsView"
+          data-view="concluded"
+        >
+          <i class="fas fa-check-circle"></i> Concluídas (${concluded.length})
+        </button>
+      </nav>
+    `;
+
+    const helperNote = `
+      <p class="text-xs text-gray-500 px-1">
+        Concluídas não aparecem em <strong>Em andamento</strong> nem em <strong>Pendências</strong>.
+      </p>
+    `;
+
+    const desktopRows = pageItems.map((neg) => {
       const canApprove = neg.status === 'awaiting_admin_approval';
       const productTitle = neg.product_title || neg.product_name || neg.title || 'Produto';
       const buyerName = neg.buyer?.name || '—';
@@ -2740,20 +3035,93 @@
       </div>
     `;
     }).join('');
+
     return `
-      <section class="bg-white rounded-2xl shadow-card overflow-x-auto border border-gray-100">
-        <div class="min-w-[860px]">
-          <div class="grid grid-cols-7 gap-4 px-6 py-4 bg-gradient-to-r from-gray-50 to-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100">
-            <span>ID</span>
-            <span>Produto</span>
-            <span>Comprador</span>
-            <span>Vendedor</span>
-            <span>Status</span>
-            <span>Atualizado</span>
-            <span></span>
-          </div>
-          ${rows}
+      <section class="space-y-4">
+        ${viewTabs}
+        ${helperNote}
+        <div class="sm:hidden">
+          ${renderAdminNegotiationsCardsMobile(pageItems)}
         </div>
+        <div class="hidden sm:block">
+          <section class="bg-white rounded-2xl shadow-card overflow-x-auto border border-gray-100">
+            <div class="min-w-[860px]">
+              <div class="grid grid-cols-7 gap-4 px-6 py-4 bg-gradient-to-r from-gray-50 to-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100">
+                <span>ID</span>
+                <span>Produto</span>
+                <span>Comprador</span>
+                <span>Vendedor</span>
+                <span>Status</span>
+                <span>Atualizado</span>
+                <span></span>
+              </div>
+              ${desktopRows}
+            </div>
+          </section>
+        </div>
+        ${renderAdminNegotiationsPagination(pageMeta)}
+      </section>
+    `;
+  }
+
+  function renderAdminNegotiationsCardsMobile(list) {
+    const items = list.map((neg) => {
+      const canApprove = neg?.status === 'awaiting_admin_approval';
+      const productTitle = neg?.product_title || neg?.product_name || neg?.title || 'Produto';
+      const buyerName = neg?.buyer?.name || '—';
+      const buyerEmail = neg?.buyer?.email || '';
+      const sellerName = neg?.seller?.name || '—';
+      const sellerEmail = neg?.seller?.email || '';
+      const updated = neg?.updated_at ? formatDateTime(neg.updated_at) : '—';
+
+      return `
+        <details class="bg-white rounded-2xl border border-gray-100 shadow-card overflow-hidden">
+          <summary class="cursor-pointer p-4">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="text-xs text-gray-500 font-semibold">Negociação #${escapeHtml(String(neg?.id ?? '—'))}</div>
+                <h3 class="text-base font-extrabold text-gray-900 mt-0.5 truncate">${escapeHtml(productTitle)}</h3>
+                <div class="text-xs text-gray-500 mt-2">Atualizado: ${escapeHtml(updated)}</div>
+              </div>
+              <div class="flex flex-col items-end gap-2 flex-shrink-0">
+                ${renderStatusBadge(neg?.status)}
+                <i class="fas fa-chevron-down text-gray-400 admin-card-chevron"></i>
+              </div>
+            </div>
+            <div class="mt-3 text-xs text-gray-500">Toque para ver informações</div>
+          </summary>
+
+          <div class="px-4 pb-4 pt-0 border-t border-gray-100 bg-gray-50">
+            <div class="pt-4 space-y-3">
+              <div class="p-3 rounded-xl bg-white border border-gray-100">
+                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Comprador</div>
+                <div class="text-sm font-semibold text-gray-900">${escapeHtml(buyerName)}</div>
+                ${buyerEmail ? `<div class="text-xs text-gray-500 break-all">${escapeHtml(buyerEmail)}</div>` : ''}
+              </div>
+              <div class="p-3 rounded-xl bg-white border border-gray-100">
+                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendedor</div>
+                <div class="text-sm font-semibold text-gray-900">${escapeHtml(sellerName)}</div>
+                ${sellerEmail ? `<div class="text-xs text-gray-500 break-all">${escapeHtml(sellerEmail)}</div>` : ''}
+              </div>
+            </div>
+
+            <div class="mt-4 flex flex-col gap-2">
+              <button class="w-full px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 rounded-xl text-sm text-white font-semibold" data-action="adminOpenNegotiation" data-id="${neg?.id}">Ver detalhes</button>
+              ${canApprove ? `
+                <div class="grid grid-cols-2 gap-2">
+                  <button class="px-4 py-3 bg-gradient-to-r from-success-500 to-success-600 rounded-xl text-sm text-white font-semibold" data-action="adminApproveNegotiation" data-id="${neg?.id}">Aprovar</button>
+                  <button class="px-4 py-3 bg-gradient-to-r from-danger-500 to-danger-600 rounded-xl text-sm text-white font-semibold" data-action="adminRejectNegotiation" data-id="${neg?.id}">Reprovar</button>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        </details>
+      `;
+    }).join('');
+
+    return `
+      <section class="space-y-4">
+        ${items}
       </section>
     `;
   }
@@ -2805,7 +3173,7 @@
           <header class="flex items-start justify-between p-4 sm:p-6 border-b border-gray-100">
             <div>
               <h2 class="text-xl font-bold text-gray-900 flex items-center gap-2"><i class="fas fa-bell text-primary-500"></i> Pendências</h2>
-              <p class="text-gray-500 text-sm">Negociações aguardando ação da intermediadora.</p>
+              <p class="text-gray-500 text-sm">Negociações aguardando ação da intermediadora. (Concluídas não aparecem aqui.)</p>
             </div>
             <button class="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition" data-action="closePendingModal">✕</button>
           </header>
@@ -2899,7 +3267,7 @@
           <div class="h-1 bg-gradient-to-r from-primary-600 to-secondary-500"></div>
           <header class="flex items-start justify-between p-4 border-b border-gray-100">
             <div>
-              <h2 class="text-xl font-bold text-gray-900">Fotos da inspeção</h2>
+              <h2 class="text-xl font-bold text-gray-900">Imagens</h2>
               <p class="text-gray-500 text-sm">${gallery.index + 1} de ${photos.length}</p>
             </div>
             <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeGallery">✕</button>
@@ -2908,10 +3276,100 @@
             ${current ? `<img src="${escapeAttr(resolvePhotoUrl(current))}" alt="Foto da inspeção" class="max-w-full max-h-[60vh] object-contain rounded-lg shadow-lg">` : '<p class="text-gray-500">Foto indisponível.</p>'}
           </div>
           <footer class="flex items-center justify-center gap-3 p-4 border-t border-gray-100 bg-white">
-            <button class="px-4 py-2 bg-gray-200 hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-gray-700 rounded-lg transition-colors" data-action="galleryPrev" ${gallery.index === 0 ? 'disabled' : ''}>Anterior</button>
-            <button class="px-4 py-2 bg-gray-200 hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-gray-700 rounded-lg transition-colors" data-action="galleryNext" ${gallery.index >= photos.length - 1 ? 'disabled' : ''}>Próxima</button>
+            <button class="w-12 h-12 rounded-xl bg-gray-200 hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-gray-700 flex items-center justify-center transition-colors" data-action="galleryPrev" ${gallery.index === 0 ? 'disabled' : ''} aria-label="Imagem anterior">
+              <i class="fas fa-chevron-left"></i>
+            </button>
+            <button class="w-12 h-12 rounded-xl bg-gray-200 hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-gray-700 flex items-center justify-center transition-colors" data-action="galleryNext" ${gallery.index >= photos.length - 1 ? 'disabled' : ''} aria-label="Próxima imagem">
+              <i class="fas fa-chevron-right"></i>
+            </button>
             ${current ? `<a class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white rounded-lg transition-colors" href="${escapeAttr(resolvePhotoUrl(current))}" target="_blank" rel="noopener">Abrir em nova guia</a>` : ''}
           </footer>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderIntermediaryReportModal() {
+    if (!state.showIntermediaryReportModal) return '';
+    const neg = state.currentNegotiation;
+    if (!neg) return '';
+
+    const report = neg.inspection_report || {};
+    const checklist = report.checklist || neg.intermediary_checklist || {};
+    const notes = (report.notes ?? neg.intermediary_notes ?? '').toString().trim();
+    const savedAt = report.saved_at || neg.inspection_saved_at || null;
+
+    const galleryPhotos = Array.isArray(neg.intermediary_photos) ? neg.intermediary_photos : (Array.isArray(report.photos) ? report.photos : []);
+
+    const hasChecklist = checklist && (Array.isArray(checklist) ? checklist.length : Object.keys(checklist).length);
+    const hasNotes = Boolean(notes);
+    const hasPhotos = Array.isArray(galleryPhotos) && galleryPhotos.length;
+
+    const isChecked = (id) => {
+      if (!checklist) return false;
+      if (Array.isArray(checklist)) return checklist.includes(id);
+      return Boolean(checklist[id]);
+    };
+
+    return `
+      <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div class="absolute inset-0" data-action="closeIntermediaryReport"></div>
+        <div class="relative bg-white rounded-2xl shadow-card-xl max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-slide-up">
+          <div class="h-1 bg-gradient-to-r from-secondary-500 to-primary-500"></div>
+          <header class="flex items-start justify-between p-4 sm:p-6 border-b border-gray-100">
+            <div>
+              <h2 class="text-xl font-bold text-gray-900 flex items-center gap-2"><i class="fas fa-clipboard-check text-secondary-500"></i> Relatório do intermediador</h2>
+              <p class="text-gray-500 text-sm mt-1">${savedAt ? `Enviado em ${formatDateTime(savedAt)}` : 'Confira os dados da avaliação.'}</p>
+            </div>
+            <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeIntermediaryReport">✕</button>
+          </header>
+
+          <section class="p-4 sm:p-6 overflow-y-auto flex-1 space-y-5">
+            ${hasChecklist ? `
+              <div>
+                <h3 class="text-sm font-bold text-gray-700 uppercase tracking-wider mb-3">Checklist</h3>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  ${INSPECTION_CHECKLIST.map((item) => `
+                    <div class="flex items-center gap-2 text-sm ${isChecked(item.id) ? 'text-success-600' : 'text-danger-600'}">
+                      <i class="fas ${isChecked(item.id) ? 'fa-check-circle' : 'fa-times-circle'}"></i>
+                      <span class="text-gray-700">${escapeHtml(item.label)}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+
+            ${hasNotes ? `
+              <div>
+                <h3 class="text-sm font-bold text-gray-700 uppercase tracking-wider mb-3">Observações</h3>
+                <div class="p-4 bg-gray-50 rounded-xl border border-gray-100">
+                  <p class="text-gray-700 text-sm whitespace-pre-line">${escapeHtml(notes)}</p>
+                </div>
+              </div>
+            ` : ''}
+
+            ${hasPhotos ? `
+              <div>
+                <h3 class="text-sm font-bold text-gray-700 uppercase tracking-wider mb-3">Fotos da inspeção</h3>
+                <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                  ${galleryPhotos.map((url, index) => `
+                    <button class="aspect-square rounded-xl overflow-hidden bg-gray-100 hover:ring-2 hover:ring-primary-500 transition shadow-md" data-action="openGallery" data-id="${neg.id}" data-index="${index}">
+                      <img src="${escapeAttr(resolvePhotoUrl(url))}" alt="Foto ${index + 1}" class="w-full h-full object-cover">
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+
+            ${(!hasChecklist && !hasNotes && !hasPhotos) ? `
+              <div class="text-center py-10 text-gray-500">
+                <div class="w-14 h-14 bg-gray-100 rounded-xl flex items-center justify-center mx-auto mb-3">
+                  <i class="fas fa-file-alt text-gray-400 text-xl"></i>
+                </div>
+                <p>Nenhum relatório foi enviado ainda.</p>
+              </div>
+            ` : ''}
+          </section>
         </div>
       </div>
     `;
@@ -3006,6 +3464,9 @@
     if (state.timelineNegotiationId) {
       parts.push(renderTimelineModal());
     }
+    if (state.showIntermediaryReportModal) {
+      parts.push(renderIntermediaryReportModal());
+    }
     if (state.gallery) {
       parts.push(renderGalleryModal());
     }
@@ -3018,10 +3479,12 @@
     const role = draft.role || 'all';
     const query = draft.query || '';
 
+    const counts = getDashboardStatusCounts({ role, query });
+
     const statusOptions = [
       { key: 'all', label: 'Todos' },
-      { key: 'awaiting_admin_approval', label: 'Aguardando revisão' },
       { key: 'pending_acceptance', label: 'Convites pendentes' },
+      { key: 'awaiting_admin_approval', label: 'Aguardando revisão' },
       { key: 'waiting_payment', label: 'Pagamento pendente' },
       { key: 'waiting_shipment', label: 'Aguardando envio' },
       { key: 'shipped', label: 'Em trânsito' },
@@ -3043,9 +3506,28 @@
           <div class="mt-4 space-y-4">
             <div>
               <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Status</label>
-              <select class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800" data-action="updateDashboardFiltersDraft" data-field="status">
-                ${statusOptions.map((opt) => `<option value="${escapeAttr(opt.key)}" ${opt.key === status ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`).join('')}
-              </select>
+              <div class="flex flex-col gap-2">
+                ${statusOptions.map((opt) => {
+                  const isActive = opt.key === status;
+                  const count = opt.key === 'all' ? (Number(counts.total) || 0) : (Number(counts.byStatus?.[opt.key]) || 0);
+                  const showCount = opt.key === 'all' || count > 0;
+                  return `
+                    <button
+                      type="button"
+                      class="w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl text-sm transition ${isActive
+                        ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white font-semibold shadow-md'
+                        : 'bg-gray-50 border border-gray-200 text-gray-800 hover:border-primary-400'}"
+                      data-action="selectDashboardDraftStatus"
+                      data-status="${escapeAttr(opt.key)}"
+                    >
+                      <span class="flex items-center gap-3 min-w-0">
+                        <span class="truncate">${escapeHtml(opt.label)}</span>
+                      </span>
+                      ${showCount ? `<span class="inline-flex items-center justify-center min-w-6 h-6 px-2 rounded-full text-xs font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'}">${count}</span>` : ''}
+                    </button>
+                  `;
+                }).join('')}
+              </div>
             </div>
 
             <div>
@@ -3064,11 +3546,13 @@
                 <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
                 <input
                   type="search"
+                  name="dashboard_filters_query"
                   class="w-full pl-9 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder-gray-400"
                   placeholder="Título, participante ou #id"
                   value="${escapeAttr(query)}"
                   data-action="updateDashboardFiltersDraft"
                   data-field="query"
+                  data-focus-key="dashboard-filters-search"
                 >
               </div>
             </div>
@@ -3128,7 +3612,8 @@
     const handler = actions[actionName];
     if (typeof handler !== 'function') return;
     const payload = extractFormPayload(form);
-    Promise.resolve(handler({ form, ...payload })).catch((error) => handleError(error));
+    const dataset = { ...form.dataset };
+    Promise.resolve(handler({ form, dataset, ...payload })).catch((error) => handleError(error));
   }
 
   function extractFormPayload(form) {
@@ -3328,7 +3813,8 @@
       setState({
         adminNegotiations: negotiationsList,
         adminUsers: Array.isArray(users?.data) ? users.data : users || [],
-        adminOverview: buildAdminOverview(negotiationsList)
+        adminOverview: buildAdminOverview(negotiationsList),
+        adminNegotiationsPage: 1
       });
     } catch (error) {
       handleError(error, 'Não foi possível carregar dados administrativos.');
@@ -3358,20 +3844,32 @@
     if (visible && !isAdmin()) return;
     setState({ showPendingModal: visible });
     if (visible) {
-      loadPendingNotices({ filter: state.pendingFilter });
+      loadPendingNotices({ filter: state.pendingFilter, force: true });
     }
   }
 
-  async function loadPendingNotices({ filter = 'today' } = {}) {
+  async function loadPendingNotices({ filter = 'today', force = false } = {}) {
     if (!isAdmin()) return;
+
+    if (pendingNoticesLoading) return;
+    if (!force && pendingNoticesLastFilter === filter && Date.now() - pendingNoticesLoadedAt < 15000) {
+      return;
+    }
+
+    pendingNoticesLoading = true;
     const params = buildPendingParams(filter);
     try {
       const data = await apiCall(`/intermediation/admin/pending?${params}`);
       const notices = Array.isArray(data?.data) ? data.data : data || [];
-      setState({ pendingFilter: filter, pendingNotices: notices });
+      const filtered = notices.filter((item) => !isAdminConcludedStatus(item?.status));
+      setState({ pendingFilter: filter, pendingNotices: filtered });
       await apiCall('/intermediation/admin/pending/opened', { method: 'POST', body: {} }).catch(() => null);
+      pendingNoticesLastFilter = filter;
+      pendingNoticesLoadedAt = Date.now();
     } catch (error) {
       handleError(error, 'Não foi possível carregar pendências.');
+    } finally {
+      pendingNoticesLoading = false;
     }
   }
 
@@ -3425,11 +3923,45 @@
   }
 
   function isBuyer(negotiation) {
-    return state.user && negotiation?.buyer && negotiation.buyer.id === state.user.id;
+    if (!state.user || !negotiation) return false;
+    const apiRole = negotiation?.my_role;
+    if (apiRole === 'buyer') return true;
+    if (apiRole === 'seller') return false;
+    const userId = Number(state.user.id);
+    const buyerId = negotiation?.buyer?.id ?? negotiation?.buyer_id;
+    return Number(buyerId) === userId;
   }
 
   function isSeller(negotiation) {
-    return state.user && negotiation?.seller && negotiation.seller.id === state.user.id;
+    if (!state.user || !negotiation) return false;
+    const apiRole = negotiation?.my_role;
+    if (apiRole === 'seller') return true;
+    if (apiRole === 'buyer') return false;
+    const userId = Number(state.user.id);
+    const sellerId = negotiation?.seller?.id ?? negotiation?.seller_id;
+    return Number(sellerId) === userId;
+  }
+
+  function getPixPaymentInfo(neg, options = {}) {
+    const pixKey = 'pix@intermediacao.com.br';
+    const productAmount = Number(neg?.product_price ?? neg?.price ?? 0) || 0;
+    const buyerFee = 15;
+    const sellerFee = 15;
+
+    const inferredRole = options.role || (isBuyer(neg) ? 'buyer' : (isSeller(neg) ? 'seller' : null));
+    const role = inferredRole === 'seller' ? 'seller' : 'buyer';
+
+    const fee = role === 'seller' ? sellerFee : buyerFee;
+    const amount = role === 'seller' ? 0 : productAmount;
+    const total = amount + fee;
+
+    const fallbackPixCode = `00020126580014br.gov.bcb.pix0136${pixKey}5204000053039865406${total.toFixed(2)}5802BR5925INTERMEDIACAO PRO LTDA6009SAO PAULO62070503***6304`;
+    // A API atualmente expõe apenas pix_code (assumimos que é o Pix do comprador). Para o vendedor, simulamos sempre.
+    const pixCode = role === 'buyer'
+      ? String(neg?.pix_code || fallbackPixCode)
+      : String(fallbackPixCode);
+
+    return { role, amount, fee, total, pixKey, pixCode };
   }
 
   function formatCurrency(value, currency = 'BRL') {
@@ -3730,6 +4262,41 @@
       });
   }
 
+  function getDashboardStatusCounts(filters = null) {
+    const list = Array.isArray(state.negotiations) ? state.negotiations : [];
+    const role = filters && typeof filters.role === 'string' ? filters.role : state.negotiationFilters?.role;
+    const query = filters && typeof filters.query === 'string' ? filters.query : state.negotiationFilters?.query;
+
+    const scoped = list.filter((item) => {
+      if (!isAdmin() && role && role !== 'all') {
+        if (role === 'buyer' && !isBuyer(item)) return false;
+        if (role === 'seller' && !isSeller(item)) return false;
+      }
+
+      if (query) {
+        const q = query.toLowerCase();
+        const haystack = [
+          item?.product_title,
+          item?.product_name,
+          item?.buyer?.name,
+          item?.buyer?.email,
+          item?.seller?.name,
+          item?.seller?.email,
+          item?.id ? `#${item.id}` : ''
+        ].map((value) => (value || '').toString().toLowerCase()).join(' ');
+        if (!haystack.includes(q)) return false;
+      }
+      return true;
+    });
+
+    const byStatus = {};
+    for (const item of scoped) {
+      const status = item?.status || 'unknown';
+      byStatus[status] = (byStatus[status] || 0) + 1;
+    }
+    return { total: scoped.length, byStatus };
+  }
+
   function storeAuth(token, user) {
     localStorage.setItem(STORAGE_KEYS.token, token);
     localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(user));
@@ -3762,6 +4329,7 @@
       showPendingModal: false,
       timelineNegotiationId: null,
       gallery: null,
+      showIntermediaryReportModal: false,
       confirmationEmail: null,
       confirmationCooldownRemaining: 0,
       successMessage: silent ? null : 'Sessão finalizada.'
@@ -3786,6 +4354,7 @@
       errorMessage: null,
       successMessage: null,
       showDashboardFiltersModal: false,
+      showIntermediaryReportModal: false,
       filtersExpanded: false
     });
 
@@ -3849,6 +4418,14 @@
     setState({ timelineNegotiationId: null, timelineData: null });
   }
 
+  function openIntermediaryReport() {
+    setState({ showIntermediaryReportModal: true });
+  }
+
+  function closeIntermediaryReport() {
+    setState({ showIntermediaryReportModal: false });
+  }
+
   function buildTimelineData(negId) {
     const id = Number(negId);
     const negotiation = state.currentNegotiation && state.currentNegotiation.id === id
@@ -3863,24 +4440,29 @@
   }
 
   function createTimelineFromNegotiation(neg) {
+    const trackSeller = neg.tracking_to_intermediary || neg.tracking_code || '';
+    const trackBuyer = neg.tracking_to_buyer || neg.buyer_tracking_code || '';
     const steps = [
       { key: 'created', label: 'Convite criado', date: neg.created_at, description: `${neg.seller?.name || 'Vendedor'} iniciou a negociação.` },
       { key: 'buyer_accept', label: 'Comprador aceitou', date: neg.buyer_accepted_at, description: `${neg.buyer?.name || 'Comprador'} aceitou participar.` },
       { key: 'payment', label: 'Pagamento confirmado', date: neg.product_paid_at || neg.buyer_fee_paid_at, description: 'Pagamento registrado.' },
-      { key: 'sent_to_intermediary', label: 'Envio à intermediadora', date: neg.sent_to_intermediary_at, description: 'Produto enviado para análise.' },
+      { key: 'sent_to_intermediary', label: 'Envio à intermediadora', date: neg.sent_to_intermediary_at, description: trackSeller ? `Produto enviado para análise. Rastreio: ${trackSeller}` : 'Produto enviado para análise.' },
       { key: 'received', label: 'Produto recebido', date: neg.intermediary_received_at, description: 'Intermediadora confirmou recebimento.' },
       { key: 'approved', label: 'Aprovado pela intermediadora', date: neg.intermediary_approval_confirmed_at || neg.admin_approved_at, description: 'Produto pronto para envio.' },
-      { key: 'sent_to_buyer', label: 'Envio ao comprador', date: neg.sent_to_buyer_at, description: 'Produto a caminho do comprador.' },
+      { key: 'sent_to_buyer', label: 'Envio ao comprador', date: neg.sent_to_buyer_at, description: trackBuyer ? `Produto a caminho do comprador. Rastreio: ${trackBuyer}` : 'Produto a caminho do comprador.' },
       { key: 'buyer_confirmed', label: 'Entrega confirmada', date: neg.buyer_confirmed_at, description: 'Comprador confirmou recebimento.' },
       { key: 'finalized', label: 'Finalizado', date: neg.finalized_at || (neg.status === 'delivered' ? neg.updated_at : null), description: 'Negociação finalizada.' }
     ];
     return steps.filter((step) => step.date || step.key === 'created');
   }
 
-  function openGallery(negId, index) {
+  function openGallery(negId, index, type) {
     const negotiation = state.currentNegotiation;
     if (!negotiation || negotiation.id !== Number(negId)) return;
-    const photos = Array.isArray(negotiation.intermediary_photos) ? negotiation.intermediary_photos : [];
+    const photoType = String(type || '').toLowerCase();
+    const photos = photoType === 'product'
+      ? (Array.isArray(negotiation.product_photos || negotiation.photos) ? (negotiation.product_photos || negotiation.photos) : [])
+      : (Array.isArray(negotiation.intermediary_photos) ? negotiation.intermediary_photos : []);
     if (!photos.length) return;
     const nextIndex = Math.max(0, Math.min(Number(index) || 0, photos.length - 1));
     setState({ gallery: { negotiationId: negotiation.id, photos, index: nextIndex } });
@@ -4219,7 +4801,7 @@
     },
     dashboardNextPage() {
       const total = getFilteredNegotiations().length;
-      const size = Math.max(1, Number(state.dashboardPageSize) || 6);
+      const size = getDashboardPageSize();
       const totalPages = Math.max(1, Math.ceil(total / size));
       const next = Math.min(totalPages, (Number(state.dashboardPage) || 1) + 1);
       if (next !== state.dashboardPage) setState({ dashboardPage: next });
@@ -4241,6 +4823,11 @@
       const field = dataset?.field;
       if (!field) return;
       setState({ dashboardFiltersDraft: { ...(state.dashboardFiltersDraft || {}), [field]: value ?? '' } });
+    },
+    selectDashboardDraftStatus({ dataset }) {
+      const nextStatus = dataset?.status;
+      if (!nextStatus) return;
+      setState({ dashboardFiltersDraft: { ...(state.dashboardFiltersDraft || {}), status: nextStatus } });
     },
     clearDashboardFiltersModal() {
       setState({ dashboardFiltersDraft: { status: 'all', role: 'all', query: '' } });
@@ -4433,7 +5020,7 @@
     },
     selectPendingFilter({ element }) {
       if (!element) return;
-      loadPendingNotices({ filter: element.value });
+      loadPendingNotices({ filter: element.value, force: true });
     },
     adminSelectTab({ dataset }) {
       const tab = dataset?.tab;
@@ -4442,6 +5029,25 @@
       if (tab === 'negotiations' && !state.adminNegotiations.length) {
         loadAdminSnapshot({ force: true });
       }
+    },
+    adminSelectNegotiationsView({ dataset }) {
+      const view = dataset?.view;
+      if (view !== 'active' && view !== 'concluded') return;
+      setState({ adminNegotiationsView: view, adminNegotiationsPage: 1 });
+    },
+    adminNegotiationsPrevPage() {
+      const page = Math.max(1, Number(state.adminNegotiationsPage) || 1);
+      setState({ adminNegotiationsPage: Math.max(1, page - 1) });
+    },
+    adminNegotiationsNextPage() {
+      const list = Array.isArray(state.adminNegotiations) ? state.adminNegotiations : [];
+      const { active, concluded } = splitAdminNegotiations(list);
+      const view = state.adminNegotiationsView === 'concluded' ? 'concluded' : 'active';
+      const viewList = view === 'concluded' ? concluded : active;
+      const pageSize = Math.max(1, Number(state.adminNegotiationsPageSize) || 10);
+      const totalPages = Math.max(1, Math.ceil(viewList.length / pageSize));
+      const page = Math.min(Math.max(1, Number(state.adminNegotiationsPage) || 1), totalPages);
+      setState({ adminNegotiationsPage: Math.min(totalPages, page + 1) });
     },
     adminRefresh() {
       loadAdminSnapshot({ force: true });
@@ -4505,7 +5111,25 @@
         await apiCall(`/intermediation/${id}/confirm-payment`, { method: 'POST', body: {} });
         notify({ type: 'success', message: 'Pagamento registrado! Aguardando confirmação.' });
         await loadNegotiation(id);
+        await loadNegotiations({ force: true });
       }, 'Confirmando pagamento...');
+    },
+    async adminSimulatePayment({ dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      if (!isAdmin()) {
+        notify({ type: 'error', message: 'Apenas a intermediadora pode simular.' });
+        return;
+      }
+      if (!confirm('Simular confirmação de pagamento? Isso muda o status para "Aguardando envio".')) return;
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/confirm-payment`, { method: 'POST', body: {} });
+        notify({ type: 'success', message: 'Pagamento simulado. Status atualizado.' });
+        await Promise.all([loadNegotiations({ force: true }), loadAdminSnapshot({ force: true })]);
+        if (state.currentNegotiation?.id === id) {
+          await loadNegotiation(id);
+        }
+      }, 'Simulando pagamento...');
     },
     // Relatório de inspeção
     editInspectionReport({ dataset }) {
@@ -4659,6 +5283,10 @@
         await apiCall(endpoint, { method: 'POST', body: { tracking_code: code } });
         notify({ type: 'success', message: 'Código atualizado.' });
         await loadNegotiation(id);
+        await loadNegotiations({ force: true });
+        if (isAdmin()) {
+          await loadAdminSnapshot({ force: true });
+        }
       }, 'Atualizando rastreio...');
     },
     async approveProduct({ values, dataset }) {
@@ -4708,6 +5336,48 @@
         await loadNegotiation(id);
       }, 'Enviando feedback...');
     },
+    async submitSellerFeedback({ formData, dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      const rating = Number(formData.get('seller_rating'));
+      if (!Number.isFinite(rating) || rating < 1 || rating > 10) {
+        notify({ type: 'error', message: 'Informe uma nota entre 1 e 10.' });
+        return;
+      }
+      const comment = formData.get('seller_rating_comment');
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/seller-feedback`, {
+          method: 'POST',
+          body: {
+            rating,
+            comment: comment ? comment.toString().trim() : null
+          }
+        });
+        notify({ type: 'success', message: 'Obrigado pelo feedback!' });
+        await loadNegotiation(id);
+      }, 'Enviando feedback...');
+    },
+    async submitIntermediaryFeedback({ formData, dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      const rating = Number(formData.get('intermediary_rating'));
+      if (!Number.isFinite(rating) || rating < 1 || rating > 10) {
+        notify({ type: 'error', message: 'Informe uma nota entre 1 e 10.' });
+        return;
+      }
+      const comment = formData.get('intermediary_rating_comment');
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/intermediary-feedback`, {
+          method: 'POST',
+          body: {
+            rating,
+            comment: comment ? comment.toString().trim() : null
+          }
+        });
+        notify({ type: 'success', message: 'Feedback registrado.' });
+        await loadNegotiation(id);
+      }, 'Enviando feedback...');
+    },
     finalizeNegotiation({ dataset }) {
       finalizeNegotiation(dataset?.id);
     },
@@ -4718,10 +5388,16 @@
       closeTimeline();
     },
     openGallery({ dataset }) {
-      openGallery(dataset?.id, dataset?.index);
+      openGallery(dataset?.id, dataset?.index, dataset?.type);
     },
     closeGallery() {
       setState({ gallery: null });
+    },
+    openIntermediaryReport() {
+      openIntermediaryReport();
+    },
+    closeIntermediaryReport() {
+      closeIntermediaryReport();
     },
     galleryPrev() {
       shiftGallery(-1);
