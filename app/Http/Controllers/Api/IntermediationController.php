@@ -4,13 +4,64 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Negotiation;
+use App\Services\Payments\MercadoPagoService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 class IntermediationController extends Controller
 {
+    private const GAME_ACCOUNT_CATEGORY = 'Conta de jogo';
+    private const CURRENCY_CATEGORY = 'Moedas / Gold / Créditos';
+    private const KEY_DLC_CATEGORY = 'Chave de jogo / DLC';
+    private const SERVICE_CATEGORY = 'Serviço (boosting / rank / leveling)';
+    private const SERVICE_EXCHANGE_CATEGORY = 'Troca de serviço';
+
+    private const PHYSICAL_NOTEBOOK_CATEGORY = 'Notebook';
+    private const PHYSICAL_SMARTPHONE_CATEGORY = 'Smartphone';
+    private const PHYSICAL_CELLPHONE_CATEGORY = 'Celular';
+    private const PHYSICAL_SMALL_PRODUCT_CATEGORY = 'Produto físico (pequeno)';
+    private const PHYSICAL_OTHERS_CATEGORY = 'Outros (produtos físicos)';
+
+    private function isPhysicalCategory(?string $category): bool
+    {
+        $category = trim((string) $category);
+        return in_array($category, [
+            self::PHYSICAL_NOTEBOOK_CATEGORY,
+            self::PHYSICAL_SMARTPHONE_CATEGORY,
+            self::PHYSICAL_CELLPHONE_CATEGORY,
+            self::PHYSICAL_SMALL_PRODUCT_CATEGORY,
+            self::PHYSICAL_OTHERS_CATEGORY,
+        ], true);
+    }
+
+    private function isDigitalDeliveryCategory(?string $category): bool
+    {
+        $category = trim((string) $category);
+        return in_array($category, [
+            self::GAME_ACCOUNT_CATEGORY,
+            self::CURRENCY_CATEGORY,
+            self::KEY_DLC_CATEGORY,
+            self::SERVICE_CATEGORY,
+            self::SERVICE_EXCHANGE_CATEGORY,
+        ], true);
+    }
+
+    private function nextStatusAfterPayment(Negotiation $negotiation): string
+    {
+        return $this->isDigitalDeliveryCategory($negotiation->category)
+            ? 'waiting_digital_delivery'
+            : 'waiting_shipment';
+    }
+
+    private function isGameAccountCategory(?string $category): bool
+    {
+        return trim((string) $category) === self::GAME_ACCOUNT_CATEGORY;
+    }
+
     private function toIso8601StringOrNull(mixed $value): ?string
     {
         if ($value === null || $value === '') {
@@ -68,6 +119,27 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
+        // Audit: when buyer opens and there are digital credentials/info available, mark as viewed.
+        try {
+            $isBuyer = $user && $negotiation->buyer_id === $user->id;
+            if ($isBuyer && $this->isDigitalDeliveryCategory($negotiation->category)) {
+                $status = (string) $negotiation->status;
+                if (in_array($status, ['waiting_digital_delivery', 'approved', 'delivered'], true)) {
+                    if ($this->isGameAccountCategory($negotiation->category)) {
+                        if ($negotiation->game_account_seller_info && ! $negotiation->game_account_seller_info_viewed_by_buyer_at) {
+                            $negotiation->update(['game_account_seller_info_viewed_by_buyer_at' => now()]);
+                        }
+                    } else {
+                        if ($negotiation->digital_delivery_info && ! $negotiation->digital_delivery_info_viewed_by_buyer_at) {
+                            $negotiation->update(['digital_delivery_info_viewed_by_buyer_at' => now()]);
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $exception) {
+            // ignore audit failures
+        }
+
         return response()->json(['data' => $this->transform($negotiation, $user)]);
     }
 
@@ -85,16 +157,194 @@ class IntermediationController extends Controller
         }
         $request->merge(['terms_accepted' => $termsAccepted ? 'yes' : '']);
 
-        $data = Validator::make($request->all(), [
+        $validator = Validator::make($request->all(), [
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:2000'],
             'price' => ['required', 'numeric', 'min:50', 'max:100000'],
             'category' => ['required', 'string', 'max:100'],
+            'delivery_days' => ['nullable', 'integer', 'min:1', 'max:25'],
+            'game_title' => ['nullable', 'string', 'max:120'],
+            'item_name' => ['nullable', 'string', 'max:160'],
+            'item_general_info' => ['nullable', 'string', 'max:1000'],
+            'digital_game' => ['nullable', 'string', 'max:100'],
+            'digital_currency_type' => ['nullable', 'string', 'max:60'],
+            'digital_quantity' => ['nullable', 'integer', 'min:1'],
+            'digital_platform_server' => ['nullable', 'string', 'max:120'],
+            'digital_delivery_method' => ['nullable', 'string', 'in:trade,mail,gift'],
+            'battle_pass_game' => ['nullable', 'string', 'max:100'],
+            'battle_pass_platform' => ['nullable', 'string', 'max:60'],
+            'battle_pass_type' => ['nullable', 'string', 'max:120'],
+            'battle_pass_duration_days' => ['nullable', 'integer', 'min:1', 'max:3650'],
+            'game_account_game' => ['nullable', 'string', 'max:100'],
+            'game_account_platform' => ['nullable', 'string', 'max:60'],
+            'game_account_level' => ['nullable', 'string', 'max:60'],
+            'game_account_rank' => ['nullable', 'string', 'max:60'],
+            'game_account_has_ban' => ['nullable'],
+            'game_account_seller_notes' => ['nullable', 'string', 'max:1000'],
+            'seller_fee_deduct_from_payout' => ['nullable'],
             'buyer_email' => ['nullable', 'email', 'exists:users,email'],
             'photos' => ['nullable', 'array', 'max:8'],
             'photos.*' => ['file', 'image', 'max:5120'], // 5MB max per photo
             'terms_accepted' => ['required', 'accepted'],
-        ])->validate();
+        ]);
+
+        $validator->after(function ($validator) use ($request) {
+            $category = trim((string) $request->input('category'));
+            $isGameAccount = $this->isGameAccountCategory($category);
+            $isPhysical = $this->isPhysicalCategory($category);
+
+            $isBattlePass = $category === 'Passe de batalha / Assinatura'
+                || $request->hasAny(['battle_pass_game', 'battle_pass_platform', 'battle_pass_type', 'battle_pass_duration_days']);
+
+            $isCurrency = $category === 'Moedas / Gold / Créditos';
+            $isService = $category === 'Serviço (boosting / rank / leveling)';
+            $isServiceExchange = $category === 'Troca de serviço';
+            $isSkin = $category === 'Skins / Roupas / Cosméticos';
+            $isItem = $category === 'Itens / Equipamentos (in-game)';
+            $isOthers = $category === 'Outros (jogos)';
+            $isKeyDlc = $category === 'Chave de jogo / DLC';
+
+            // Descrição: obrigatória para físicos, Skins e Conta.
+            $needsDescription = $isPhysical || $isSkin || $isGameAccount;
+            if ($needsDescription && ! trim((string) $request->input('description'))) {
+                $validator->errors()->add('description', 'Informe a descrição.');
+            }
+
+            if ($isSkin || $isItem) {
+                if (! trim((string) $request->input('game_title'))) {
+                    $validator->errors()->add('game_title', 'Informe o nome do jogo.');
+                }
+            }
+
+            if ($isItem) {
+                if (! trim((string) $request->input('item_name'))) {
+                    $validator->errors()->add('item_name', 'Informe o nome do item.');
+                }
+                if (! trim((string) $request->input('item_general_info'))) {
+                    $validator->errors()->add('item_general_info', 'Informe as informações gerais.');
+                }
+            }
+
+            if ($isKeyDlc) {
+                $days = $request->input('delivery_days');
+                if (! is_numeric($days) || (int) $days < 1 || (int) $days > 15) {
+                    $validator->errors()->add('delivery_days', 'Selecione um prazo de entrega de 1 a 15 dias.');
+                }
+            }
+
+            if ($isService) {
+                $days = $request->input('delivery_days');
+                if (! is_numeric($days) || (int) $days < 1 || (int) $days > 25) {
+                    $validator->errors()->add('delivery_days', 'Selecione um prazo de entrega de 1 a 25 dias.');
+                }
+            }
+
+            if ($isServiceExchange) {
+                $days = $request->input('delivery_days');
+                if (! is_numeric($days) || (int) $days < 1 || (int) $days > 3) {
+                    $validator->errors()->add('delivery_days', 'Selecione um prazo de entrega de 1 a 3 dias.');
+                }
+            }
+
+            $allowsPhotos = $isGameAccount || $isSkin || $isItem || $isPhysical;
+            if (! $allowsPhotos && $request->hasFile('photos')) {
+                $validator->errors()->add('photos', 'Imagens não são permitidas nesta categoria.');
+                return;
+            }
+
+            if ($isGameAccount) {
+                $count = $request->hasFile('photos') ? count($request->file('photos')) : 0;
+                if ($count < 3) {
+                    $validator->errors()->add('photos', 'Adicione no mínimo 3 imagens da conta.');
+                }
+            }
+
+            if ($isSkin || $isItem) {
+                $count = $request->hasFile('photos') ? count($request->file('photos')) : 0;
+                if ($count < 1) {
+                    $validator->errors()->add('photos', 'Adicione no mínimo 1 imagem.');
+                }
+                if ($count > 5) {
+                    $validator->errors()->add('photos', 'Máximo de 5 imagens para esta categoria.');
+                }
+            }
+
+            if ($isCurrency) {
+                if (! trim((string) $request->input('digital_game'))) {
+                    $validator->errors()->add('digital_game', 'Informe o jogo.');
+                }
+                if (! trim((string) $request->input('digital_currency_type'))) {
+                    $validator->errors()->add('digital_currency_type', 'Informe o tipo de moeda.');
+                }
+                $qty = $request->input('digital_quantity');
+                if (! is_numeric($qty) || (int) $qty < 1) {
+                    $validator->errors()->add('digital_quantity', 'Informe a quantidade da moeda.');
+                }
+                if (! trim((string) $request->input('digital_platform_server'))) {
+                    $validator->errors()->add('digital_platform_server', 'Informe a plataforma/servidor.');
+                }
+                $method = (string) $request->input('digital_delivery_method');
+                if (! in_array($method, ['trade', 'mail', 'gift'], true)) {
+                    $validator->errors()->add('digital_delivery_method', 'Selecione o método de entrega.');
+                }
+            }
+
+            if ($isBattlePass) {
+                if (! trim((string) $request->input('battle_pass_game'))) {
+                    $validator->errors()->add('battle_pass_game', 'Informe o jogo do passe/assinatura.');
+                }
+                if (! trim((string) $request->input('battle_pass_platform'))) {
+                    $validator->errors()->add('battle_pass_platform', 'Informe a plataforma do passe/assinatura.');
+                }
+                if (! trim((string) $request->input('battle_pass_type'))) {
+                    $validator->errors()->add('battle_pass_type', 'Informe o tipo de passe/assinatura.');
+                }
+                $days = $request->input('battle_pass_duration_days');
+                if (! is_numeric($days) || (int) $days < 1) {
+                    $validator->errors()->add('battle_pass_duration_days', 'Informe a duração (dias).');
+                }
+            }
+
+            if ($isGameAccount) {
+                if (! trim((string) $request->input('game_account_game'))) {
+                    $validator->errors()->add('game_account_game', 'Informe o jogo da conta.');
+                }
+                if (! trim((string) $request->input('game_account_platform'))) {
+                    $validator->errors()->add('game_account_platform', 'Informe a plataforma da conta.');
+                }
+                if (! trim((string) $request->input('game_account_level'))) {
+                    $validator->errors()->add('game_account_level', 'Informe o nível da conta.');
+                }
+                if (! trim((string) $request->input('game_account_rank'))) {
+                    $validator->errors()->add('game_account_rank', 'Informe o rank da conta.');
+                }
+                $hasBan = $request->input('game_account_has_ban');
+                if (! in_array((string) $hasBan, ['0', '1'], true) && ! in_array($hasBan, [0, 1, true, false], true)) {
+                    $validator->errors()->add('game_account_has_ban', 'Informe se a conta possui ban.');
+                }
+            }
+        });
+
+        $data = $validator->validate();
+
+        $category = trim((string) ($data['category'] ?? ''));
+        $isGameAccount = $this->isGameAccountCategory($category);
+        $isPhysical = $this->isPhysicalCategory($category);
+        $isSkin = $category === 'Skins / Roupas / Cosméticos';
+        $isItem = $category === 'Itens / Equipamentos (in-game)';
+        $allowsPhotos = $isGameAccount || $isSkin || $isItem || $isPhysical;
+
+        $deductRaw = $data['seller_fee_deduct_from_payout'] ?? null;
+        $deduct = false;
+        if (is_string($deductRaw)) {
+            $deduct = in_array(strtolower($deductRaw), ['true', '1', 'on', 'yes'], true);
+        } elseif (is_bool($deductRaw)) {
+            $deduct = $deductRaw;
+        } elseif (is_numeric($deductRaw)) {
+            $deduct = ((int) $deductRaw) === 1;
+        }
+
+        // Para "Conta de jogo", os dados sensíveis (login/senha) serão informados somente após o pagamento confirmado.
 
         $buyerId = null;
         if (! empty($data['buyer_email'])) {
@@ -104,22 +354,50 @@ class IntermediationController extends Controller
             }
         }
 
-        // Handle photo uploads
+        // Handle photo uploads (only for allowed categories)
         $photosPaths = [];
-        if ($request->hasFile('photos')) {
+        if ($allowsPhotos && $request->hasFile('photos')) {
             foreach ($request->file('photos') as $photo) {
                 $path = $photo->store('negotiations/photos', 'public');
                 $photosPaths[] = $path;
             }
         }
 
+        $description = isset($data['description']) ? trim((string) $data['description']) : null;
+        if ($description === '') {
+            $description = null;
+        }
+
         $negotiation = Negotiation::create([
             'seller_id' => $user->id,
             'buyer_id' => $buyerId,
             'title' => $data['title'],
-            'description' => $data['description'] ?? null,
+            'description' => $description,
             'price' => $data['price'],
             'category' => $data['category'],
+            'delivery_days' => $data['delivery_days'] ?? null,
+            'game_title' => $data['game_title'] ?? null,
+            'item_name' => $data['item_name'] ?? null,
+            'item_general_info' => $data['item_general_info'] ?? null,
+            'digital_game' => $data['digital_game'] ?? null,
+            'digital_currency_type' => $data['digital_currency_type'] ?? null,
+            'digital_quantity' => $data['digital_quantity'] ?? null,
+            'digital_platform_server' => $data['digital_platform_server'] ?? null,
+            'digital_delivery_method' => $data['digital_delivery_method'] ?? null,
+            'battle_pass_game' => $data['battle_pass_game'] ?? null,
+            'battle_pass_platform' => $data['battle_pass_platform'] ?? null,
+            'battle_pass_type' => $data['battle_pass_type'] ?? null,
+            'battle_pass_duration_days' => $data['battle_pass_duration_days'] ?? null,
+            'game_account_game' => $data['game_account_game'] ?? null,
+            'game_account_platform' => $data['game_account_platform'] ?? null,
+            'game_account_level' => $data['game_account_level'] ?? null,
+            'game_account_rank' => $data['game_account_rank'] ?? null,
+            'game_account_has_ban' => array_key_exists('game_account_has_ban', $data)
+                ? filter_var($data['game_account_has_ban'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE)
+                : null,
+            // Observações privadas do vendedor (não sensíveis)
+            'game_account_seller_notes' => $data['game_account_seller_notes'] ?? null,
+            'seller_fee_deduct_from_payout' => $deduct,
             'product_photos' => !empty($photosPaths) ? $photosPaths : null,
             'status' => 'pending_acceptance',
         ]);
@@ -157,13 +435,86 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        $negotiations = Negotiation::with(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state'])
-            ->where('status', 'awaiting_admin_approval')
+        $query = Negotiation::with([
+            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+        ])
+            ->where('status', 'awaiting_admin_approval');
+
+        // Suporta filtros enviados pela UI:
+        // - filter=today
+        // - filter=custom&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+        $filter = (string) $request->query('filter', '');
+        if ($filter === 'today') {
+            $start = now()->startOfDay();
+            $end = now()->endOfDay();
+            $query->whereBetween('created_at', [$start, $end]);
+        } elseif ($filter === 'custom') {
+            $startDateRaw = (string) $request->query('start_date', '');
+            $endDateRaw = (string) $request->query('end_date', '');
+
+            if ($startDateRaw === '' || $endDateRaw === '') {
+                return response()->json(['message' => 'start_date e end_date são obrigatórios para filtro custom.'], 422);
+            }
+
+            try {
+                $start = \Illuminate\Support\Carbon::parse($startDateRaw)->startOfDay();
+                $end = \Illuminate\Support\Carbon::parse($endDateRaw)->endOfDay();
+            } catch (\Throwable $exception) {
+                return response()->json(['message' => 'Datas inválidas para filtro.'], 422);
+            }
+
+            if ($start->greaterThan($end)) {
+                return response()->json(['message' => 'Intervalo inválido: start_date maior que end_date.'], 422);
+            }
+
+            $query->whereBetween('created_at', [$start, $end]);
+        }
+
+        $negotiations = $query
             ->orderByDesc('created_at')
             ->get()
             ->map(fn ($n) => $this->transform($n, $user, ['include_photos' => false]));
 
         return response()->json(['data' => $negotiations]);
+    }
+
+    /**
+     * Admin (somente teste/local): remover negociação.
+     */
+    public function adminDestroy(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if ($user->role !== 'admin') {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        // Segurança: permitir apenas em ambiente local/testing.
+        if (! app()->environment(['local', 'testing'])) {
+            return response()->json(['message' => 'Remoção de negociações está habilitada apenas para teste.'], 403);
+        }
+
+        $negotiation = Negotiation::find($id);
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        // Limpa arquivos associados (se existirem)
+        $paths = [];
+        if (is_array($negotiation->product_photos)) {
+            $paths = array_merge($paths, $negotiation->product_photos);
+        }
+        if (is_array($negotiation->intermediary_photos)) {
+            $paths = array_merge($paths, $negotiation->intermediary_photos);
+        }
+        $paths = array_values(array_filter(array_unique($paths), fn ($p) => is_string($p) && $p !== ''));
+        if (! empty($paths)) {
+            Storage::disk('public')->delete($paths);
+        }
+
+        $negotiation->delete();
+
+        return response()->json(['success' => true]);
     }
 
     /**
@@ -211,6 +562,41 @@ class IntermediationController extends Controller
         $negotiation->update([
             'status' => 'waiting_payment',
         ]);
+
+        // Se Mercado Pago estiver configurado, tenta gerar Pix automaticamente para o comprador.
+        // Isso permite que o front mostre um Pix real (em vez do fallback).
+        try {
+            $token = (string) config('services.mercadopago.access_token', '');
+            if ($token !== '' && $negotiation->buyer_id) {
+                $buyer = \App\Models\User::find($negotiation->buyer_id);
+                if ($buyer && $buyer->email) {
+                    $buyerFee = (float) config('services.mercadopago.buyer_fee_brl', 15);
+                    $amount = (float) $negotiation->price + $buyerFee;
+
+                    /** @var MercadoPagoService $mp */
+                    $mp = app(MercadoPagoService::class);
+                    $result = $mp->createPixPayment([
+                        'transaction_amount' => $amount,
+                        'description' => 'Intermediação segura - ' . (string) $negotiation->title,
+                        'payer_email' => (string) $buyer->email,
+                        'external_reference' => 'negotiation:' . (string) $negotiation->id,
+                        'idempotency_key' => Str::uuid()->toString(),
+                    ]);
+
+                    $pixCode = $result['pix_code'] ?? null;
+                    if (is_string($pixCode) && $pixCode !== '' && strlen($pixCode) <= 500) {
+                        $negotiation->update([
+                            'pix_code' => $pixCode,
+                            'pix_generated_at' => now(),
+                        ]);
+                    }
+                }
+            }
+        } catch (\Throwable $exception) {
+            Log::warning('MercadoPago auto pix generation failed: ' . $exception->getMessage(), [
+                'negotiation_id' => $negotiation->id,
+            ]);
+        }
 
         return response()->json(['success' => true]);
     }
@@ -344,6 +730,10 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
         }
 
+        if ($this->isDigitalDeliveryCategory($negotiation->category)) {
+            return response()->json(['message' => 'Negociação digital não possui recebimento físico na intermediadora.'], 422);
+        }
+
         if ($negotiation->status !== 'shipped') {
             return response()->json(['message' => 'Recebimento disponível apenas após envio (Em Trânsito).'], 422);
         }
@@ -472,6 +862,10 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
         }
 
+        if ($this->isDigitalDeliveryCategory($negotiation->category)) {
+            return response()->json(['message' => 'Negociação digital não utiliza rastreio físico.'], 422);
+        }
+
         $isAdmin = $user->role === 'admin';
 
         if (! $negotiation->isSeller($user) && ! $isAdmin) {
@@ -518,6 +912,10 @@ class IntermediationController extends Controller
         $negotiation = Negotiation::find($id);
         if (! $negotiation) {
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if ($this->isDigitalDeliveryCategory($negotiation->category)) {
+            return response()->json(['message' => 'Negociação digital não possui envio físico para comprador.'], 422);
         }
 
         if ($negotiation->status !== 'at_intermediary' && $negotiation->status !== 'approved') {
@@ -596,10 +994,183 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Pagamento nao esperado neste status.'], 400);
         }
 
-        $negotiation->update([
-            'status' => 'waiting_shipment',
+        $data = Validator::make($request->all(), [
+            'payment_proof' => ['nullable', 'file', 'max:5120', 'mimes:jpg,jpeg,png,pdf'],
+        ])->validate();
+
+        $proofPath = null;
+        if ($request->hasFile('payment_proof')) {
+            $proofPath = $request->file('payment_proof')->store('negotiations/payment-proofs', 'public');
+        }
+
+        $nextStatus = $this->nextStatusAfterPayment($negotiation);
+
+        $payload = [
+            'status' => $nextStatus,
             'paid_at' => now(),
             'payment_confirmed_by_buyer' => true,
+        ];
+
+        if ($proofPath) {
+            $payload['buyer_payment_proof'] = $proofPath;
+            $payload['buyer_payment_proof_uploaded_at'] = now();
+        }
+
+        $negotiation->update($payload);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Buyer submits data required to change a game account (only for Conta de jogo).
+     */
+    public function submitGameAccountChangeRequest(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $negotiation = Negotiation::find($id);
+
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $this->isGameAccountCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para Conta de jogo.'], 422);
+        }
+
+        if ($negotiation->buyer_id !== $user->id) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        if ($negotiation->status !== 'waiting_digital_delivery') {
+            return response()->json(['message' => 'Dados de alteração disponíveis apenas após o pagamento confirmado.'], 422);
+        }
+
+        $data = Validator::make($request->all(), [
+            'game_account_buyer_change_request' => ['required', 'string', 'min:10', 'max:5000'],
+        ])->validate();
+
+        $negotiation->update([
+            'game_account_buyer_change_request' => (string) $data['game_account_buyer_change_request'],
+            'game_account_buyer_change_requested_at' => now(),
+        ]);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Seller submits digital delivery info for non-account digital categories (e.g., Moedas / Chave / DLC).
+     */
+    public function submitDigitalDeliveryInfo(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $negotiation = Negotiation::find($id);
+
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $this->isDigitalDeliveryCategory($negotiation->category) || $this->isGameAccountCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para categorias digitais (exceto Conta de jogo).'], 422);
+        }
+
+        if ($negotiation->seller_id !== $user->id) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        if ($negotiation->status !== 'waiting_digital_delivery') {
+            return response()->json(['message' => 'Envio digital disponível apenas após o pagamento confirmado.'], 422);
+        }
+
+        $data = Validator::make($request->all(), [
+            'digital_delivery_info' => ['required', 'string', 'min:5', 'max:5000'],
+        ])->validate();
+
+        $negotiation->update([
+            'digital_delivery_info' => (string) $data['digital_delivery_info'],
+            'digital_delivery_info_sent_by_user_id' => $user->id,
+            'digital_delivery_info_sent_at' => now(),
+            'digital_delivery_info_viewed_by_buyer_at' => null,
+        ]);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Seller submits account credentials/info (only for Conta de jogo) AFTER payment confirmed.
+     */
+    public function submitGameAccountSellerInfo(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $negotiation = Negotiation::find($id);
+
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $this->isGameAccountCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para Conta de jogo.'], 422);
+        }
+
+        if ($negotiation->seller_id !== $user->id) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        if ($negotiation->status !== 'waiting_digital_delivery') {
+            return response()->json(['message' => 'Dados da conta disponíveis apenas após o pagamento confirmado.'], 422);
+        }
+
+        $data = Validator::make($request->all(), [
+            'game_account_seller_info' => ['required', 'string', 'min:10', 'max:5000'],
+            'seller_fee_deduct_from_payout' => ['nullable'],
+        ])->validate();
+
+        $deductRaw = $data['seller_fee_deduct_from_payout'] ?? null;
+        $deduct = false;
+        if (is_string($deductRaw)) {
+            $deduct = in_array(strtolower($deductRaw), ['true', '1', 'on', 'yes'], true);
+        } elseif (is_bool($deductRaw)) {
+            $deduct = $deductRaw;
+        } elseif (is_numeric($deductRaw)) {
+            $deduct = ((int) $deductRaw) === 1;
+        }
+
+        $negotiation->update([
+            'game_account_seller_info' => (string) $data['game_account_seller_info'],
+            'seller_fee_deduct_from_payout' => $deduct,
+            'game_account_seller_info_sent_by_user_id' => $user->id,
+            'game_account_seller_info_sent_at' => now(),
+            'game_account_seller_info_viewed_by_buyer_at' => null,
+        ]);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Admin/inspector marks a game account as digitally delivered to the buyer.
+     */
+    public function markDigitalDelivered(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if ($user->role !== 'admin' && $user->role !== 'inspector') {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        $negotiation = Negotiation::find($id);
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $this->isDigitalDeliveryCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para negociações digitais.'], 422);
+        }
+
+        if ($negotiation->status !== 'waiting_digital_delivery') {
+            return response()->json(['message' => 'Entrega digital não disponível neste status.'], 422);
+        }
+
+        $negotiation->update([
+            'status' => 'delivered',
+            'delivered_at' => now(),
         ]);
 
         return response()->json(['success' => true]);
@@ -618,6 +1189,10 @@ class IntermediationController extends Controller
         $negotiation = Negotiation::find($id);
         if (! $negotiation) {
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if ($this->isDigitalDeliveryCategory($negotiation->category)) {
+            return response()->json(['message' => 'Negociação digital não possui inspeção física.'], 422);
         }
 
         $checklist = json_decode($request->input('checklist'), true) ?: [];
@@ -855,6 +1430,13 @@ class IntermediationController extends Controller
         }
         $intermediaryPhotos = $includePhotos ? $buildPhotoUrls($negotiation->intermediary_photos) : [];
 
+        $buyerPaymentProofUrl = null;
+        if ($includePhotos && isset($negotiation->buyer_payment_proof) && is_string($negotiation->buyer_payment_proof) && $negotiation->buyer_payment_proof !== '') {
+            if ($publicDisk->exists($negotiation->buyer_payment_proof)) {
+                $buyerPaymentProofUrl = $publicDisk->url($negotiation->buyer_payment_proof);
+            }
+        }
+
         $checklist = $negotiation->intermediary_checklist;
         if (is_string($checklist) && $checklist !== '') {
             $decoded = json_decode($checklist, true);
@@ -897,24 +1479,129 @@ class IntermediationController extends Controller
         $trackingToIntermediary = $negotiation->tracking_code ?? $negotiation->tracking_to_intermediary ?? null;
         $trackingToBuyer = $negotiation->buyer_tracking_code ?? $negotiation->tracking_to_buyer ?? null;
 
+        $currentUserRole = $currentUser?->role ?? null;
+        $isAdminOrInspector = in_array($currentUserRole, ['admin', 'inspector'], true);
+        $isBuyer = $currentUser && $negotiation->buyer_id === $currentUser->id;
+        $isSeller = $currentUser && $negotiation->seller_id === $currentUser->id;
+
+        $sellerFeeDeductFromPayout = null;
+        if ($isAdminOrInspector || $isSeller) {
+            $sellerFeeDeductFromPayout = (bool) $negotiation->seller_fee_deduct_from_payout;
+        }
+
+        $isGameAccount = $this->isGameAccountCategory($negotiation->category);
+        $isDigitalDelivery = $this->isDigitalDeliveryCategory($negotiation->category);
+
+        $status = (string) $negotiation->status;
+        $digitalViewAllowedByStatus = in_array($status, ['waiting_digital_delivery', 'approved', 'delivered'], true);
+
+        $gameAccountSellerInfo = null;
+        $gameAccountBuyerChangeRequest = null;
+        $gameAccountBuyerChangeRequestedAt = null;
+
+        $gameAccountSellerInfoSentAt = null;
+        $gameAccountSellerInfoViewedByBuyerAt = null;
+
+        $digitalDeliveryInfo = null;
+        $digitalDeliveryInfoSentAt = null;
+        $digitalDeliveryInfoViewedByBuyerAt = null;
+
+        if ($isGameAccount) {
+            if ($digitalViewAllowedByStatus && ($isAdminOrInspector || $isBuyer || $isSeller)) {
+                $gameAccountSellerInfoSentAt = $this->toIso8601StringOrNull($negotiation->game_account_seller_info_sent_at);
+            }
+
+            // Sensitive: show ONLY to buyer/admin/inspector and only when digital delivery is relevant.
+            if ($digitalViewAllowedByStatus && ($isAdminOrInspector || $isBuyer)) {
+                $gameAccountSellerInfo = $negotiation->game_account_seller_info;
+                $gameAccountSellerInfoViewedByBuyerAt = $this->toIso8601StringOrNull($negotiation->game_account_seller_info_viewed_by_buyer_at);
+            }
+
+            if ($isAdminOrInspector || $isBuyer) {
+                $gameAccountBuyerChangeRequest = $negotiation->game_account_buyer_change_request;
+                $gameAccountBuyerChangeRequestedAt = $this->toIso8601StringOrNull($negotiation->game_account_buyer_change_requested_at);
+            }
+        }
+
+        if ($isDigitalDelivery && ! $isGameAccount) {
+            if ($digitalViewAllowedByStatus && ($isAdminOrInspector || $isBuyer || $isSeller)) {
+                $digitalDeliveryInfoSentAt = $this->toIso8601StringOrNull($negotiation->digital_delivery_info_sent_at);
+            }
+
+            // Sensitive: show ONLY to buyer/admin/inspector and only when digital delivery is relevant.
+            if ($digitalViewAllowedByStatus && ($isAdminOrInspector || $isBuyer)) {
+                $digitalDeliveryInfo = $negotiation->digital_delivery_info;
+                $digitalDeliveryInfoViewedByBuyerAt = $this->toIso8601StringOrNull($negotiation->digital_delivery_info_viewed_by_buyer_at);
+            }
+        }
+
         return [
             'id' => $negotiation->id,
             'title' => $title,
             'description' => $description,
             'category' => $negotiation->category,
+            'delivery_days' => $negotiation->delivery_days,
+            'game_title' => $negotiation->game_title,
+            'item_name' => $negotiation->item_name,
+            'item_general_info' => $negotiation->item_general_info,
+            'digital_quantity' => $negotiation->digital_quantity,
+            'digital_game' => $negotiation->digital_game,
+            'digital_currency_type' => $negotiation->digital_currency_type,
+            'digital_platform_server' => $negotiation->digital_platform_server,
+            'digital_delivery_method' => $negotiation->digital_delivery_method,
+            'battle_pass' => [
+                'game' => $negotiation->battle_pass_game,
+                'platform' => $negotiation->battle_pass_platform,
+                'type' => $negotiation->battle_pass_type,
+                'duration_days' => $negotiation->battle_pass_duration_days,
+            ],
+            'game_account_public' => $isGameAccount ? [
+                'game' => $negotiation->game_account_game,
+                'platform' => $negotiation->game_account_platform,
+                'level' => $negotiation->game_account_level,
+                'rank' => $negotiation->game_account_rank,
+                'has_ban' => $negotiation->game_account_has_ban,
+            ] : null,
             'price' => $price,
             'status' => $negotiation->status,
+            'seller_fee_deduct_from_payout' => $sellerFeeDeductFromPayout,
+            'game_account' => $isGameAccount ? [
+                'seller_info' => $gameAccountSellerInfo,
+                'seller_info_sent_at' => $gameAccountSellerInfoSentAt,
+                'seller_info_viewed_by_buyer_at' => $gameAccountSellerInfoViewedByBuyerAt,
+                'buyer_change_request' => $gameAccountBuyerChangeRequest,
+                'buyer_change_requested_at' => $gameAccountBuyerChangeRequestedAt,
+            ] : null,
+            'digital_delivery' => ($isDigitalDelivery && ! $isGameAccount) ? [
+                'seller_info' => $digitalDeliveryInfo,
+                'seller_info_sent_at' => $digitalDeliveryInfoSentAt,
+                'seller_info_viewed_by_buyer_at' => $digitalDeliveryInfoViewedByBuyerAt,
+            ] : null,
             'seller' => $negotiation->seller ? [
                 'id' => $negotiation->seller->id,
                 'name' => $negotiation->seller->name,
                 'email' => $negotiation->seller->email,
                 'phone' => $negotiation->seller->phone,
+                'address_zipcode' => $negotiation->seller->address_zipcode,
+                'address_street' => $negotiation->seller->address_street,
+                'address_number' => $negotiation->seller->address_number,
+                'address_complement' => $negotiation->seller->address_complement,
+                'address_neighborhood' => $negotiation->seller->address_neighborhood,
+                'address_city' => $negotiation->seller->address_city,
+                'address_state' => $negotiation->seller->address_state,
             ] : null,
             'buyer' => $negotiation->buyer ? [
                 'id' => $negotiation->buyer->id,
                 'name' => $negotiation->buyer->name,
                 'email' => $negotiation->buyer->email,
                 'phone' => $negotiation->buyer->phone,
+                'address_zipcode' => $negotiation->buyer->address_zipcode,
+                'address_street' => $negotiation->buyer->address_street,
+                'address_number' => $negotiation->buyer->address_number,
+                'address_complement' => $negotiation->buyer->address_complement,
+                'address_neighborhood' => $negotiation->buyer->address_neighborhood,
+                'address_city' => $negotiation->buyer->address_city,
+                'address_state' => $negotiation->buyer->address_state,
             ] : null,
             'my_role' => $negotiation->getUserRole($currentUser),
             // Aliases usados no front
@@ -951,6 +1638,8 @@ class IntermediationController extends Controller
             'internal_logs' => $internalLogs,
             'pix_code' => $negotiation->pix_code,
             'pix_generated_at' => $this->toIso8601StringOrNull($negotiation->pix_generated_at),
+            'buyer_payment_proof_url' => $isAdminOrInspector ? $buyerPaymentProofUrl : null,
+            'buyer_payment_proof_uploaded_at' => $isAdminOrInspector ? $this->toIso8601StringOrNull($negotiation->buyer_payment_proof_uploaded_at) : null,
             'accepted_at' => $this->toIso8601StringOrNull($negotiation->accepted_at),
             'paid_at' => $this->toIso8601StringOrNull($negotiation->paid_at),
             'shipped_at' => $this->toIso8601StringOrNull($negotiation->shipped_at),

@@ -11,3 +11,7 @@ Artisan::command('inspire', function () {
 Schedule::command('negotiations:purge-old-images --days=5')
     ->dailyAt('02:30')
     ->description('Purge negotiation images 5 days after delivery');
+
+Schedule::command('negotiations:alert-delivery-deadlines')
+    ->dailyAt('09:00')
+    ->description('Alert sellers about digital delivery deadlines');

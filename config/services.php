@@ -40,4 +40,17 @@ return [
         'sms_sender' => env('BREVO_SMS_SENDER'),
     ],
 
+    'mercadopago' => [
+        'public_key' => env('MERCADOPAGO_PUBLIC_KEY'),
+        'access_token' => env('MERCADOPAGO_ACCESS_TOKEN'),
+        // Opcional (OAuth): gere o access_token automaticamente via /oauth/token.
+        'client_id' => env('MERCADOPAGO_CLIENT_ID'),
+        'client_secret' => env('MERCADOPAGO_CLIENT_SECRET'),
+        'test_token' => env('MERCADOPAGO_TEST_TOKEN', false),
+        // URL pública para webhooks (ex.: https://seu-dominio.com/api/payments/mercadopago/webhook)
+        'webhook_url' => env('MERCADOPAGO_WEBHOOK_URL'),
+        // Taxa fixa do comprador (em BRL) somada ao valor do produto.
+        'buyer_fee_brl' => (float) env('BUYER_FEE_BRL', 15),
+    ],
+
 ];

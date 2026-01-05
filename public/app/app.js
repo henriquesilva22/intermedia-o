@@ -11,7 +11,7 @@
 
   //#region PART 1/3: Constantes e Estado
 
-  const API_BASE = 'http://127.0.0.1:8000/api';
+  const API_BASE = (window.__API_BASE__ || `${window.location.origin}/api`).replace(/\/$/, '');
   const STORAGE_KEYS = { token: 'token', user: 'user' };
   const AUTH_PAGES = new Set(['login', 'register', 'forgot-password', 'reset-password', 'confirm-email']);
   
@@ -20,6 +20,7 @@
     awaiting_admin_approval: 'Aguardando Aprovação',
     pending_acceptance: 'Convite Pendente',
     waiting_payment: 'Pagamento Pendente',
+    waiting_digital_delivery: 'Entrega digital pendente',
     waiting_shipment: 'Aguardando Envio',
     shipped: 'Em Trânsito',
     at_intermediary: 'Em Análise (Intermediadora)',
@@ -35,6 +36,7 @@
     awaiting_admin_approval: 'bg-primary-100 text-primary-700 border border-primary-200',
     pending_acceptance: 'bg-secondary-100 text-secondary-700 border border-secondary-200',
     waiting_payment: 'bg-warning-100 text-warning-700 border border-warning-200',
+    waiting_digital_delivery: 'bg-secondary-50 text-secondary-700 border border-secondary-200',
     waiting_shipment: 'bg-gray-100 text-gray-700 border border-gray-200',
     shipped: 'bg-secondary-100 text-secondary-700 border border-secondary-200',
     at_intermediary: 'bg-secondary-100 text-secondary-700 border border-secondary-200',
@@ -55,6 +57,10 @@
 
   const initialToken = localStorage.getItem(STORAGE_KEYS.token) || null;
   const initialUser = safeParse(localStorage.getItem(STORAGE_KEYS.user));
+  const defaultPendingFilter = (() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  })();
 
   const state = {
     token: initialToken,
@@ -65,6 +71,9 @@
     errorMessage: null,
     successMessage: null,
     toast: null,
+    statusOptionsQuery: '',
+    sidebarSummaryOpen: false,
+    sidebarStatusOpen: false,
     negotiations: [],
     negotiationsLoadedAt: 0,
     currentNegotiation: null,
@@ -83,10 +92,12 @@
     dashboardPageSize: 6,
     pendingCount: 0,
     pendingNotices: [],
-    pendingFilter: 'today',
+    pendingFilter: defaultPendingFilter,
     showPendingModal: false,
     timelineNegotiationId: null,
     timelineData: null,
+    sellerGuideNegotiationId: null,
+    confirmPaymentProofForId: null,
     gallery: null,
     showIntermediaryReportModal: false,
     adminTab: 'negotiations',
@@ -97,12 +108,16 @@
     adminUsers: [],
     adminOverview: null,
     adminIsLoading: false,
+    showAdminUserDetailsModal: false,
+    adminUserDetails: null,
     resetPasswordToken: null,
     resetPasswordEmail: null,
     confirmationEmail: null,
     confirmationCooldownRemaining: 0,
     showCreateNegotiationModal: false,
     showCreateTerms: false,
+    showCreateFeeGuide: false,
+    createNegStep: 1,
     filtersExpanded: false,
     registerCityFilter: '',
     registerSelectedCity: '',
@@ -117,6 +132,14 @@
       // Campos do formulário para preservar durante re-render
       title: '',
       category: '',
+      negotiationType: 'digital',
+      sellerFeeMode: 'deduct',
+      deliveryDays: '',
+      digitalGame: '',
+      digitalCurrencyType: '',
+      digitalQuantity: '',
+      digitalPlatformServer: '',
+      digitalDeliveryMethod: '',
       description: '',
       price: '',
       buyerEmail: ''
@@ -152,18 +175,588 @@
   };
 
   const PRODUCT_CATEGORIES = [
-    'Eletrônicos & Gadgets',
-    'Smartphones & Tablets',
-    'Computadores & Notebooks',
-    'Games & Consoles',
-    'Áudio & Vídeo',
-    'Câmeras & Drones',
-    'Relógios de Luxo',
-    'Instrumentos Musicais',
-    'Colecionáveis',
-    'Veículos',
-    'Outros'
+    'Conta de jogo',
+    'Moedas / Gold / Créditos',
+    'Chave de jogo / DLC',
+    'Serviço (boosting / rank / leveling)',
+    'Troca de serviço',
+    'Notebook',
+    'Smartphone',
+    'Celular',
+    'Produto físico (pequeno)',
+    'Outros (produtos físicos)'
   ];
+
+  const DIGITAL_PRODUCT_CATEGORIES = [
+    'Conta de jogo',
+    'Moedas / Gold / Créditos',
+    'Chave de jogo / DLC',
+    'Serviço (boosting / rank / leveling)',
+    'Troca de serviço'
+  ];
+
+  const PHYSICAL_PRODUCT_CATEGORIES = [
+    'Notebook',
+    'Smartphone',
+    'Celular',
+    'Produto físico (pequeno)',
+    'Outros (produtos físicos)'
+  ];
+
+  const CATEGORY_GAME_ACCOUNT = 'Conta de jogo';
+  const CATEGORY_CURRENCY = 'Moedas / Gold / Créditos';
+  const CATEGORY_KEY_DLC = 'Chave de jogo / DLC';
+  const CATEGORY_SERVICE = 'Serviço (boosting / rank / leveling)';
+  const CATEGORY_SERVICE_EXCHANGE = 'Troca de serviço';
+  const CATEGORY_SKIN = 'Skins / Roupas / Cosméticos';
+  const CATEGORY_ITEM = 'Itens / Equipamentos (in-game)';
+  const CATEGORY_OTHERS = 'Outros (jogos)';
+
+  const DIGITAL_DELIVERY_DEADLINE_BUSINESS_DAYS = 3;
+  const DIGITAL_KEY_DELIVERY_MAX_DAYS = 15;
+  const DIGITAL_SERVICE_DELIVERY_MAX_DAYS = 25;
+  const DIGITAL_SERVICE_EXCHANGE_MAX_DAYS = 3;
+
+  function isDigitalDeliveryCategory(category) {
+    const c = String(category || '').trim();
+    return c === CATEGORY_GAME_ACCOUNT || c === CATEGORY_CURRENCY || c === CATEGORY_KEY_DLC || c === CATEGORY_SERVICE || c === CATEGORY_SERVICE_EXCHANGE;
+  }
+
+  function categoryAllowsPublicDescription(category) {
+    const c = String(category || '').trim();
+    return c === CATEGORY_SKIN || c === CATEGORY_ITEM || c === CATEGORY_SERVICE || c === CATEGORY_SERVICE_EXCHANGE || c === CATEGORY_OTHERS;
+  }
+
+  function categoryDeliveryDaysMax(category) {
+    const c = String(category || '').trim();
+    if (c === CATEGORY_KEY_DLC) return DIGITAL_KEY_DELIVERY_MAX_DAYS;
+    if (c === CATEGORY_SERVICE) return DIGITAL_SERVICE_DELIVERY_MAX_DAYS;
+    if (c === CATEGORY_SERVICE_EXCHANGE) return DIGITAL_SERVICE_EXCHANGE_MAX_DAYS;
+    return 0;
+  }
+
+  function getCreateNegotiationType() {
+    const raw = String(state.createNegForm?.negotiationType ?? '').trim();
+    if (raw === 'digital' || raw === 'physical') return raw;
+    return '';
+  }
+
+  function getCreateNegotiationDeliveryDaysMax() {
+    if (getCreateNegotiationType() !== 'digital') return 0;
+    const selectedCategory = String(state.createNegForm?.category || '').trim();
+    const byCategory = categoryDeliveryDaysMax(selectedCategory);
+    return byCategory > 0 ? byCategory : DIGITAL_SERVICE_DELIVERY_MAX_DAYS;
+  }
+
+  function categoryDeliveryDaysDefault(category) {
+    const c = String(category || '').trim();
+    if (c === CATEGORY_SERVICE) return 7;
+    if (c === CATEGORY_KEY_DLC) return 3;
+    if (c === CATEGORY_SERVICE_EXCHANGE) return 3;
+    return '';
+  }
+
+  function getCreateNegotiationDeadlineCopy() {
+    const selectedCategory = String(state.createNegForm?.category || '').trim();
+    const maxDays = getCreateNegotiationDeliveryDaysMax();
+    if (maxDays > 0) {
+      const raw = state.createNegForm?.deliveryDays;
+      const parsed = parseInt(raw || '', 10);
+      const fallback = categoryDeliveryDaysDefault(selectedCategory);
+      const days = parsed && parsed >= 1 && parsed <= maxDays ? parsed : (typeof fallback === 'number' ? fallback : Math.min(3, maxDays));
+      return { kind: 'selectable_days', days, maxDays };
+    }
+    return { kind: 'business_days', days: DIGITAL_DELIVERY_DEADLINE_BUSINESS_DAYS };
+  }
+
+  function updateCreateNegotiationStepUI() {
+    try {
+      if (!state.showCreateNegotiationModal) return;
+      const root = document.getElementById('app');
+      if (!root) return;
+      const modal = root.querySelector('[data-create-neg-modal]');
+      if (!(modal instanceof HTMLElement)) return;
+
+      const step = Math.max(1, Math.min(4, Number(state.createNegStep) || 1));
+
+      const steps = modal.querySelectorAll('[data-create-step]');
+      steps.forEach((el) => {
+        if (!(el instanceof HTMLElement)) return;
+        const s = Number(el.dataset.createStep) || 0;
+        el.classList.toggle('hidden', s !== step);
+      });
+
+      const indicators = modal.querySelectorAll('[data-create-step-indicator]');
+      indicators.forEach((el) => {
+        if (!(el instanceof HTMLElement)) return;
+        const s = Number(el.dataset.createStepIndicator) || 0;
+        const active = s === step;
+        const done = s < step;
+        el.classList.toggle('bg-primary-600', active || done);
+        el.classList.toggle('text-white', active || done);
+        el.classList.toggle('bg-gray-200', !active && !done);
+        el.classList.toggle('text-gray-700', !active && !done);
+      });
+
+      const title = modal.querySelector('[data-create-step-title]');
+      if (title instanceof HTMLElement) {
+        title.textContent = ['Essencial', 'Detalhes', 'Comprador', 'Confirmar'][step - 1] || 'Nova Negociação';
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  function renderCreateNegotiationDeadlineField() {
+    const negotiationType = getCreateNegotiationType();
+    if (!negotiationType) {
+      return `
+        <label class="block text-sm text-gray-700 font-medium mb-2">Prazo de entrega</label>
+        <input type="text" value="Selecione o tipo de negociação" disabled class="w-full px-4 py-3 bg-gray-200 border border-gray-300 rounded-lg text-gray-600 cursor-not-allowed">
+        <span class="text-xs text-gray-500 mt-1 block"><i class="fas fa-info-circle mr-1"></i>O prazo depende do tipo (digital/física).</span>
+      `;
+    }
+    if (negotiationType !== 'digital') {
+      return `
+        <label class="block text-sm text-gray-700 font-medium mb-2">Prazo de entrega</label>
+        <input type="text" value="Negociação física (prazo combinado)" disabled class="w-full px-4 py-3 bg-gray-200 border border-gray-300 rounded-lg text-gray-600 cursor-not-allowed">
+        <span class="text-xs text-gray-500 mt-1 block"><i class="fas fa-info-circle mr-1"></i>O prazo exato pode variar conforme envio e recebimento.</span>
+      `;
+    }
+
+    const deadline = getCreateNegotiationDeadlineCopy();
+    if (deadline.kind === 'selectable_days') {
+      const { days, maxDays } = deadline;
+      return `
+        <label class="block text-sm text-gray-700 font-medium mb-2">Prazo máximo de entrega (dias) *</label>
+        <select name="delivery_days" required data-action="updateNegFormField" data-field="deliveryDays" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+          ${Array.from({ length: maxDays }, (_, i) => i + 1).map((d) => `<option value="${d}" ${d === days ? 'selected' : ''}>${d} dia${d === 1 ? '' : 's'}</option>`).join('')}
+        </select>
+        <span class="text-xs text-warning-600 mt-1 block"><i class="fas fa-info-circle mr-1"></i>Selecione até ${maxDays} dias.</span>
+      `;
+    }
+
+    return `
+      <label class="block text-sm text-gray-700 font-medium mb-2">Prazo digital</label>
+      <input type="text" value="Até ${DIGITAL_DELIVERY_DEADLINE_BUSINESS_DAYS} dias úteis" disabled class="w-full px-4 py-3 bg-gray-200 border border-gray-300 rounded-lg text-gray-600 cursor-not-allowed">
+      <span class="text-xs text-warning-600 mt-1 block"><i class="fas fa-info-circle mr-1"></i>Prazo fixo obrigatório (após aprovação)</span>
+    `;
+  }
+
+  function persistCreateNegotiationDraftFromDOM(form) {
+    try {
+      if (!(form instanceof HTMLFormElement)) return;
+
+      const fields = [
+        'title',
+        'price',
+        'buyer_email',
+        'negotiation_type',
+        'category',
+        'game_account_game',
+        'game_account_platform',
+        'game_account_level',
+        'game_account_rank',
+        'game_account_has_ban',
+        'game_account_seller_notes',
+        'game_title',
+        'item_name',
+        'item_general_info',
+        'digital_game',
+        'digital_currency_type',
+        'digital_quantity',
+        'digital_platform_server',
+        'digital_delivery_method',
+        'description'
+      ];
+
+      const draft = {};
+      for (const name of fields) {
+        const el = form.querySelector(`[name="${name}"]`);
+        if (!(el instanceof HTMLElement)) continue;
+        const value = 'value' in el ? el.value : '';
+        if (value !== undefined) {
+          draft[name] = value;
+        }
+      }
+
+      state.createNegForm = { ...state.createNegForm, ...draft };
+    } catch {
+      // ignore
+    }
+  }
+
+  function updateCreateNegotiationModalDynamicUI() {
+    try {
+      if (!state.showCreateNegotiationModal) return;
+      const root = document.getElementById('app');
+      if (!root) return;
+      const form = root.querySelector('form[data-action="createNegotiation"]');
+      if (!(form instanceof HTMLFormElement)) return;
+
+      // IMPORTANT: this function re-renders chunks via innerHTML.
+      // Persist current values first to avoid wiping what the user typed.
+      persistCreateNegotiationDraftFromDOM(form);
+
+      const structured = form.querySelector('[data-create-neg-structured]');
+      const description = form.querySelector('[data-create-neg-description]');
+      const currency = form.querySelector('[data-create-neg-currency]');
+      const photos = form.querySelector('[data-create-neg-photos]');
+      const deadline = form.querySelector('[data-create-neg-deadline]');
+      const feeGuide = form.querySelector('[data-create-fee-guide]');
+
+      const selectedCategory = String(state.createNegForm?.category || '').trim();
+      const showCurrencyFields = selectedCategory === CATEGORY_CURRENCY;
+      const showGameAccountFields = selectedCategory === CATEGORY_GAME_ACCOUNT;
+      const showSkinFields = selectedCategory === CATEGORY_SKIN;
+      const showItemFields = selectedCategory === CATEGORY_ITEM;
+      const negotiationType = getCreateNegotiationType();
+      const isDigital = negotiationType === 'digital';
+      const isPhysicalType = negotiationType === 'physical';
+      const showDescription = isPhysicalType || selectedCategory === CATEGORY_GAME_ACCOUNT || selectedCategory === CATEGORY_SKIN;
+      const requiresPhotos = categoryRequiresImages(selectedCategory);
+      const showPhotos = categoryAllowsImages(selectedCategory, negotiationType);
+      const minImages = requiresPhotos ? categoryMinImages(selectedCategory) : 0;
+      const maxImages = categoryMaxAllowedImages(selectedCategory, negotiationType);
+      const productPhotos = Array.isArray(state.createNegForm?.productPhotos) ? state.createNegForm.productPhotos : [];
+
+      const draft = state.createNegForm || {};
+      const snakeToCamel = (value) => String(value || '').replace(/_([a-z])/g, (_, c) => String(c || '').toUpperCase());
+      const getDraft = (name) => {
+        const direct = draft?.[name];
+        if (typeof direct === 'string' || typeof direct === 'number') return String(direct);
+        const camel = snakeToCamel(name);
+        const alt = draft?.[camel];
+        if (typeof alt === 'string' || typeof alt === 'number') return String(alt);
+        return '';
+      };
+
+      const photosHtml = productPhotos.map((photo, idx) => `
+        <div class="relative group">
+          <img src="${photo.preview}" alt="Foto ${idx + 1}" class="w-full h-24 object-cover rounded-lg border border-gray-200">
+          <button type="button" class="absolute top-1 right-1 w-6 h-6 bg-danger-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition" data-action="removeProductPhoto" data-index="${idx}">✕</button>
+        </div>
+      `).join('');
+
+      if (structured instanceof HTMLElement) {
+        structured.innerHTML = `
+          ${showGameAccountFields ? `
+            <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
+              <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                <i class="fas fa-user-shield text-primary-600"></i>
+                Dados da conta (estruturado)
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Jogo *</label>
+                  <input type="text" name="game_account_game" required value="${escapeAttr(getDraft('game_account_game'))}" placeholder="Ex: Valorant" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                </div>
+                <div>
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Plataforma *</label>
+                  <input type="text" name="game_account_platform" required value="${escapeAttr(getDraft('game_account_platform'))}" placeholder="Ex: PC, PS5, Xbox" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Nível *</label>
+                  <input type="text" name="game_account_level" required value="${escapeAttr(getDraft('game_account_level'))}" placeholder="Ex: 120" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                </div>
+                <div>
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Rank *</label>
+                  <input type="text" name="game_account_rank" required value="${escapeAttr(getDraft('game_account_rank'))}" placeholder="Ex: Diamante" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                </div>
+              </div>
+
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Possui ban? *</label>
+                <select name="game_account_has_ban" required class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  <option value="" ${getDraft('game_account_has_ban') === '' ? 'selected' : ''}>Selecione</option>
+                  <option value="0" ${getDraft('game_account_has_ban') === '0' ? 'selected' : ''}>Não</option>
+                  <option value="1" ${getDraft('game_account_has_ban') === '1' ? 'selected' : ''}>Sim</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Observações ao intermediador (privado)</label>
+                <textarea name="game_account_seller_notes" rows="2" maxlength="1000" placeholder="Use apenas para observações. Não coloque login/senha ou dados sensíveis aqui." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(getDraft('game_account_seller_notes'))}</textarea>
+                <p class="text-xs text-gray-400 mt-1">Este campo não é exibido publicamente.</p>
+              </div>
+            </div>
+          ` : ''}
+
+          ${showSkinFields ? `
+            <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-3">
+              <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                <i class="fas fa-gamepad text-primary-600"></i>
+                Dados do item (skin)
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Nome do jogo *</label>
+                <input type="text" name="game_title" required value="${escapeAttr(getDraft('game_title'))}" placeholder="Ex: Fortnite" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+              </div>
+            </div>
+          ` : ''}
+
+          ${showItemFields ? `
+            <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
+              <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                <i class="fas fa-dice-d20 text-primary-600"></i>
+                Dados do item (in-game)
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Nome do jogo *</label>
+                  <input type="text" name="game_title" required value="${escapeAttr(getDraft('game_title'))}" placeholder="Ex: Path of Exile" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                </div>
+                <div>
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Nome do item *</label>
+                  <input type="text" name="item_name" required value="${escapeAttr(getDraft('item_name'))}" placeholder="Ex: Espada Lendária" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                </div>
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Informações gerais *</label>
+                <textarea name="item_general_info" rows="2" required maxlength="1000" placeholder="Ex: nível do item, atributos, raridade, restrições de região/servidor." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(getDraft('item_general_info'))}</textarea>
+              </div>
+            </div>
+          ` : ''}
+        `;
+      }
+
+      if (description instanceof HTMLElement) {
+        description.innerHTML = showDescription ? `
+          <div>
+            <label class="block text-sm text-gray-700 font-medium mb-2">${isPhysicalType ? 'Descrição detalhada *' : 'Descrição curta (o que será entregue?) *'}</label>
+            <textarea name="description" rows="${isPhysicalType ? 6 : 2}" required maxlength="${isPhysicalType ? 2000 : 200}" placeholder="${isPhysicalType ? 'Ex: Notebook Samsung (modelo X), 8GB RAM/256GB SSD, usado, sem trincados, carregamento OK, som OK, nunca foi para assistência.' : 'Ex: Conta nível 80 com 3 skins lendárias'}" data-focus-key="create-neg-description" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(getDraft('description'))}</textarea>
+            <p class="text-xs text-gray-500 mt-1">${isPhysicalType ? 'Máx. 2000 caracteres.' : 'Máx. 200 caracteres. Evite dados sensíveis.'}</p>
+            ${isPhysicalType ? `
+              <div class="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                <div class="text-sm font-semibold text-gray-800 mb-1">Guia do que detalhar (produto físico)</div>
+                <div class="text-xs text-gray-600">
+                  Descreva exatamente a condição do produto para evitar complicações futuras na intermediação:
+                  <ul class="list-disc pl-5 mt-2 space-y-1">
+                    <li>Marca, modelo e especificações (memória/armazenamento, etc.)</li>
+                    <li>Condição geral (riscos, amassados, trincados, manchas)</li>
+                    <li>Se já foi para assistência e se alguma peça já foi trocada</li>
+                    <li>Funcionamento: som, carregamento, tela, botões/entradas</li>
+                    <li>Se a memória/armazenamento é a mesma informada</li>
+                    <li>Acessórios inclusos (carregador, caixa, nota) e defeitos conhecidos</li>
+                  </ul>
+                </div>
+              </div>
+            ` : ''}
+          </div>
+        ` : '';
+      }
+
+      if (currency instanceof HTMLElement) {
+        currency.innerHTML = showCurrencyFields ? `
+          <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
+            <div class="flex items-center gap-2 text-gray-900 font-semibold">
+              <i class="fas fa-coins text-primary-600"></i>
+              Dados da moeda (obrigatório)
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Jogo *</label>
+                <input type="text" name="digital_game" required value="${escapeAttr(getDraft('digital_game'))}" placeholder="Ex: World of Warcraft" data-action="updateNegFormField" data-field="digitalGame" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Tipo de moeda *</label>
+                <input type="text" name="digital_currency_type" required value="${escapeAttr(getDraft('digital_currency_type'))}" placeholder="Ex: Gold, Coins, Créditos" data-action="updateNegFormField" data-field="digitalCurrencyType" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Quantidade da moeda *</label>
+                <input type="text" name="digital_quantity" required inputmode="numeric" autocomplete="off" value="${escapeAttr(getDraft('digital_quantity') || getDraft('digitalQuantity'))}" placeholder="Ex: 1.000,00" data-action="updateNegFormField" data-field="digitalQuantity" data-focus-key="create-neg-digital-qty" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                <p class="text-xs text-gray-500 mt-1">Digite apenas números. Formato: 1.000,00</p>
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Plataforma / Servidor *</label>
+                <input type="text" name="digital_platform_server" required value="${escapeAttr(getDraft('digital_platform_server'))}" placeholder="Ex: PC - Azralon" data-action="updateNegFormField" data-field="digitalPlatformServer" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Método de entrega *</label>
+              <select name="digital_delivery_method" required data-action="updateNegFormField" data-field="digitalDeliveryMethod" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                <option value="" ${getDraft('digital_delivery_method') === '' ? 'selected' : ''}>Selecione</option>
+                <option value="trade" ${getDraft('digital_delivery_method') === 'trade' ? 'selected' : ''}>Trade (troca/encontro no jogo)</option>
+                <option value="mail" ${getDraft('digital_delivery_method') === 'mail' ? 'selected' : ''}>Correio do jogo (mail)</option>
+                <option value="gift" ${getDraft('digital_delivery_method') === 'gift' ? 'selected' : ''}>Presente (gift)</option>
+              </select>
+              <p class="text-xs text-gray-500 mt-1">Escolha como o Gold/Coins será entregue dentro do jogo.</p>
+            </div>
+          </div>
+        ` : '';
+      }
+
+      if (photos instanceof HTMLElement) {
+        photos.innerHTML = showPhotos ? `
+          <div class="space-y-2">
+            <label class="block text-sm text-gray-700 font-medium">
+              ${isPhysicalType ? `Imagens do produto (opcional) (até ${maxImages} imagens)` : `${selectedCategory === CATEGORY_GAME_ACCOUNT ? 'Imagens da conta' : 'Imagens do item/skin'} (até ${maxImages} imagens) *`}
+            </label>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              ${photosHtml}
+              ${productPhotos.length < maxImages ? `
+                <label class="w-full h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-primary-400 hover:bg-primary-50 transition">
+                  <i class="fas fa-camera text-gray-400 text-xl mb-1"></i>
+                  <span class="text-xs text-gray-400">Adicionar</span>
+                  <input type="file" accept="image/*" multiple class="hidden" data-action="addProductPhotos">
+                </label>
+              ` : ''}
+            </div>
+            ${state.createNegForm?.photoError ? `<p class="text-xs text-danger-500"><i class="fas fa-exclamation-circle mr-1"></i>${state.createNegForm.photoError}</p>` : ''}
+            <p class="text-xs text-gray-400">${isPhysicalType ? 'Recomendado: fotos de frente/verso, laterais, tela ligada, acessórios e qualquer defeito.' : `Mínimo recomendado: ${minImages}.`} Formatos: JPG, PNG. Máx 5MB cada.</p>
+          </div>
+        ` : '';
+      }
+
+      if (deadline instanceof HTMLElement) {
+        deadline.innerHTML = renderCreateNegotiationDeadlineField();
+      }
+
+      if (feeGuide instanceof HTMLElement) {
+        feeGuide.innerHTML = state.showCreateFeeGuide ? `
+          <div class="p-4 bg-white border border-gray-200 rounded-xl">
+            <div class="flex items-center justify-between gap-3 mb-3">
+              <h3 class="text-sm font-bold text-gray-900">Guia de taxas – Itens digitais</h3>
+              <button type="button" class="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition" data-action="toggleCreateFeeGuide">Fechar</button>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-4 gap-2 text-sm">
+              <div class="p-3 rounded-lg bg-gray-50 border border-gray-200">
+                <div class="font-semibold text-gray-900">Até R$ 50</div>
+                <div class="text-gray-600">Taxa R$ 3,00</div>
+              </div>
+              <div class="p-3 rounded-lg bg-gray-50 border border-gray-200">
+                <div class="font-semibold text-gray-900">R$ 50,01 a R$ 150</div>
+                <div class="text-gray-600">Taxa R$ 5,00</div>
+              </div>
+              <div class="p-3 rounded-lg bg-gray-50 border border-gray-200">
+                <div class="font-semibold text-gray-900">R$ 150,01 a R$ 350</div>
+                <div class="text-gray-600">Taxa R$ 10,00</div>
+              </div>
+              <div class="p-3 rounded-lg bg-gray-50 border border-gray-200">
+                <div class="font-semibold text-gray-900">Acima de R$ 350</div>
+                <div class="text-gray-600">Taxa R$ 15,00</div>
+              </div>
+            </div>
+            <p class="text-xs text-gray-500 mt-3">📌 Taxa descontada automaticamente após a conclusão da venda.</p>
+          </div>
+        ` : '';
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  function updateCreateFeeSummaryUI() {
+    try {
+      if (!state.showCreateNegotiationModal) return;
+      const root = document.getElementById('app');
+      if (!root) return;
+      const form = root.querySelector('form[data-action="createNegotiation"]');
+      if (!(form instanceof HTMLFormElement)) return;
+
+      const priceEl = form.querySelector('input[name="price"]');
+      if (!(priceEl instanceof HTMLInputElement)) return;
+
+      const feeEl = form.querySelector('[data-create-fee]');
+      const netEl = form.querySelector('[data-create-net]');
+      const totalEl = form.querySelector('[data-create-total]');
+      const feeModeLabelEl = form.querySelector('[data-create-fee-mode-label]');
+
+      const draftPrice = priceEl.value;
+      const priceNum = Math.max(0, parsePtBrMoney(draftPrice));
+      const fee = priceNum > 0 ? getDigitalFeeByPrice(priceNum) : 0;
+
+      const feeModeChecked = form.querySelector('input[name="seller_fee_mode"]:checked');
+      const feeMode = feeModeChecked instanceof HTMLInputElement ? String(feeModeChecked.value || 'deduct') : 'deduct';
+      const deductFee = feeMode === 'deduct';
+
+      const net = priceNum > 0 ? (deductFee ? Math.max(0, priceNum - fee) : priceNum) : 0;
+      const feeText = `R$ ${(fee || 0).toFixed(2).replace('.', ',')}`;
+      const netText = `R$ ${(net || 0).toFixed(2).replace('.', ',')}`;
+      const totalText = `R$ ${(priceNum || 0).toFixed(2).replace('.', ',')}`;
+      const feeModeText = deductFee ? 'descontada do valor recebido' : 'paga via Pix separado';
+
+      if (feeEl) feeEl.textContent = feeText;
+      if (netEl) netEl.textContent = netText;
+      if (totalEl) totalEl.textContent = totalText;
+      if (feeModeLabelEl) feeModeLabelEl.textContent = `(${feeModeText})`;
+    } catch {
+      // ignore
+    }
+  }
+
+  function categoryRequiresImages(category) {
+    const c = String(category || '').trim();
+    return c === CATEGORY_GAME_ACCOUNT || c === CATEGORY_SKIN || c === CATEGORY_ITEM;
+  }
+
+  function isPhysicalCategory(category) {
+    const c = String(category || '').trim();
+    return PHYSICAL_PRODUCT_CATEGORIES.includes(c);
+  }
+
+  function categoryAllowsImages(category, negotiationType) {
+    const type = String(negotiationType || '').trim();
+    const c = String(category || '').trim();
+    if (type === 'physical' && isPhysicalCategory(c)) return true;
+    return categoryRequiresImages(c);
+  }
+
+  function categoryMinImages(category) {
+    const c = String(category || '').trim();
+    if (c === CATEGORY_GAME_ACCOUNT) return 3;
+    if (c === CATEGORY_SKIN || c === CATEGORY_ITEM) return 1;
+    return 0;
+  }
+
+  function categoryMaxImages(category) {
+    const c = String(category || '').trim();
+    if (c === CATEGORY_SKIN || c === CATEGORY_ITEM) return 5;
+    if (c === CATEGORY_GAME_ACCOUNT) return 8;
+    return 0;
+  }
+
+  function categoryMaxAllowedImages(category, negotiationType) {
+    const type = String(negotiationType || '').trim();
+    const c = String(category || '').trim();
+    if (type === 'physical' && isPhysicalCategory(c)) return 8;
+    return categoryMaxImages(c);
+  }
+
+  function getDigitalFeeByPrice(price) {
+    const value = Math.max(0, Number(price) || 0);
+    if (value <= 50) return 3;
+    if (value <= 150) return 5;
+    if (value <= 350) return 10;
+    return 15;
+  }
+
+  function parsePtBrMoney(raw) {
+    const s = String(raw ?? '').trim();
+    if (!s) return 0;
+    // Accept: 1000,00 | 1000.00 | 1.000,00 | 1000
+    const normalized = s
+      .replace(/\s/g, '')
+      .replace(/\./g, '')
+      .replace(/,/g, '.');
+    const n = Number(normalized);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function formatPtBrMoney(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '';
+    return n.toFixed(2).replace('.', ',');
+  }
 
   const INSPECTION_CHECKLIST = [
     { id: 'original', label: 'Autenticidade Verificada' },
@@ -410,7 +1003,7 @@
 
     if (changed) {
       if (shouldDeferRender(updates)) {
-        scheduleDeferredRender();
+        scheduleDeferredRender(state.showCreateNegotiationModal ? 250 : 160);
       } else {
         flushRender();
       }
@@ -441,6 +1034,28 @@
     try {
       if (!updates || typeof updates !== 'object') return false;
       if (updates.currentPage) return false;
+
+      // Create negotiation modal: typing in price/currency fields should not cause full re-render every keypress.
+      if (state.showCreateNegotiationModal) {
+        const active = document.activeElement;
+        if (!active || !(active instanceof Element)) return false;
+        const inCreateForm = Boolean(active.closest('form[data-action="createNegotiation"]'));
+        if (!inCreateForm) return false;
+
+        const keys = Object.keys(updates);
+        const onlyCreateFormUi = keys.every((k) => ['createNegForm', 'showCreateFeeGuide'].includes(k));
+        if (!onlyCreateFormUi) return false;
+
+        // Category change should update conditional UI immediately.
+        if (updates.createNegForm && typeof updates.createNegForm === 'object') {
+          const nextCategory = String(updates.createNegForm.category ?? '').trim();
+          const prevCategory = String(state.createNegForm?.category ?? '').trim();
+          if (nextCategory && nextCategory !== prevCategory) return false;
+        }
+
+        return true;
+      }
+
       if (state.currentPage !== 'register') return false;
       const active = document.activeElement;
       if (!active || !(active instanceof Element)) return false;
@@ -461,10 +1076,45 @@
     }
   }
 
+  function getUncontrolledPreservationScope(root) {
+    try {
+      // When the create negotiation modal is open, preserve only its form;
+      // this avoids scanning the whole app on every render while typing.
+      if (state.showCreateNegotiationModal) {
+        const form = root.querySelector('form[data-action="createNegotiation"]');
+        if (form) return form;
+      }
+
+      const active = document.activeElement;
+      if (active && active instanceof Element) {
+        const form = active.closest('form');
+        if (form) return form;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
   function render() {
     const root = document.getElementById('app');
     if (!root) return;
-    const preservedValues = captureUncontrolledValues(root);
+
+    // Preserve scroll position inside the create negotiation modal form.
+    let createModalScrollTop = null;
+    try {
+      if (state.showCreateNegotiationModal) {
+        const createForm = root.querySelector('form[data-action="createNegotiation"]');
+        if (createForm && typeof createForm.scrollTop === 'number') {
+          createModalScrollTop = createForm.scrollTop;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    const scope = getUncontrolledPreservationScope(root);
+    const preservedValues = scope ? captureUncontrolledValues(scope) : [];
     let focusMeta = null;
     const activeElement = document.activeElement;
     if (activeElement && activeElement.dataset && activeElement.dataset.focusKey) {
@@ -488,9 +1138,8 @@
     }
     const isAuthenticated = Boolean(state.token && state.user);
     const content = `
-      <div class="min-h-screen bg-gray-50 text-gray-800 flex flex-col overflow-x-hidden">
+      <div class="min-h-screen bg-gray-200 text-gray-900 flex flex-col overflow-x-hidden">
         ${renderHeader(isAuthenticated)}
-        ${renderNotifications()}
         ${isAuthenticated ? renderProtectedView() : renderPublicLayout()}
         ${renderFooter()}
       </div>
@@ -521,6 +1170,18 @@
     }
 
     hydrateDynamicWidgets();
+
+    // Restore scroll after re-render so the modal doesn't jump to the top.
+    try {
+      if (createModalScrollTop !== null && state.showCreateNegotiationModal) {
+        const createForm = root.querySelector('form[data-action="createNegotiation"]');
+        if (createForm && typeof createForm.scrollTop === 'number') {
+          createForm.scrollTop = createModalScrollTop;
+        }
+      }
+    } catch {
+      // ignore
+    }
   }
 
   function hydrateDynamicWidgets() {
@@ -711,7 +1372,7 @@
             ` : `
               <!-- Navegação Pública -->
               <nav class="hidden md:flex items-center space-x-6">
-                <a href="#" class="text-gray-700 hover:text-primary-600 font-medium transition">Como Funciona</a>
+                <a href="/como-funciona" class="text-gray-700 hover:text-primary-600 font-medium transition">Como Funciona</a>
                 <a href="#" class="text-gray-700 hover:text-primary-600 font-medium transition">Segurança</a>
                 <a href="#" class="text-gray-700 hover:text-primary-600 font-medium transition">Taxas</a>
               </nav>
@@ -1144,8 +1805,8 @@
     <h1 class="text-3xl font-extrabold text-gray-900 tracking-tight">Minhas Negociações</h1>
     <p class="text-base text-gray-500 mt-1">Gerencie cada etapa do processo de intermediação.</p>
   </div>
-  <div class="flex flex-wrap gap-3">
-    <button class="w-full sm:w-auto justify-center px-6 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white font-semibold rounded-xl shadow-lg shadow-primary-500/30 transition duration-300 ease-in-out flex items-center gap-2" data-action="openCreateNegotiation">
+  <div class="flex gap-3 w-full sm:w-auto">
+    <button class="flex-1 sm:flex-none justify-center px-6 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white font-semibold rounded-xl shadow-lg shadow-primary-500/30 transition duration-300 ease-in-out flex items-center gap-2" data-action="openCreateNegotiation">
       <i class="fas fa-plus"></i> Nova Negociação
     </button>
     <button class="w-12 h-12 bg-white border border-gray-200 hover:border-primary-500 rounded-xl text-gray-700 hover:text-primary-600 transition shadow-sm flex items-center justify-center" data-action="dashboardRefresh">
@@ -1155,7 +1816,7 @@
   </div>
 </header>
         <!-- Layout com 2 colunas: Filtros à esquerda | Cards + Tabela à direita -->
-        <div class="flex flex-col lg:flex-row gap-6 items-start">
+        <div class="flex flex-col lg:flex-row gap-6 items-stretch lg:items-start">
           <!-- COLUNA ESQUERDA: Filtros -->
           ${renderFilterSidebar()}
 
@@ -1205,17 +1866,26 @@
     const isMobile = typeof window !== 'undefined' && window.matchMedia
       ? window.matchMedia('(max-width: 639px)').matches
       : false;
-    return isMobile ? 3 : Math.max(1, Number(state.dashboardPageSize) || 6);
+    if (isMobile) return 3;
+    const width = typeof window !== 'undefined' ? Number(window.innerWidth) || 0 : 0;
+    return width >= 1900 ? 8 : 6;
   }
 
   function renderFilterSidebar() {
   const { status, query } = state.negotiationFilters;
   const counts = getDashboardStatusCounts();
+  const deliveredCount = Number(counts.byStatus?.delivered) || 0;
+  const cancelledCount = Number(counts.byStatus?.cancelled) || 0;
+  const rejectedCount = Number(counts.byStatus?.rejected_by_admin) || 0;
+  const expiredCount = Number(counts.byStatus?.expired) || 0;
+  const activeCount = Math.max(0, (Number(counts.total) || 0) - deliveredCount - cancelledCount - rejectedCount - expiredCount);
+  const pendingPaymentCount = Number(counts.byStatus?.waiting_payment) || 0;
   const statusOptions = [
     { key: 'all', label: 'Todos', icon: 'fa-th-list', color: 'text-gray-600' },
     { key: 'pending_acceptance', label: 'Convites pendentes', icon: 'fa-user-plus', color: 'text-secondary-600' },
     { key: 'awaiting_admin_approval', label: 'Aguardando revisão', icon: 'fa-hourglass-half', color: 'text-primary-600' },
     { key: 'waiting_payment', label: 'Pagamento pendente', icon: 'fa-credit-card', color: 'text-warning-600' },
+    { key: 'waiting_digital_delivery', label: 'Entrega digital pendente', icon: 'fa-key', color: 'text-secondary-600' },
     { key: 'waiting_shipment', label: 'Aguardando envio', icon: 'fa-box', color: 'text-gray-600' },
     { key: 'shipped', label: 'Em trânsito', icon: 'fa-truck', color: 'text-secondary-600' },
     { key: 'at_intermediary', label: 'Na intermediadora', icon: 'fa-warehouse', color: 'text-secondary-500' },
@@ -1228,68 +1898,160 @@
   const activeLabel = activeStatus ? activeStatus.label : 'Todos';
   const filterPanelId = 'dashboard-filter-panel';
 
-  return `
-    <aside class="hidden lg:block w-72 flex-shrink-0 lg:sticky lg:top-28 self-start">
-      <div class="bg-white border border-gray-100 rounded-2xl shadow-card p-4 sm:p-6">
-        <button
-          type="button"
-          class="w-full flex lg:hidden items-center justify-between gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50 hover:border-primary-500 transition mb-4"
-          data-action="toggleFilters"
-          aria-expanded="${expanded}"
-          aria-controls="${filterPanelId}"
-        >
-          <span class="flex items-center gap-2 text-base font-bold text-gray-800">
-            <i class="fas fa-filter text-primary-600"></i>
-            Filtros
-          </span>
-          <span class="flex-1 text-right text-sm text-gray-500 truncate">${escapeHtml(activeLabel)}</span>
-          <i class="fas ${expanded ? 'fa-chevron-up' : 'fa-chevron-down'} text-gray-400"></i>
-        </button>
+  const statusQuery = normalizeText(state.statusOptionsQuery || '');
+  const filteredStatusOptions = statusQuery
+    ? statusOptions.filter((opt) => normalizeText(opt.label).includes(statusQuery))
+    : statusOptions;
 
-        <div id="${filterPanelId}" class="lg:block ${expanded ? 'block' : 'hidden'} space-y-6">
+  return `
+    <aside class="hidden lg:block w-60 xl:w-64 2xl:w-72 flex-shrink-0 lg:sticky lg:top-28 self-start">
+      <div class="bg-white border border-gray-100 rounded-2xl shadow-card p-4 lg:p-5 2xl:p-6">
+        <!-- Variante compacta (tela menor): mantém sidebar, mas usa dropdowns -->
+        <div class="2xl:hidden space-y-5">
           <div>
             <span class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Buscar negociações</span>
             <div class="relative">
               <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
-              <input 
-                type="search" 
+              <input
+                type="search"
                 name="dashboard_query"
-                placeholder="Filtrar por título, comprador ou vendedor" 
-                value="${escapeAttr(query)}" 
-                data-action="dashboardSearch" 
+                placeholder="Filtrar por título, comprador ou vendedor"
+                value="${escapeAttr(query)}"
+                data-action="dashboardSearch"
                 data-focus-key="dashboard-search"
                 class="w-full pl-9 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all duration-150"
               >
             </div>
           </div>
 
-          <div class="space-y-2">
-            <span class="block text-xs font-bold text-gray-500 uppercase tracking-wider">Status</span>
-            <nav class="flex flex-col gap-1.5">
-              ${statusOptions.map((opt) => {
-                const isActive = status === opt.key;
-                const count = opt.key === 'all' ? (Number(counts.total) || 0) : (Number(counts.byStatus?.[opt.key]) || 0);
-                const showCount = opt.key === 'all' || count > 0;
-                return `
-                  <button
-                    type="button"
-                    class="w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl text-sm transition duration-150 ${isActive 
-                      ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white font-semibold shadow-md' 
-                      : 'bg-white text-gray-700 hover:bg-primary-50 hover:text-primary-600'}"
-                    data-action="dashboardStatusFilter"
-                    data-status="${opt.key}"
-                  >
-                    <span class="flex items-center gap-3">
-                      <i class="fas ${opt.icon} ${isActive ? 'text-white' : opt.color}"></i>
-                      <span class="truncate">${escapeHtml(opt.label)}</span>
-                    </span>
-                    ${showCount ? `<span class="inline-flex items-center justify-center min-w-6 h-6 px-2 rounded-full text-xs font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'}">${count}</span>` : ''}
-                  </button>
-                `;
-              }).join('')}
-            </nav>
-          </div>
+          <details class="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3" ${state.sidebarSummaryOpen ? 'open' : ''}>
+            <summary class="cursor-pointer list-none flex items-center justify-between gap-3" data-action="toggleSidebarFilterDropdown" data-filter="summary">
+              <span class="text-sm font-extrabold text-gray-900">Resumo</span>
+              <i class="fas fa-chevron-down text-gray-400"></i>
+            </summary>
+            <div class="mt-3 text-sm text-gray-700">
+              <div><span class="font-extrabold text-gray-900">${activeCount}</span> negociações ativas</div>
+              <div><span class="font-extrabold ${pendingPaymentCount > 0 ? 'text-warning-700' : 'text-gray-900'}">${pendingPaymentCount}</span> pagamentos pendentes</div>
+            </div>
+          </details>
 
+          <details class="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3" ${state.sidebarStatusOpen ? 'open' : ''}>
+            <summary class="cursor-pointer list-none flex items-center justify-between gap-3" data-action="toggleSidebarFilterDropdown" data-filter="status">
+              <span class="text-sm font-extrabold text-gray-900">Status</span>
+              <span class="text-xs text-gray-500 truncate">${escapeHtml(activeLabel)}</span>
+              <i class="fas fa-chevron-down text-gray-400"></i>
+            </summary>
+
+            <div class="mt-3 space-y-3">
+              <div class="relative">
+                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+                <input
+                  type="search"
+                  name="status_options_query"
+                  placeholder="Buscar status"
+                  value="${escapeAttr(state.statusOptionsQuery || '')}"
+                  data-action="statusOptionsSearch"
+                  class="w-full pl-9 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition"
+                >
+              </div>
+
+              <div class="flex flex-col gap-1.5">
+                ${filteredStatusOptions.map((opt) => {
+                  const isActive = status === opt.key;
+                  const count = opt.key === 'all' ? (Number(counts.total) || 0) : (Number(counts.byStatus?.[opt.key]) || 0);
+                  const showCount = opt.key === 'all' || count > 0;
+                  return `
+                    <button
+                      type="button"
+                      class="w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl text-sm transition duration-150 ${isActive
+                        ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white font-semibold shadow-md'
+                        : 'bg-white text-gray-700 hover:bg-primary-50 hover:text-primary-600 border border-transparent hover:border-primary-100'}"
+                      data-action="dashboardStatusFilter"
+                      data-status="${opt.key}"
+                    >
+                      <span class="flex items-center gap-3">
+                        <i class="fas ${opt.icon} ${isActive ? 'text-white' : opt.color}"></i>
+                        <span class="truncate">${escapeHtml(opt.label)}</span>
+                      </span>
+                      ${showCount ? `<span class="inline-flex items-center justify-center min-w-6 h-6 px-2 rounded-full text-xs font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'}">${count}</span>` : ''}
+                    </button>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <!-- Variante completa (tela bem grande): lista completa de status -->
+        <div class="hidden 2xl:block">
+          <button
+            type="button"
+            class="w-full flex lg:hidden items-center justify-between gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50 hover:border-primary-500 transition mb-4"
+            data-action="toggleFilters"
+            aria-expanded="${expanded}"
+            aria-controls="${filterPanelId}"
+          >
+            <span class="flex items-center gap-2 text-base font-bold text-gray-800">
+              <i class="fas fa-filter text-primary-600"></i>
+              Filtros
+            </span>
+            <span class="flex-1 text-right text-sm text-gray-500 truncate">${escapeHtml(activeLabel)}</span>
+            <i class="fas ${expanded ? 'fa-chevron-up' : 'fa-chevron-down'} text-gray-400"></i>
+          </button>
+
+          <div id="${filterPanelId}" class="lg:block ${expanded ? 'block' : 'hidden'} space-y-6">
+            <div>
+              <span class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Buscar negociações</span>
+              <div class="relative">
+                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+                <input 
+                  type="search" 
+                  name="dashboard_query"
+                  placeholder="Filtrar por título, comprador ou vendedor" 
+                  value="${escapeAttr(query)}" 
+                  data-action="dashboardSearch" 
+                  data-focus-key="dashboard-search"
+                  class="w-full pl-9 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all duration-150"
+                >
+              </div>
+            </div>
+
+            <div class="rounded-xl border border-gray-100 bg-gray-50 p-3">
+              <div class="text-xs font-bold text-gray-500 uppercase tracking-wider">Resumo</div>
+              <div class="mt-1 text-sm text-gray-700">
+                <span class="font-extrabold text-gray-900">${activeCount}</span> negociações ativas •
+                <span class="font-extrabold ${pendingPaymentCount > 0 ? 'text-warning-700' : 'text-gray-900'}">${pendingPaymentCount}</span> pagamentos pendentes
+              </div>
+            </div>
+
+            <div class="space-y-2">
+              <span class="block text-xs font-bold text-gray-500 uppercase tracking-wider">Status</span>
+              <nav class="flex flex-col gap-1.5">
+                ${statusOptions.map((opt) => {
+                  const isActive = status === opt.key;
+                  const count = opt.key === 'all' ? (Number(counts.total) || 0) : (Number(counts.byStatus?.[opt.key]) || 0);
+                  const showCount = opt.key === 'all' || count > 0;
+                  return `
+                    <button
+                      type="button"
+                      class="w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl text-sm transition duration-150 ${isActive 
+                        ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white font-semibold shadow-md ring-2 ring-primary-400 ring-offset-2 ring-offset-white' 
+                        : 'bg-white text-gray-700 hover:bg-primary-50 hover:text-primary-600 border border-transparent hover:border-primary-100'}"
+                      data-action="dashboardStatusFilter"
+                      data-status="${opt.key}"
+                    >
+                      <span class="flex items-center gap-3">
+                        <i class="fas ${opt.icon} ${isActive ? 'text-white' : opt.color}"></i>
+                        <span class="truncate">${escapeHtml(opt.label)}</span>
+                      </span>
+                      ${showCount ? `<span class="inline-flex items-center justify-center min-w-6 h-6 px-2 rounded-full text-xs font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'}">${count}</span>` : ''}
+                    </button>
+                  `;
+                }).join('')}
+              </nav>
+            </div>
+
+          </div>
         </div>
       </div>
     </aside>
@@ -1298,7 +2060,28 @@
 
   function renderCreateNegotiationModal() {
     const { buyerFound, buyerSearching, productPhotos, photoError } = state.createNegForm;
-    const showTerms = state.showCreateTerms;
+    const step = Math.max(1, Math.min(4, Number(state.createNegStep) || 1));
+    const selectedCategory = String(state.createNegForm?.category || '').trim();
+    const showCurrencyFields = selectedCategory === CATEGORY_CURRENCY;
+    const showGameAccountFields = selectedCategory === CATEGORY_GAME_ACCOUNT;
+    const showSkinFields = selectedCategory === CATEGORY_SKIN;
+    const showItemFields = selectedCategory === CATEGORY_ITEM;
+    const negotiationType = getCreateNegotiationType();
+    const isDigital = negotiationType === 'digital';
+    const categoryOptions = negotiationType === 'digital'
+      ? DIGITAL_PRODUCT_CATEGORIES
+      : (negotiationType === 'physical' ? PHYSICAL_PRODUCT_CATEGORIES : []);
+    const showDescription = true;
+    const showPhotos = categoryRequiresImages(selectedCategory);
+    const minImages = categoryMinImages(selectedCategory);
+    const maxImages = categoryMaxImages(selectedCategory);
+
+    const draftPrice = state.createNegForm?.price;
+    const priceNum = Math.max(0, parsePtBrMoney(draftPrice));
+    const fee = priceNum > 0 ? getDigitalFeeByPrice(priceNum) : 0;
+    const feeMode = String(state.createNegForm?.sellerFeeMode || 'deduct');
+    const deductFee = feeMode === 'deduct';
+    const net = priceNum > 0 ? (deductFee ? Math.max(0, priceNum - fee) : priceNum) : 0;
     const photosHtml = productPhotos.map((photo, idx) => `
       <div class="relative group">
         <img src="${photo.preview}" alt="Foto ${idx + 1}" class="w-full h-24 object-cover rounded-lg border border-gray-200">
@@ -1306,73 +2089,195 @@
       </div>
     `).join('');
 
+    const feeSummaryHtml = `
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+        <div class="sm:col-span-2 p-3 bg-primary-50 border border-primary-100 rounded-lg text-primary-700 text-sm">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              💼 Taxa de intermediação:
+              <strong data-create-fee>R$ ${(fee || 0).toFixed(2).replace('.', ',')}</strong>
+              <span class="text-xs text-gray-600" data-create-fee-mode-label>(${deductFee ? 'descontada do valor recebido' : 'paga via Pix separado'})</span>
+            </span>
+            <span>💰 Valor líquido que você receberá: <strong data-create-net>R$ ${(net || 0).toFixed(2).replace('.', ',')}</strong></span>
+          </div>
+          <div class="mt-2 text-xs text-gray-600">
+            Total cobrado do comprador: <strong data-create-total>R$ ${(priceNum || 0).toFixed(2).replace('.', ',')}</strong>
+          </div>
+        </div>
+        <div class="sm:col-span-1">
+          <button type="button" class="w-full px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-gray-700 transition" data-action="toggleCreateFeeGuide">
+            <i class="fas fa-info-circle mr-2"></i>Guia de valores
+          </button>
+        </div>
+      </div>
+
+      <div class="p-4 bg-white border border-gray-200 rounded-xl">
+        <div class="text-sm font-semibold text-gray-900 mb-2">Como o vendedor vai pagar a taxa?</div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label class="flex items-start gap-3 p-3 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer">
+            <input
+              type="radio"
+              name="seller_fee_mode"
+              value="deduct"
+              ${deductFee ? 'checked' : ''}
+              data-action="updateNegFormField"
+              data-field="sellerFeeMode"
+              class="mt-1"
+            >
+            <div>
+              <div class="text-sm font-medium text-gray-900">Descontar do valor recebido</div>
+              <div class="text-xs text-gray-600">O valor líquido já aparece com desconto.</div>
+            </div>
+          </label>
+          <label class="flex items-start gap-3 p-3 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer">
+            <input
+              type="radio"
+              name="seller_fee_mode"
+              value="pix"
+              ${!deductFee ? 'checked' : ''}
+              data-action="updateNegFormField"
+              data-field="sellerFeeMode"
+              class="mt-1"
+            >
+            <div>
+              <div class="text-sm font-medium text-gray-900">Pagar via Pix (separado)</div>
+              <div class="text-xs text-gray-600">O vendedor recebe o valor cheio e paga a taxa por Pix.</div>
+            </div>
+          </label>
+        </div>
+      </div>
+    `;
+
+    const termsHtml = !isDigital ? `
+      <div class="p-4 bg-white border border-warning-200 rounded-xl shadow-sm">
+        <div class="flex items-center gap-2 text-warning-700 font-semibold mb-2">
+          <i class="fas fa-file-contract"></i>
+          Termos e condições (envio físico)
+        </div>
+        <ul class="text-sm text-gray-700 space-y-2 text-left">
+          <li><strong>Prazo de envio:</strong> o vendedor tem até <strong>2 dias</strong> para postar o produto após a confirmação do pagamento/aprovação.</li>
+          <li><strong>Código de rastreio:</strong> o vendedor deve informar o <strong>código de rastreio</strong>; ao informar o rastreio, fica confirmado que o envio foi realizado.</li>
+          <li><strong>Condições do produto:</strong> o vendedor concorda em enviar o produto <strong>nas condições descritas</strong> no anúncio/negociação.</li>
+          <li><strong>Divergência:</strong> se o produto não estiver conforme descrito, ele será <strong>devolvido</strong> e o vendedor <strong>perderá a taxa</strong> da plataforma.</li>
+          <li><strong>Atraso:</strong> se o vendedor enviar <strong>após o prazo</strong>, ele <strong>perderá a taxa</strong> e terá o item <strong>devolvido</strong>.</li>
+        </ul>
+      </div>
+    ` : `
+      <div class="p-4 bg-white border border-warning-200 rounded-xl shadow-sm">
+        <div class="flex items-center gap-2 text-warning-700 font-semibold mb-2">
+          <i class="fas fa-file-contract"></i>
+          Termos e condições (entrega digital)
+        </div>
+        <ul class="text-sm text-gray-700 space-y-2 text-left">
+          <li><strong>Prazo:</strong> o vendedor deve entregar dentro do prazo informado (quando aplicável) após a confirmação do pagamento/aprovação.</li>
+          <li><strong>Entrega dentro do jogo:</strong> para moedas/gold, a entrega deve seguir o método selecionado e o servidor/plataforma informados.</li>
+          <li><strong>Dados sensíveis:</strong> não inclua login/senha em campos públicos; use apenas os canais apropriados quando solicitado pela plataforma.</li>
+        </ul>
+      </div>
+    `;
+
     return `
       <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
-        <div class="bg-white rounded-2xl shadow-card-xl max-w-2xl w-full my-4 overflow-hidden animate-slide-up">
+        <div data-create-neg-modal class="bg-white rounded-2xl shadow-card-xl max-w-2xl w-full my-4 overflow-hidden animate-slide-up">
           <div class="h-1 bg-gradient-to-r from-primary-600 to-secondary-500"></div>
           <header class="flex items-center justify-between p-4 sm:p-6 border-b border-gray-100">
             <div>
               <h2 class="text-xl font-bold text-gray-900">Nova Negociação</h2>
-              <p class="text-gray-500 text-sm">Preencha todos os dados para iniciar</p>
+              <p class="text-gray-500 text-sm" data-create-step-title>${['Essencial', 'Detalhes', 'Comprador', 'Confirmar'][step - 1] || 'Preencha os dados'}</p>
             </div>
             <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeCreateNegotiation">✕</button>
           </header>
+
+          <div class="px-4 sm:px-6 pt-4">
+            <div class="grid grid-cols-4 gap-2">
+              ${[1,2,3,4].map((n) => `
+                <button
+                  type="button"
+                  class="px-3 py-2 rounded-lg text-xs font-bold text-center transition ${n <= step ? 'bg-primary-600 text-white' : 'bg-gray-200 text-gray-700'}"
+                  data-create-step-indicator="${n}"
+                  data-action="goToCreateNegStep"
+                  data-step="${n}"
+                  ${n <= step ? '' : 'disabled'}
+                >
+                  Etapa ${n}
+                </button>
+              `).join('')}
+            </div>
+          </div>
           
-          <form data-action="createNegotiation" class="p-4 sm:p-6 space-y-5 max-h-[70vh] overflow-y-auto">
-            <div class="${showTerms ? 'hidden' : 'space-y-5'}">
-              <!-- Título do produto -->
+          <form data-action="createNegotiation" novalidate class="p-4 sm:p-6 space-y-5 max-h-[70vh] overflow-y-auto">
+            <!-- STEP 1: Essencial -->
+            <section class="space-y-5 ${step === 1 ? '' : 'hidden'}" data-create-step="1">
               <div>
-                <label class="block text-sm text-gray-700 font-medium mb-2">Título do produto *</label>
-                <input type="text" name="title" required maxlength="255" placeholder="Ex: iPhone 15 Pro Max 256GB" data-focus-key="create-neg-title" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                <label class="block text-sm text-gray-700 font-medium mb-2">Tipo de negociação *</label>
+                <select name="negotiation_type" required data-action="updateNegFormField" data-field="negotiationType" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  <option value="" ${!negotiationType ? 'selected' : ''}>Selecione</option>
+                  <option value="digital" ${negotiationType === 'digital' ? 'selected' : ''}>Digital</option>
+                  <option value="physical" ${negotiationType === 'physical' ? 'selected' : ''}>Física</option>
+                </select>
+                <p class="text-xs text-gray-500 mt-1">O endereço só será solicitado se exigir envio físico.</p>
               </div>
 
-              <!-- Categoria -->
               <div>
                 <label class="block text-sm text-gray-700 font-medium mb-2">Categoria *</label>
-                <select name="category" required data-focus-key="create-neg-category" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
-                  <option value="" selected>Selecione uma categoria</option>
-                  ${PRODUCT_CATEGORIES.map(cat => `<option value="${escapeAttr(cat)}">${escapeHtml(cat)}</option>`).join('')}
+                <select name="category" required data-focus-key="create-neg-category" data-action="updateNegFormField" data-field="category" ${!negotiationType ? 'disabled' : ''} class="w-full px-4 py-3 ${!negotiationType ? 'bg-gray-200 text-gray-600 cursor-not-allowed' : 'bg-gray-50 text-gray-700'} border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  <option value="" ${!selectedCategory ? 'selected' : ''}>${!negotiationType ? 'Selecione o tipo primeiro' : 'Selecione uma categoria'}</option>
+                  ${categoryOptions.map(cat => `<option value="${escapeAttr(cat)}" ${selectedCategory === cat ? 'selected' : ''}>${escapeHtml(cat)}</option>`).join('')}
                 </select>
+                ${negotiationType ? '' : '<p class="text-xs text-gray-500 mt-1"><i class="fas fa-info-circle mr-1"></i>Escolha o tipo para liberar as categorias.</p>'}
               </div>
 
-              <!-- Descrição -->
-              <div>
-                <label class="block text-sm text-gray-700 font-medium mb-2">Descrição detalhada *</label>
-                <textarea name="description" rows="3" required maxlength="2000" placeholder="Descreva o estado do produto, acessórios inclusos, defeitos conhecidos, etc." data-focus-key="create-neg-description" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none"></textarea>
-              </div>
-
-              <!-- Preço -->
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label class="block text-sm text-gray-700 font-medium mb-2">Preço (R$) *</label>
-                  <input type="number" name="price" required min="50" max="100000" step="0.01" placeholder="0,00" data-focus-key="create-neg-price" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Valor (R$) *</label>
+                  <input type="text" name="price" required inputmode="decimal" autocomplete="off" placeholder="0,00" data-action="updateNegFormField" data-field="price" data-focus-key="create-neg-price" value="${escapeAttr(state.createNegForm?.price || '')}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
                   <span class="text-xs text-gray-400 mt-1 block">Mínimo R$ 50,00 - Máximo R$ 100.000,00</span>
                 </div>
                 <div>
-                  <label class="block text-sm text-gray-700 font-medium mb-2">Prazo de envio</label>
-                  <input type="text" value="2 dias úteis" disabled class="w-full px-4 py-3 bg-gray-200 border border-gray-300 rounded-lg text-gray-600 cursor-not-allowed">
-                  <span class="text-xs text-warning-600 mt-1 block"><i class="fas fa-info-circle mr-1"></i>Prazo fixo obrigatório</span>
+                  <div data-create-neg-deadline>
+                    ${renderCreateNegotiationDeadlineField()}
+                  </div>
                 </div>
               </div>
 
-              <!-- Upload de fotos -->
-              <div class="space-y-2">
-                <label class="block text-sm text-gray-700 font-medium">Fotos do produto (até 8 fotos) *</label>
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  ${photosHtml}
-                  ${productPhotos.length < 8 ? `
-                    <label class="w-full h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-primary-400 hover:bg-primary-50 transition">
-                      <i class="fas fa-camera text-gray-400 text-xl mb-1"></i>
-                      <span class="text-xs text-gray-400">Adicionar</span>
-                      <input type="file" accept="image/*" multiple class="hidden" data-action="addProductPhotos">
-                    </label>
-                  ` : ''}
-                </div>
-                ${photoError ? `<p class="text-xs text-danger-500"><i class="fas fa-exclamation-circle mr-1"></i>${photoError}</p>` : ''}
-                <p class="text-xs text-gray-400">Adicione pelo menos 1 foto. Formatos: JPG, PNG. Máx 5MB cada.</p>
+              <div class="flex flex-col sm:flex-row gap-3 pt-2">
+                <button type="button" class="flex-1 px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition" data-action="nextCreateNegStep">
+                  Continuar negociação
+                </button>
+              </div>
+            </section>
+
+            <!-- STEP 2: Detalhes -->
+            <section class="space-y-5 ${step === 2 ? '' : 'hidden'}" data-create-step="2">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Título do produto *</label>
+                <input type="text" name="title" required maxlength="255" placeholder="Ex: Conta nível 80 com 3 skins" data-focus-key="create-neg-title" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
               </div>
 
-              <!-- Busca do comprador -->
+              <div data-create-neg-structured>
+                
+              </div>
+
+              <div data-create-neg-currency>
+                
+              </div>
+
+              <div data-create-neg-description>
+                
+              </div>
+
+              <div data-create-neg-photos>
+                
+              </div>
+
+              <div class="flex flex-col sm:flex-row gap-3 pt-2">
+                <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-medium transition" data-action="prevCreateNegStep">Voltar</button>
+                <button type="button" class="flex-1 px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition" data-action="nextCreateNegStep">Continuar</button>
+              </div>
+            </section>
+
+            <!-- STEP 3: Comprador -->
+            <section class="space-y-5 ${step === 3 ? '' : 'hidden'}" data-create-step="3">
               <div class="space-y-2">
                 <label class="block text-sm text-gray-700 font-medium">E-mail do comprador *</label>
                 <p class="text-xs text-gray-500">Digite o e-mail completo do comprador e clique em <strong>Buscar</strong> para confirmar o cadastro.</p>
@@ -1384,7 +2289,7 @@
                 </div>
                 <div class="p-3 bg-primary-50 border border-primary-100 rounded-lg text-primary-700 text-xs flex items-center gap-2">
                   <i class="fas fa-info-circle"></i>
-                  <span>Encontramos o comprador somente pelo <strong>e-mail já cadastrado</strong>. Confirme com o cliente antes de continuar.</span>
+                  <span>O endereço só será solicitado se a negociação exigir <strong>envio físico</strong>.</span>
                 </div>
                 ${buyerFound === false ? `
                   <div class="p-3 bg-danger-50 border border-danger-200 rounded-lg text-danger-700 text-sm">
@@ -1402,77 +2307,55 @@
                 ` : ''}
               </div>
 
-              <!-- Endereço da intermediadora -->
-              <div class="p-4 bg-gradient-to-r from-primary-50 to-secondary-50 rounded-xl border border-primary-200">
-                <h3 class="text-sm font-bold text-primary-800 mb-2 flex items-center gap-2">
-                  <i class="fas fa-map-marker-alt"></i> Endereço para envio
-                </h3>
-                <p class="text-primary-700 font-medium">${escapeHtml([INTERMEDIARY_ADDRESS.street, INTERMEDIARY_ADDRESS.number].filter(Boolean).join(', '))}</p>
-                ${INTERMEDIARY_ADDRESS.district ? `<p class="text-primary-700">Bairro: ${escapeHtml(INTERMEDIARY_ADDRESS.district)}</p>` : ''}
-                <p class="text-primary-700">${escapeHtml([INTERMEDIARY_ADDRESS.city, INTERMEDIARY_ADDRESS.state].filter(Boolean).join(' - '))}</p>
-                <p class="text-primary-700">CEP: ${escapeHtml(formatCep(INTERMEDIARY_ADDRESS.cep))}</p>
-                <p class="text-xs text-primary-600 mt-2 italic">
-                  <i class="fas fa-info-circle mr-1"></i>
-                  Você deve enviar o produto em até 2 dias úteis após aprovar a venda.
-                </p>
+              <div class="flex flex-col sm:flex-row gap-3 pt-2">
+                <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-medium transition" data-action="prevCreateNegStep">Voltar</button>
+                <button type="button" class="flex-1 px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition" data-action="nextCreateNegStep" ${!buyerFound ? 'disabled' : ''}>
+                  Continuar
+                </button>
+              </div>
+            </section>
+
+            <!-- STEP 4: Confirmar -->
+            <section class="space-y-5 ${step === 4 ? '' : 'hidden'}" data-create-step="4">
+              <div class="p-4 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-700 space-y-2">
+                <div class="font-semibold text-gray-900">Resumo</div>
+                <div><strong>Categoria:</strong> ${escapeHtml(selectedCategory || '-')}</div>
+                <div><strong>Tipo:</strong> ${isDigital ? 'Digital' : 'Física'}</div>
+                <div><strong>Valor:</strong> R$ ${(priceNum || 0).toFixed(2).replace('.', ',')}</div>
+                <div><strong>Prazo:</strong> ${getCreateNegotiationDeadlineCopy().kind === 'selectable_days'
+                  ? `até ${getCreateNegotiationDeadlineCopy().days} dia${getCreateNegotiationDeadlineCopy().days === 1 ? '' : 's'}`
+                  : `até ${DIGITAL_DELIVERY_DEADLINE_BUSINESS_DAYS} dias úteis`
+                }</div>
               </div>
 
-              <div class="p-4 bg-white border border-gray-200 rounded-xl text-sm text-gray-600 flex items-center gap-3">
-                <i class="fas fa-file-signature text-primary-500 text-lg"></i>
-                <span>Ao clicar em <strong>Criar negociação</strong> você verá todos os termos obrigatórios antes de concluir.</span>
-              </div>
-            </div>
+              ${termsHtml}
 
-            ${showTerms ? `
-              <div class="space-y-5">
-                <div class="p-4 bg-white border border-warning-200 rounded-xl shadow-sm">
-                  <div class="flex items-center gap-2 text-warning-700 font-semibold mb-2">
-                    <i class="fas fa-shield-alt"></i>
-                    Compromissos do vendedor após o pagamento aprovado
-                  </div>
-                  <ul class="text-sm text-gray-600 space-y-2 text-left">
-                    <li><strong>Prazo:</strong> enviar o produto para a intermediadora em até <strong>2 dias corridos</strong>.</li>
-                    <li><strong>Obrigatório:</strong> registrar o código de rastreio no sistema.</li>
-                    <li><strong>Embalagem:</strong> enviar bem protegido para evitar danos.</li>
-                  </ul>
-                  <div class="mt-3 p-3 bg-danger-50 border border-danger-200 rounded-lg text-danger-700 text-sm">
-                    <p class="font-semibold">Se não enviar em até 2 dias:</p>
-                    <ul class="list-disc ml-4 space-y-1">
-                      <li>Perde a taxa de R$ 15,00.</li>
-                      <li>O comprador recebe 100% do valor pago + taxa.</li>
-                      <li>A negociação é cancelada.</li>
-                    </ul>
-                    <p class="mt-2 text-xs">Envios fora do prazo serão devolvidos e a taxa continua perdida.</p>
-                  </div>
+              ${feeSummaryHtml}
+              <div data-create-fee-guide></div>
+
+              <div class="p-4 bg-white border border-warning-200 rounded-xl shadow-sm">
+                <div class="flex items-center gap-2 text-warning-700 font-semibold mb-2">
+                  <i class="fas fa-shield-alt"></i>
+                  Transparência e próximos passos
                 </div>
-
-                <div class="space-y-3">
-                  <div class="p-4 bg-warning-50 border border-warning-200 rounded-xl text-warning-800 text-sm space-y-3">
-                    <p><strong>Antes de finalizar, confirme que está ciente de todas as regras:</strong></p>
-                    <ul class="list-disc ml-4 space-y-2">
-                      <li>Envio obrigatório para a intermediadora em até 2 dias corridos após a aprovação do pagamento.</li>
-                      <li>Inserir o código de rastreio no sistema imediatamente após a postagem.</li>
-                      <li>Embalagem responsável: danos por embalagem inadequada são de responsabilidade do vendedor.</li>
-                      <li>Descumprimento do prazo implica perda da taxa de R$ 15,00, devolução total ao comprador e cancelamento da negociação.</li>
-                      <li>Envios fora do prazo serão devolvidos e a taxa continua perdida.</li>
-                    </ul>
-                  </div>
-                  <label class="flex items-start gap-3 p-4 bg-white border border-warning-200 rounded-xl cursor-pointer">
-                    <input type="checkbox" name="terms_accepted" required class="w-5 h-5 mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500">
-                    <span class="text-sm text-gray-700">
-                      Confirmo que li e concordo com todas as condições acima e autorizo a inspeção completa do produto pela intermediadora.
-                    </span>
-                  </label>
-                </div>
+                <ul class="text-sm text-gray-600 space-y-2 text-left">
+                  <li>🔒 O dinheiro fica retido até a confirmação de entrega.</li>
+                  <li>📌 O vendedor deve cumprir o prazo informado após aprovação/pagamento.</li>
+                </ul>
               </div>
-            ` : ''}
 
-            <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-100">
-              <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-medium transition" data-action="closeCreateNegotiation">Cancelar</button>
-              <button type="submit" class="flex-1 px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition disabled:opacity-50 disabled:cursor-not-allowed" ${!buyerFound ? 'disabled' : ''}>
-                <i class="fas fa-paper-plane mr-2"></i>${showTerms ? 'Confirmar e enviar' : 'Criar negociação'}
-              </button>
-            </div>
+              <label class="flex items-start gap-3 p-4 bg-white border border-warning-200 rounded-xl cursor-pointer">
+                <input type="checkbox" name="terms_accepted" required class="w-5 h-5 mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500">
+                <span class="text-sm text-gray-700">Confirmo que li e concordo com as condições e regras da negociação.</span>
+              </label>
+
+              <div class="flex flex-col sm:flex-row gap-3 pt-2">
+                <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-medium transition" data-action="prevCreateNegStep">Voltar</button>
+                <button type="submit" class="flex-1 px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-bold transition disabled:opacity-50 disabled:cursor-not-allowed" ${!buyerFound ? 'disabled' : ''}>
+                  <i class="fas fa-paper-plane mr-2"></i>Criar negociação
+                </button>
+              </div>
+            </section>
           </form>
         </div>
       </div>
@@ -1575,7 +2458,7 @@
       <div class="bg-white rounded-2xl border border-gray-100 shadow-card overflow-hidden">
         <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between bg-gray-50">
           <h2 class="text-base font-bold text-gray-900">Negociações</h2>
-          <span class="text-xs text-gray-500">${showingLabel || totalLabel}${totalPages > 1 ? ` • Página ${page}/${totalPages}` : ''}</span>
+          <span class="text-xs text-gray-500">${totalLabel}</span>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
@@ -1594,17 +2477,19 @@
             </tbody>
           </table>
         </div>
-        ${totalPages > 1 ? `
-          <div class="px-5 py-4 border-t border-gray-100 bg-white flex items-center justify-between">
-            <button type="button" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardPrevPage" ${page <= 1 ? 'disabled' : ''}>
-              Anterior
-            </button>
-            <div class="text-xs text-gray-500">${showingLabel || ''}</div>
-            <button type="button" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardNextPage" ${page >= totalPages ? 'disabled' : ''}>
-              Próxima
-            </button>
-          </div>
-        ` : ''}
+        <div class="px-5 py-4 border-t border-gray-100 bg-white flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div class="text-xs text-gray-500">${escapeHtml(showingLabel || totalLabel)}${totalPages > 1 ? ` • Página ${page}/${totalPages}` : ''}</div>
+          ${totalPages > 1 ? `
+            <div class="flex items-center gap-3">
+              <button type="button" class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardPrevPage" ${page <= 1 ? 'disabled' : ''}>
+                Anterior
+              </button>
+              <button type="button" class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardNextPage" ${page >= totalPages ? 'disabled' : ''}>
+                Próxima
+              </button>
+            </div>
+          ` : ''}
+        </div>
       </div>
     `;
   }
@@ -1638,7 +2523,10 @@
   function getMobilePrimaryCta(neg) {
     const status = neg?.status || 'unknown';
     if (status === 'waiting_payment') {
-      return { label: 'Pagar agora', icon: 'fa-credit-card' };
+      return { label: 'Pagar agora', icon: 'fa-credit-card', variant: 'urgent' };
+    }
+    if (status === 'pending_acceptance') {
+      return { label: 'Responder convite', icon: 'fa-reply', variant: 'primary' };
     }
     if (status === 'waiting_shipment') {
       return { label: 'Ver instruções', icon: 'fa-box' };
@@ -1677,11 +2565,18 @@
       const status = neg?.status || 'unknown';
       const idLabel = neg?.id != null ? `#${neg.id}` : '—';
       const updatedRaw = neg?.updated_at || neg?.created_at;
-      const updatedAbsolute = updatedRaw ? formatDateTime(updatedRaw) : '—';
+      const updatedShort = updatedRaw ? formatShortDate(updatedRaw) : '—';
       const priority = getStatusPriority(status, neg);
       const needsAction = priority <= 2;
       const cta = getMobilePrimaryCta(neg);
-      const buyerName = neg?.buyer?.name || '—';
+      const buyerNameFull = neg?.buyer?.name || '—';
+      const buyerName = getFirstName(buyerNameFull);
+
+      const ctaVariant = cta?.variant || 'primary';
+      const ctaButtonClass = ctaVariant === 'urgent'
+        ? 'bg-warning-600 hover:bg-warning-700'
+        : 'bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600';
+      const ctaLeadingIcon = ctaVariant === 'urgent' ? '<i class="fas fa-exclamation-triangle"></i>' : '';
 
 
       return `
@@ -1693,7 +2588,7 @@
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
               <div class="text-xs text-gray-500 font-semibold">Negociação ${escapeHtml(idLabel)}</div>
-              <h3 class="text-base font-extrabold text-gray-900 mt-0.5 overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">
+              <h3 class="text-lg font-extrabold text-gray-900 mt-0.5 overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">
                 ${escapeHtml(productTitle)}
               </h3>
             </div>
@@ -1703,22 +2598,23 @@
           <div class="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div class="min-w-0">
               <div class="text-xs text-gray-500">Comprador</div>
-              <div class="text-sm font-semibold text-gray-900 truncate">${escapeHtml(buyerName)}</div>
-              <div class="text-xs text-gray-500 truncate hidden sm:block">Atualizado em: ${escapeHtml(updatedAbsolute)}</div>
+              <div class="text-sm font-medium text-gray-700 truncate">${escapeHtml(buyerName)}</div>
+              <div class="text-xs text-gray-500 truncate hidden sm:block">Atualizado ${escapeHtml(updatedShort)}</div>
             </div>
 
             <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:flex-shrink-0">
               ${needsAction ? `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-xs font-semibold"><i class="fas fa-exclamation-triangle"></i>Ação</span>` : ''}
               <button
                 type="button"
-                class="w-full sm:w-auto justify-center px-3 py-2 rounded-lg bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white text-sm font-semibold shadow-sm transition flex items-center gap-2"
+                class="w-full sm:w-auto justify-center px-3 py-2 rounded-lg ${ctaButtonClass} text-white text-sm font-semibold shadow-sm transition flex items-center gap-2"
                 data-action="openNegotiation"
                 data-id="${neg?.id}"
               >
+                ${ctaLeadingIcon}
                 <i class="fas ${cta.icon}"></i>
                 ${escapeHtml(cta.label)}
               </button>
-              <div class="text-[11px] text-gray-500 sm:hidden">Atualizado: ${escapeHtml(updatedAbsolute)}</div>
+              <div class="text-[11px] text-gray-500 sm:hidden">Atualizado ${escapeHtml(updatedShort)}</div>
             </div>
           </div>
 
@@ -1728,23 +2624,23 @@
 
     return `
       <div class="space-y-4">
-        <div class="px-1 flex items-center justify-between">
-          <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Negociações</h2>
-          <span class="text-xs text-gray-500">${escapeHtml(showingLabel)}${totalPages > 1 ? ` • Página ${page}/${totalPages}` : ''}</span>
-        </div>
-        <div class="space-y-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           ${itemsHtml}
         </div>
-        ${totalPages > 1 ? `
-          <div class="flex items-center gap-3">
-            <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-xl text-gray-700 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardPrevPage" ${page <= 1 ? 'disabled' : ''}>
-              Anterior
-            </button>
-            <button type="button" class="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-xl text-gray-700 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardNextPage" ${page >= totalPages ? 'disabled' : ''}>
-              Próxima
-            </button>
-          </div>
-        ` : ''}
+
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div class="text-xs text-gray-500">${escapeHtml(showingLabel)}${totalPages > 1 ? ` • Página ${page}/${totalPages}` : ''}</div>
+          ${totalPages > 1 ? `
+            <div class="flex items-center gap-3">
+              <button type="button" class="flex-1 sm:flex-none px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-xl text-white text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardPrevPage" ${page <= 1 ? 'disabled' : ''}>
+                Anterior
+              </button>
+              <button type="button" class="flex-1 sm:flex-none px-4 py-3 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-xl text-white text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="dashboardNextPage" ${page >= totalPages ? 'disabled' : ''}>
+                Próxima
+              </button>
+            </div>
+          ` : ''}
+        </div>
       </div>
     `;
   }
@@ -1852,6 +2748,14 @@
     return parts.slice(0, 2).map((part) => part.charAt(0).toUpperCase()).join('');
   }
 
+  function getFirstName(name) {
+    if (!name) return '—';
+    const normalized = String(name).trim();
+    if (!normalized || normalized === '—') return '—';
+    const parts = normalized.split(/\s+/).filter(Boolean);
+    return parts.length ? parts[0] : '—';
+  }
+
   function renderNegotiationDetailPage() {
     const negotiation = state.currentNegotiation;
     if (!negotiation) {
@@ -1865,11 +2769,12 @@
       `;
     }
 
-    const buyer = negotiation.buyer || {};
-    const seller = negotiation.seller || {};
+    const buyer = negotiation.buyer || negotiation.buyer_user || negotiation.buyerUser || {};
+    const seller = negotiation.seller || negotiation.seller_user || negotiation.sellerUser || {};
     const productTitle = negotiation.product_title || negotiation.product_name || negotiation.title || 'Produto';
     const isBuyerRole = isBuyer(negotiation);
     const isSellerRole = isSeller(negotiation);
+    const isIntermediaryRole = isAdmin();
     const status = negotiation.status || '—';
 
     const productPhotos = Array.isArray(negotiation?.product_photos || negotiation?.photos)
@@ -1891,9 +2796,12 @@
     );
 
     const productAmount = Number(negotiation?.product_price ?? negotiation?.price ?? 0) || 0;
-    const buyerFee = 15;
+    const buyerFee = getDigitalFeeByPrice(productAmount);
     const buyerTotal = productAmount + buyerFee;
     const description = negotiation.product_description || negotiation.description || '';
+
+    const paymentProofUrl = negotiation?.buyer_payment_proof_url || null;
+    const paymentProofUploadedAt = negotiation?.buyer_payment_proof_uploaded_at || null;
 
     const productImageButton = `
       <button
@@ -1919,6 +2827,16 @@
             <p class="text-gray-500">${escapeHtml(productTitle)}</p>
           </div>
           <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-white border border-gray-200 hover:border-secondary-400 text-gray-700 hover:text-secondary-600 flex items-center gap-2"
+              data-action="openTimeline"
+              data-id="${negotiation.id}"
+              title="Ver linha do tempo"
+            >
+              <i class="fas fa-stream"></i>
+              Linha do tempo
+            </button>
             ${renderStatusBadgeEnhanced(status)}
           </div>
         </header>
@@ -1955,7 +2873,41 @@
                 <dt class="text-gray-500">Entrega combinada</dt>
                 <dd class="text-gray-700">${negotiation.delivery_days ? `${negotiation.delivery_days} dias` : '—'}</dd>
               </div>
+              ${String(negotiation?.category || '').trim() === CATEGORY_CURRENCY ? `
+                <div>
+                  <dt class="text-gray-500">Quantidade (Gold/Moeda)</dt>
+                  <dd class="text-gray-700">${escapeHtml(negotiation?.digital_quantity ? formatPtBrMoney(Number(negotiation.digital_quantity) || 0) : '—')}</dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500">Servidor / Plataforma</dt>
+                  <dd class="text-gray-700">${escapeHtml(negotiation?.digital_platform_server || '—')}</dd>
+                </div>
+                <div class="sm:col-span-2">
+                  <dt class="text-gray-500">Método de entrega</dt>
+                  <dd class="text-gray-700">${escapeHtml((() => {
+                    const v = String(negotiation?.digital_delivery_method || '').trim();
+                    if (v === 'trade') return 'Trade (troca/encontro no jogo)';
+                    if (v === 'mail') return 'Correio do jogo (mail)';
+                    if (v === 'gift') return 'Presente (gift)';
+                    return '—';
+                  })())}</dd>
+                </div>
+              ` : ''}
             </dl>
+
+            ${isIntermediaryRole ? `
+              <section class="mt-6 pt-4 border-t border-gray-100">
+                <h3 class="text-sm font-medium text-gray-600 mb-2">Comprovante do pagamento (comprador)</h3>
+                ${paymentProofUrl ? `
+                  <div class="flex items-center justify-between gap-3">
+                    <p class="text-sm text-gray-600">Enviado${paymentProofUploadedAt ? ` em <strong>${escapeHtml(formatDateTime(paymentProofUploadedAt))}</strong>` : ''}.</p>
+                    <a class="px-4 py-2 bg-white border border-gray-200 hover:border-secondary-400 text-gray-700 hover:text-secondary-600 rounded-lg text-sm font-semibold transition" href="${escapeAttr(paymentProofUrl)}" target="_blank" rel="noopener">Abrir comprovante</a>
+                  </div>
+                ` : `
+                  <p class="text-sm text-gray-500">Nenhum comprovante enviado.</p>
+                `}
+              </section>
+            ` : ''}
 
             ${description ? `
               <section class="mt-6 pt-4 border-t border-gray-100">
@@ -1975,38 +2927,40 @@
           <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
             <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-users text-secondary-500"></i> Participantes</h2>
             <div class="grid grid-cols-1 gap-4">
-              <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
-                <header class="flex items-center gap-2 mb-2">
-                  <span class="px-2 py-0.5 bg-warning-500 text-white text-xs rounded-full font-medium">Vendedor</span>
-                  ${isSellerRole ? '<span class="px-2 py-0.5 bg-gray-900 text-white text-xs rounded-full font-medium">Você</span>' : ''}
-                </header>
-                <strong class="block text-gray-800">${escapeHtml(seller.name || '—')}</strong>
-                <span class="block text-gray-500 text-sm break-all">${escapeHtml(seller.email || '—')}</span>
-                <span class="block text-gray-500 text-sm">${formatPhone(seller.phone)}</span>
-                ${renderRatingInline('Avaliação do vendedor', negotiation.seller_rating)}
-                ${renderAddressDetails(seller)}
-              </div>
-              <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
-                <header class="flex items-center gap-2 mb-2">
-                  <span class="px-2 py-0.5 bg-secondary-500 text-white text-xs rounded-full font-medium">Comprador</span>
-                  ${isBuyerRole ? '<span class="px-2 py-0.5 bg-gray-900 text-white text-xs rounded-full font-medium">Você</span>' : ''}
-                </header>
-                <strong class="block text-gray-800">${escapeHtml(buyer.name || '—')}</strong>
-                <span class="block text-gray-500 text-sm break-all">${escapeHtml(buyer.email || '—')}</span>
-                <span class="block text-gray-500 text-sm">${formatPhone(buyer.phone)}</span>
-                ${renderRatingInline('Avaliação do comprador', negotiation.buyer_rating)}
-                ${renderAddressDetails(buyer)}
-              </div>
-              <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
-                <header class="flex items-center gap-2 mb-2">
-                  <span class="px-2 py-0.5 bg-primary-500 text-white text-xs rounded-full font-medium">Intermediadora</span>
-                </header>
-                <strong class="block text-gray-800">IntermediaçãoPro</strong>
-                <span class="block text-gray-500 text-sm break-all">contato@intermediacaopro.com</span>
-                <span class="block text-gray-500 text-sm">${formatPhone('(11) 99999-9999')}</span>
-                ${renderRatingInline('Avaliação da intermediadora', negotiation.intermediary_rating)}
-                ${renderAddressDetails(INTERMEDIARY_ADDRESS, 'Endereço não informado.')}
-              </div>
+              ${renderParticipantDropdown({
+                badgeText: 'Vendedor',
+                badgeClass: 'bg-warning-500',
+                isSelf: isSellerRole,
+                name: seller.name,
+                email: seller.email,
+                phone: seller.phone,
+                ratingLabel: 'Avaliação do vendedor',
+                ratingValue: negotiation.seller_rating,
+                addressEntity: seller
+              })}
+              ${renderParticipantDropdown({
+                badgeText: 'Comprador',
+                badgeClass: 'bg-secondary-500',
+                isSelf: isBuyerRole,
+                name: buyer.name,
+                email: buyer.email,
+                phone: buyer.phone,
+                ratingLabel: 'Avaliação do comprador',
+                ratingValue: negotiation.buyer_rating,
+                addressEntity: buyer
+              })}
+              ${renderParticipantDropdown({
+                badgeText: 'Intermediadora',
+                badgeClass: 'bg-primary-500',
+                isSelf: false,
+                name: 'IntermediaçãoPro',
+                email: 'contato@intermediacaopro.com',
+                phone: '(11) 99999-9999',
+                ratingLabel: 'Avaliação da intermediadora',
+                ratingValue: negotiation.intermediary_rating,
+                addressEntity: INTERMEDIARY_ADDRESS,
+                emptyAddressMessage: 'Endereço não informado.'
+              })}
             </div>
           </article>
         </div>
@@ -2015,6 +2969,12 @@
 
         ${renderBuyerAcceptSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
         ${renderPaymentSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
+        ${renderGameAccountBuyerSellerInfoSection(negotiation, { isBuyer: isBuyerRole })}
+        ${renderGameAccountBuyerChangeRequestSection(negotiation, { isBuyer: isBuyerRole })}
+        ${renderGameAccountSellerInfoSection(negotiation, { isSeller: isSellerRole })}
+        ${renderDigitalDeliveryBuyerInfoSection(negotiation, { isBuyer: isBuyerRole })}
+        ${renderDigitalDeliverySellerInfoSection(negotiation, { isSeller: isSellerRole })}
+        ${renderSellerGuideEntry(negotiation, { isSeller: isSellerRole })}
         ${renderLogisticsSection(negotiation, { isBuyer: isBuyerRole, isSeller: isSellerRole })}
         ${renderPaymentsSection(negotiation)}
         ${renderAdminActionsSection(negotiation)}
@@ -2023,6 +2983,33 @@
         ${renderNegotiationLogs(negotiation)}
       </section>
       ${renderBuyerRejectModal()}
+    `;
+  }
+
+  function renderSellerGuideEntry(neg, { isSeller }) {
+    if (!isSeller) return '';
+
+    const paymentConfirmed = Boolean(neg?.paid_at || neg?.product_paid_at);
+    const canShow = paymentConfirmed && neg?.status === 'waiting_shipment';
+    if (!canShow) return '';
+
+    return `
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-warning-200">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h2 class="text-lg font-semibold text-gray-900 flex items-center gap-2"><i class="fas fa-list-check text-warning-600"></i> Instruções</h2>
+            <p class="text-sm text-gray-600 mt-1">Guia do vendedor após o pagamento confirmado. Disponível apenas enquanto estiver em <strong>Aguardando envio</strong>.</p>
+          </div>
+          <button
+            type="button"
+            class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white"
+            data-action="openSellerGuide"
+            data-id="${neg.id}"
+          >
+            Abrir
+          </button>
+        </div>
+      </article>
     `;
   }
 
@@ -2055,7 +3042,53 @@
     `;
   }
 
+  function renderParticipantDropdown({
+    badgeText,
+    badgeClass,
+    isSelf,
+    name,
+    email,
+    phone,
+    ratingLabel,
+    ratingValue,
+    addressEntity,
+    emptyAddressMessage
+  }) {
+    const safeBadgeText = badgeText ? String(badgeText) : '';
+    const displayName = name ? String(name) : '—';
+    const displayEmail = email ? String(email) : '—';
+    const displayPhone = formatPhone(phone);
+    const addressHtml = renderAddressDetails(addressEntity, emptyAddressMessage || 'Endereço não informado.');
+
+    return `
+      <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
+        <header class="flex items-center gap-2 mb-2">
+          <span class="px-2 py-0.5 ${badgeClass || 'bg-gray-700'} text-white text-xs rounded-full font-medium">${escapeHtml(safeBadgeText)}</span>
+          ${isSelf ? '<span class="px-2 py-0.5 bg-gray-900 text-white text-xs rounded-full font-medium">Você</span>' : ''}
+        </header>
+        <strong class="block text-gray-800">${escapeHtml(displayName)}</strong>
+        <details class="mt-3">
+          <summary class="cursor-pointer text-sm text-primary-600 hover:text-primary-700 font-medium select-none">Detalhes</summary>
+          <div class="mt-3 space-y-2">
+            <div>
+              <div class="text-xs text-gray-500">E-mail</div>
+              <div class="text-sm text-gray-700 break-all">${escapeHtml(displayEmail)}</div>
+            </div>
+            <div>
+              <div class="text-xs text-gray-500">Telefone</div>
+              <div class="text-sm text-gray-700">${escapeHtml(displayPhone)}</div>
+            </div>
+            ${renderRatingInline(ratingLabel, ratingValue)}
+            ${addressHtml}
+          </div>
+        </details>
+      </div>
+    `;
+  }
+
   function renderLogisticsSection(neg, { isBuyer, isSeller }) {
+    if (isDigitalDeliveryCategory(neg?.category)) return '';
+
     const trackSeller = neg.tracking_to_intermediary || neg.tracking_code || '';
     const trackBuyer = neg.tracking_to_buyer || neg.buyer_tracking_code || '';
     const hasBuyerTracking = Boolean(trackBuyer);
@@ -2068,18 +3101,18 @@
             <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
               <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para comprador</h3>
               <p class="text-sm text-gray-800 font-medium">${escapeHtml(trackBuyer)}</p>
-              ${neg.sent_to_buyer_at ? `<small class="text-xs text-gray-500">Despachado em ${formatDate(neg.sent_to_buyer_at)}</small>` : ''}
+              ${neg.sent_to_buyer_at ? `<small class="text-xs text-gray-500">Despachado em ${formatDateTime(neg.sent_to_buyer_at)}</small>` : ''}
             </div>
           ` : `
             <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
               <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para intermediadora</h3>
               <p class="text-sm text-gray-800 font-medium">${trackSeller ? escapeHtml(trackSeller) : 'Não informado'}</p>
-              ${neg.sent_to_intermediary_at || neg.shipped_at ? `<small class="text-xs text-gray-500">Postado em ${formatDate(neg.sent_to_intermediary_at || neg.shipped_at)}</small>` : ''}
+              ${neg.sent_to_intermediary_at || neg.shipped_at ? `<small class="text-xs text-gray-500">Postado em ${formatDateTime(neg.sent_to_intermediary_at || neg.shipped_at)}</small>` : ''}
             </div>
             <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
               <h3 class="text-sm font-medium text-gray-700 mb-1">Rastreio para comprador</h3>
               <p class="text-sm text-gray-800 font-medium">${trackBuyer ? escapeHtml(trackBuyer) : 'Não informado'}</p>
-              ${neg.sent_to_buyer_at ? `<small class="text-xs text-gray-500">Despachado em ${formatDate(neg.sent_to_buyer_at)}</small>` : ''}
+              ${neg.sent_to_buyer_at ? `<small class="text-xs text-gray-500">Despachado em ${formatDateTime(neg.sent_to_buyer_at)}</small>` : ''}
             </div>
           `}
         </div>
@@ -2096,6 +3129,19 @@
     const canAccept = canAcceptPendingBuyer || canAcceptAsInterested;
     if (!canAccept) return '';
 
+    const category = String(neg?.category || '').trim();
+    const isCurrency = category === CATEGORY_CURRENCY;
+    const hasDesc = Boolean(neg?.description && String(neg.description).trim());
+    const methodLabel = (m) => {
+      const v = String(m || '').trim();
+      if (v === 'trade') return 'Trade (troca/encontro no jogo)';
+      if (v === 'mail') return 'Correio do jogo (mail)';
+      if (v === 'gift') return 'Presente (gift)';
+      return '—';
+    };
+    const qtyLabel = isCurrency && neg?.digital_quantity ? formatPtBrMoney(Number(neg.digital_quantity) || 0) : '';
+    const deadlineDays = Number(neg?.delivery_days) > 0 ? Number(neg.delivery_days) : DIGITAL_DELIVERY_DEADLINE_BUSINESS_DAYS;
+
     return `
       <article class="bg-white rounded-2xl p-6 shadow-card border border-success-200">
         <h2 class="text-lg font-semibold text-success-700 mb-3 flex items-center gap-2"><i class="fas fa-handshake text-success-600"></i> Aceite da negociação</h2>
@@ -2106,9 +3152,48 @@
           <h3 class="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
             <i class="fas fa-info-circle text-secondary-500"></i> Informações importantes
           </h3>
-          <p class="text-sm text-gray-600 mb-2">O vendedor deve enviar o produto em até <strong>2 dias úteis</strong> após você aceitar.</p>
+          <p class="text-sm text-gray-600 mb-2">${isDigitalDeliveryCategory(neg?.category)
+            ? `O vendedor deve concluir a entrega digital em até <strong>${deadlineDays} ${deadlineDays === 1 ? 'dia' : 'dias'}</strong> após você aceitar.`
+            : 'O vendedor deve postar o produto após você aceitar.'
+          }</p>
           <p class="text-sm text-gray-600">Após o aceite, você receberá as instruções de pagamento.</p>
         </div>
+
+        ${isCurrency ? `
+          <div class="p-4 rounded-xl border border-gray-100 bg-gray-50 mb-4">
+            <h3 class="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+              <i class="fas fa-coins text-secondary-500"></i> Detalhes da moeda
+            </h3>
+            <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+              <div>
+                <dt class="text-gray-500">Jogo</dt>
+                <dd class="text-gray-800 font-medium">${escapeHtml(neg?.digital_game || '—')}</dd>
+              </div>
+              <div>
+                <dt class="text-gray-500">Tipo de moeda</dt>
+                <dd class="text-gray-800 font-medium">${escapeHtml(neg?.digital_currency_type || '—')}</dd>
+              </div>
+              <div>
+                <dt class="text-gray-500">Quantidade</dt>
+                <dd class="text-gray-800 font-medium">${escapeHtml(qtyLabel || '—')}</dd>
+              </div>
+              <div>
+                <dt class="text-gray-500">Servidor / Plataforma</dt>
+                <dd class="text-gray-800 font-medium">${escapeHtml(neg?.digital_platform_server || '—')}</dd>
+              </div>
+              <div class="sm:col-span-2">
+                <dt class="text-gray-500">Método de entrega</dt>
+                <dd class="text-gray-800 font-medium">${escapeHtml(methodLabel(neg?.digital_delivery_method))}</dd>
+              </div>
+              ${hasDesc ? `
+                <div class="sm:col-span-2">
+                  <dt class="text-gray-500">Descrição</dt>
+                  <dd class="text-gray-800">${escapeHtml(String(neg.description))}</dd>
+                </div>
+              ` : ''}
+            </dl>
+          </div>
+        ` : ''}
         
         <div class="flex flex-wrap gap-3">
           <button class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2" data-action="acceptNegotiation" data-id="${neg.id}">
@@ -2129,7 +3214,21 @@
     const role = isSeller ? 'seller' : 'buyer';
     const { amount, fee, total, pixKey, pixCode } = getPixPaymentInfo(neg, { role });
 
+    const sellerDeductsFee = Boolean(neg?.seller_fee_deduct_from_payout);
+
     if (role === 'seller') {
+      if (sellerDeductsFee) {
+        return `
+          <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+            <h2 class="text-lg font-semibold text-gray-800 mb-2 flex items-center gap-2"><i class="fas fa-hourglass-half text-secondary-600"></i> Pagamento</h2>
+            <p class="text-sm text-gray-600">Você escolheu <strong>descontar a taxa do valor do repasse</strong>. Não há Pix para você pagar agora.</p>
+            <div class="mt-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
+              <div class="text-sm text-gray-700 font-semibold">Aguardando comprador realizar o pagamento</div>
+              <div class="text-xs text-gray-500 mt-1">Assim que o pagamento do comprador for confirmado, a entrega digital será liberada.</div>
+            </div>
+          </article>
+        `;
+      }
       return `
         <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
           <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-qrcode text-secondary-600"></i> Pagamento via Pix</h2>
@@ -2214,10 +3313,26 @@
             </div>
 
             <div class="space-y-3">
-              <button class="w-full px-4 py-3 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-white font-bold transition shadow-md" data-action="confirmPayment" data-id="${neg.id}">
-                <i class="fas fa-check mr-2"></i>Já realizei o pagamento
-              </button>
-              <p class="text-xs text-gray-500 text-center">Pagamento confirmado em até 1 hora útil.</p>
+              ${state.confirmPaymentProofForId === neg.id ? `
+                <form data-action="confirmPaymentWithProof" data-id="${neg.id}" class="space-y-3">
+                  <label class="block">
+                    <span class="text-sm text-gray-700 font-medium">Comprovante do Pix (opcional na simulação)</span>
+                    <input type="file" name="payment_proof" accept="image/*,application/pdf" class="mt-2 w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-700">
+                    <p class="text-xs text-gray-500 mt-1">Apenas o intermediador verá este comprovante nos detalhes.</p>
+                  </label>
+                  <button type="submit" class="w-full px-4 py-3 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-white font-bold transition shadow-md">
+                    <i class="fas fa-check mr-2"></i>Enviar e confirmar pagamento
+                  </button>
+                  <button type="button" class="w-full px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-semibold transition" data-action="cancelConfirmPaymentProof">
+                    Cancelar
+                  </button>
+                </form>
+              ` : `
+                <button class="w-full px-4 py-3 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-white font-bold transition shadow-md" data-action="openConfirmPaymentProof" data-id="${neg.id}">
+                  <i class="fas fa-check mr-2"></i>Já realizei o pagamento
+                </button>
+                <p class="text-xs text-gray-500 text-center">Pagamento confirmado em até 1 hora útil.</p>
+              `}
             </div>
           </div>
           
@@ -2236,6 +3351,178 @@
           <i class="fas fa-shield-alt"></i>
           Seu pagamento está protegido. O vendedor só receberá após você confirmar o recebimento do produto.
         </p>
+      </article>
+    `;
+  }
+
+  function renderGameAccountBuyerChangeRequestSection(neg, { isBuyer } = {}) {
+    if (!isBuyer) return '';
+    if (String(neg?.category || '').trim() !== 'Conta de jogo') return '';
+
+    if (neg.status !== 'waiting_digital_delivery') return '';
+
+    const changeRequest = neg?.game_account?.buyer_change_request;
+    const changeRequestedAt = neg?.game_account?.buyer_change_requested_at;
+    const hasRequest = Boolean(changeRequest && String(changeRequest).trim());
+
+    return `
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <h2 class="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2"><i class="fas fa-user-edit text-secondary-600"></i> Dados para alteração da conta</h2>
+        <p class="text-sm text-gray-600 mb-4">Pagamento confirmado. Agora informe os dados necessários para a intermediadora finalizar a troca (ex.: e-mail novo, 2FA, dados de recuperação, plataforma e observações).</p>
+
+        ${hasRequest ? `
+          <div class="p-4 bg-gray-50 rounded-xl border border-gray-100">
+            <div class="text-xs text-gray-500 mb-2">Enviado${changeRequestedAt ? ` em ${escapeHtml(formatDateTime(changeRequestedAt))}` : ''}</div>
+            <pre class="whitespace-pre-wrap text-sm text-gray-800">${escapeHtml(String(changeRequest))}</pre>
+          </div>
+        ` : `
+          <form data-action="submitGameAccountChangeRequest" data-id="${neg.id}" class="space-y-4">
+            <label class="flex flex-col gap-2">
+              <span class="text-sm text-gray-700 font-medium">Dados necessários *</span>
+              <textarea name="game_account_buyer_change_request" rows="5" minlength="10" maxlength="5000" required placeholder="Ex: Novo e-mail: ...\nCódigo 2FA (se necessário): ...\nPlataforma: ...\nObservações: ..." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all resize-none"></textarea>
+            </label>
+            <button type="submit" class="px-4 py-2 bg-gradient-to-r from-secondary-500 to-secondary-600 hover:from-secondary-600 hover:to-secondary-700 rounded-lg text-white font-semibold transition shadow-sm">
+              <i class="fas fa-paper-plane mr-2"></i>Enviar dados
+            </button>
+          </form>
+        `}
+      </article>
+    `;
+  }
+
+  function renderGameAccountBuyerSellerInfoSection(neg, { isBuyer } = {}) {
+    if (!isBuyer) return '';
+    if (String(neg?.category || '').trim() !== CATEGORY_GAME_ACCOUNT) return '';
+    if (neg.status !== 'waiting_digital_delivery') return '';
+
+    const sellerInfo = neg?.game_account?.seller_info;
+    const sentAt = neg?.game_account?.seller_info_sent_at;
+    const viewedAt = neg?.game_account?.seller_info_viewed_by_buyer_at;
+    const hasSellerInfo = Boolean(sellerInfo && String(sellerInfo).trim());
+
+    return `
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <h2 class="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2"><i class="fas fa-eye text-secondary-600"></i> Dados enviados pelo vendedor</h2>
+        ${hasSellerInfo ? `
+          <p class="text-sm text-gray-600 mb-4">${sentAt ? `Enviado em <strong>${escapeHtml(formatDateTime(sentAt))}</strong>.` : 'Enviado.'} ${viewedAt ? `Visualizado em <strong>${escapeHtml(formatDateTime(viewedAt))}</strong>.` : ''}</p>
+          <details class="p-4 bg-gray-50 rounded-xl border border-gray-100">
+            <summary class="cursor-pointer text-sm text-secondary-700 font-semibold select-none">Visualizar dados</summary>
+            <div class="mt-3">
+              <pre class="whitespace-pre-wrap text-sm text-gray-800">${escapeHtml(String(sellerInfo))}</pre>
+            </div>
+          </details>
+        ` : `
+          <p class="text-sm text-gray-600">Aguardando o vendedor enviar os dados de acesso para a intermediadora.</p>
+        `}
+      </article>
+    `;
+  }
+
+  function renderGameAccountSellerInfoSection(neg, { isSeller } = {}) {
+    if (!isSeller) return '';
+    if (String(neg?.category || '').trim() !== 'Conta de jogo') return '';
+    if (neg.status !== 'waiting_digital_delivery') return '';
+
+    const sentAt = neg?.game_account?.seller_info_sent_at;
+    const hasSellerInfo = Boolean(sentAt);
+
+    return `
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <h2 class="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2"><i class="fas fa-key text-warning-600"></i> Dados da conta (para a intermediadora)</h2>
+        <p class="text-sm text-gray-600 mb-4">Pagamento confirmado. Envie agora o login e demais dados de acesso. Esses dados ficam disponíveis para <strong>comprador</strong> e <strong>intermediadora</strong>.</p>
+
+        ${hasSellerInfo ? `
+          <div class="p-4 bg-gray-50 rounded-xl border border-gray-100">
+            <div class="text-xs text-gray-500 mb-2">Enviado${sentAt ? ` em ${escapeHtml(formatDateTime(sentAt))}` : ''}</div>
+            <p class="text-sm text-gray-700">Dados enviados com sucesso. Por segurança, não exibimos o conteúdo após o envio.</p>
+          </div>
+        ` : `
+          <form data-action="submitGameAccountSellerInfo" data-id="${neg.id}" class="space-y-4">
+            <label class="flex flex-col gap-2">
+              <span class="text-sm text-gray-700 font-medium">Dados da conta *</span>
+              <textarea name="game_account_seller_info" rows="5" minlength="10" maxlength="5000" required placeholder="Ex: Jogo: ...\nPlataforma: ...\nLogin: ...\nSenha: ...\nEmail vinculado: ...\nSenha do email: ...\nObservações: ..." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-warning-500 focus:border-warning-500 transition-all resize-none"></textarea>
+            </label>
+
+            <label class="flex items-start gap-3 p-4 bg-gray-50 border border-gray-100 rounded-xl cursor-pointer">
+              <input type="checkbox" name="seller_fee_deduct_from_payout" value="1" class="w-5 h-5 mt-0.5 rounded border-gray-300 text-warning-600 focus:ring-warning-500">
+              <span class="text-sm text-gray-700">Descontar a taxa da intermediação do valor do envio/repasse (opcional).</span>
+            </label>
+
+            <button type="submit" class="px-4 py-2 bg-gradient-to-r from-warning-500 to-orange-500 hover:from-warning-600 hover:to-orange-600 rounded-lg text-white font-semibold transition shadow-sm">
+              <i class="fas fa-paper-plane mr-2"></i>Enviar dados
+            </button>
+          </form>
+        `}
+      </article>
+    `;
+  }
+
+  function renderDigitalDeliverySellerInfoSection(neg, { isSeller } = {}) {
+    if (!isSeller) return '';
+    const category = String(neg?.category || '').trim();
+    if (!isDigitalDeliveryCategory(category) || category === CATEGORY_GAME_ACCOUNT) return '';
+    if (neg.status !== 'waiting_digital_delivery') return '';
+
+    const sentAt = neg?.digital_delivery?.seller_info_sent_at;
+    const hasSent = Boolean(sentAt);
+
+    const deadlineDays = Number(neg?.delivery_days) > 0 ? Number(neg.delivery_days) : DIGITAL_DELIVERY_DEADLINE_BUSINESS_DAYS;
+
+    return `
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <h2 class="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2"><i class="fas fa-key text-warning-600"></i> Entrega digital (para a intermediadora)</h2>
+        <div class="p-4 rounded-xl border border-warning-200 bg-warning-50 mb-4">
+          <div class="text-sm font-semibold text-warning-800">Pagamento confirmado — ação necessária</div>
+          <p class="text-sm text-warning-700 mt-1">Você tem <strong>${deadlineDays} ${deadlineDays === 1 ? 'dia' : 'dias'}</strong> para concluir a entrega digital. Se não concluir dentro do prazo, o comprador poderá ser reembolsado.</p>
+          <p class="text-xs text-warning-700 mt-2">Após a intermediadora finalizar a etapa, o <strong>comprador deverá confirmar o recebimento</strong> para encerrar a negociação.</p>
+        </div>
+        <p class="text-sm text-gray-600 mb-4">Pagamento confirmado. Envie as informações necessárias para concluir a entrega (ex.: código/chave, instruções, identificadores). Esses dados ficam disponíveis para <strong>comprador</strong> e <strong>intermediadora</strong>.</p>
+
+        ${hasSent ? `
+          <div class="p-4 bg-gray-50 rounded-xl border border-gray-100">
+            <div class="text-xs text-gray-500 mb-2">Enviado${sentAt ? ` em ${escapeHtml(formatDateTime(sentAt))}` : ''}</div>
+            <p class="text-sm text-gray-700">Dados enviados com sucesso. Por segurança, não exibimos o conteúdo após o envio.</p>
+          </div>
+        ` : `
+          <form data-action="submitDigitalDeliveryInfo" data-id="${neg.id}" class="space-y-4">
+            <label class="flex flex-col gap-2">
+              <span class="text-sm text-gray-700 font-medium">Dados da entrega *</span>
+              <textarea name="digital_delivery_info" rows="5" minlength="5" maxlength="5000" required placeholder="Ex: Código: ...\nInstruções: ...\nServidor/Região: ...\nObservações: ..." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-warning-500 focus:border-warning-500 transition-all resize-none"></textarea>
+            </label>
+            <button type="submit" class="px-4 py-2 bg-gradient-to-r from-warning-500 to-orange-500 hover:from-warning-600 hover:to-orange-600 rounded-lg text-white font-semibold transition shadow-sm">
+              <i class="fas fa-paper-plane mr-2"></i>Enviar dados
+            </button>
+          </form>
+        `}
+      </article>
+    `;
+  }
+
+  function renderDigitalDeliveryBuyerInfoSection(neg, { isBuyer } = {}) {
+    if (!isBuyer) return '';
+    const category = String(neg?.category || '').trim();
+    if (!isDigitalDeliveryCategory(category) || category === CATEGORY_GAME_ACCOUNT) return '';
+    if (!['waiting_digital_delivery', 'approved'].includes(neg.status)) return '';
+
+    const info = neg?.digital_delivery?.seller_info;
+    const sentAt = neg?.digital_delivery?.seller_info_sent_at;
+    const viewedAt = neg?.digital_delivery?.seller_info_viewed_by_buyer_at;
+    const hasInfo = Boolean(info && String(info).trim());
+
+    return `
+      <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+        <h2 class="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2"><i class="fas fa-eye text-secondary-600"></i> Dados enviados pelo vendedor</h2>
+        ${hasInfo ? `
+          <p class="text-sm text-gray-600 mb-4">${sentAt ? `Enviado em <strong>${escapeHtml(formatDateTime(sentAt))}</strong>.` : 'Enviado.'} ${viewedAt ? `Visualizado em <strong>${escapeHtml(formatDateTime(viewedAt))}</strong>.` : ''}</p>
+          <details class="p-4 bg-gray-50 rounded-xl border border-gray-100">
+            <summary class="cursor-pointer text-sm text-secondary-700 font-semibold select-none">Visualizar dados</summary>
+            <div class="mt-3">
+              <pre class="whitespace-pre-wrap text-sm text-gray-800">${escapeHtml(String(info))}</pre>
+            </div>
+          </details>
+        ` : `
+          <p class="text-sm text-gray-600">Aguardando o vendedor enviar os dados da entrega digital para a intermediadora.</p>
+        `}
       </article>
     `;
   }
@@ -2410,6 +3697,7 @@
     const showInspectionForm = atIntermediary && Boolean(neg.inspection_saved_at) && !neg.intermediary_approval_confirmed_at;
     const showFinalize = neg.status === 'delivered';
     const showMarkReceived = neg.status === 'shipped' && !neg.intermediary_received_status;
+    const showDigitalDelivery = neg.status === 'waiting_digital_delivery' && isDigitalDeliveryCategory(neg?.category);
 
     const sections = [];
 
@@ -2426,12 +3714,25 @@
     }
 
     if (waitingPayment) {
+      const nextStepLabel = isDigitalDeliveryCategory(neg?.category) ? 'Entrega digital pendente' : 'Aguardando envio';
       sections.push(`
         <section class="pt-4 border-t border-gray-100 first:border-t-0 first:pt-0">
           <h3 class="text-sm font-medium text-gray-700 mb-3">Pagamento (simulação)</h3>
-          <p class="text-sm text-gray-500 mb-3">Use apenas para testes. Isso avança a negociação para <strong>Aguardando envio</strong>.</p>
+          <p class="text-sm text-gray-500 mb-3">Use apenas para testes. Isso avança a negociação para <strong>${escapeHtml(nextStepLabel)}</strong>.</p>
           <button class="px-4 py-2 bg-gradient-to-r from-warning-500 to-orange-500 hover:from-warning-600 hover:to-orange-600 rounded-lg text-white font-bold transition shadow-md" data-action="adminSimulatePayment" data-id="${neg.id}">
             <i class="fas fa-bolt mr-2"></i>Simular confirmação de pagamento
+          </button>
+        </section>
+      `);
+    }
+
+    if (showDigitalDelivery) {
+      sections.push(`
+        <section class="pt-4 border-t border-gray-100 first:border-t-0 first:pt-0">
+          <h3 class="text-sm font-medium text-gray-700 mb-3">Entrega digital</h3>
+          <p class="text-sm text-gray-500 mb-3">Quando a transferência estiver concluída, marque como entregue para finalizar.</p>
+          <button class="px-4 py-2 bg-gradient-to-r from-secondary-500 to-secondary-600 hover:from-secondary-600 hover:to-secondary-700 rounded-lg text-white font-bold transition shadow-md" data-action="adminMarkDigitalDelivered" data-id="${neg.id}">
+            <i class="fas fa-check mr-2"></i>Marcar entrega digital
           </button>
         </section>
       `);
@@ -2778,11 +4079,10 @@
 
   function renderAttachmentSection(neg) {
     const photos = Array.isArray(neg.intermediary_photos) ? neg.intermediary_photos : [];
-    const productPhotos = Array.isArray(neg.product_photos || neg.photos) ? (neg.product_photos || neg.photos) : [];
     const report = neg.intermediary_damage_report;
-    const canPurgeImages = isAdmin() && neg.status === 'delivered' && (photos.length || productPhotos.length);
+    const canPurgeImages = isAdmin() && neg.status === 'delivered' && photos.length;
     
-    if (!photos.length && !productPhotos.length && !report) return '';
+    if (!photos.length && !report) return '';
     
     return `
       <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
@@ -2794,19 +4094,6 @@
             </button>
           ` : ''}
         </div>
-        
-        ${productPhotos.length ? `
-          <section class="mb-6">
-            <h3 class="text-sm font-medium text-gray-700 mb-3">Fotos do Produto</h3>
-            <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
-              ${productPhotos.map((url, index) => `
-                <button class="aspect-square rounded-xl overflow-hidden bg-gray-100 hover:ring-2 hover:ring-primary-500 transition shadow-md" data-action="openGallery" data-id="${neg.id}" data-index="${index}" data-type="product">
-                  <img src="${escapeAttr(resolvePhotoUrl(url))}" alt="Foto do produto ${index + 1}" class="w-full h-full object-cover">
-                </button>
-              `).join('')}
-            </div>
-          </section>
-        ` : ''}
         
         ${report ? `
           <section class="mb-6 p-4 bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl border border-amber-200">
@@ -3031,6 +4318,7 @@
             <button class="px-3 py-1 bg-gradient-to-r from-success-500 to-success-600 rounded text-xs text-white font-medium" data-action="adminApproveNegotiation" data-id="${neg.id}">Aprovar</button>
             <button class="px-3 py-1 bg-gradient-to-r from-danger-500 to-danger-600 rounded text-xs text-white font-medium" data-action="adminRejectNegotiation" data-id="${neg.id}">Reprovar</button>
           ` : ''}
+          <button class="px-3 py-1 bg-gradient-to-r from-danger-500 to-danger-600 rounded text-xs text-white font-medium" data-action="adminDeleteNegotiation" data-id="${neg.id}">Remover</button>
         </span>
       </div>
     `;
@@ -3113,6 +4401,7 @@
                   <button class="px-4 py-3 bg-gradient-to-r from-danger-500 to-danger-600 rounded-xl text-sm text-white font-semibold" data-action="adminRejectNegotiation" data-id="${neg?.id}">Reprovar</button>
                 </div>
               ` : ''}
+              <button class="w-full px-4 py-3 bg-gradient-to-r from-danger-500 to-danger-600 rounded-xl text-sm text-white font-semibold" data-action="adminDeleteNegotiation" data-id="${neg?.id}">Remover</button>
             </div>
           </div>
         </details>
@@ -3151,11 +4440,73 @@
               </span>
               <span class="px-2 py-1 bg-primary-100 text-primary-700 rounded-full text-xs font-medium inline-block w-fit">${ROLE_LABELS[user.role] || user.role || '—'}</span>
               <span class="text-gray-400 text-sm">${formatDate(user.created_at)}</span>
-              <button class="px-3 py-2 bg-gradient-to-r from-danger-500 to-danger-600 rounded-lg text-sm text-white font-medium transition" data-action="adminDeleteUser" data-id="${user.id}"><i class="fas fa-trash mr-1"></i>Remover</button>
+              <div class="flex gap-2 justify-end">
+                <button class="px-3 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 rounded-lg text-sm text-white font-medium transition" data-action="adminOpenUserDetails" data-id="${user.id}"><i class="fas fa-id-card mr-1"></i>Detalhes</button>
+                <button class="px-3 py-2 bg-gradient-to-r from-danger-500 to-danger-600 rounded-lg text-sm text-white font-medium transition" data-action="adminDeleteUser" data-id="${user.id}"><i class="fas fa-trash mr-1"></i>Remover</button>
+              </div>
             </div>
           `).join('') : '<p class="text-gray-400 text-center py-4">Sem usuários cadastrados.</p>'}
         </div>
       </section>
+    `;
+  }
+
+  function renderAdminUserDetailsModal() {
+    if (!state.showAdminUserDetailsModal || !isAdmin()) return '';
+    const user = state.adminUserDetails;
+    if (!user) return '';
+
+    const roleLabel = ROLE_LABELS[user.role] || user.role || '—';
+    const addressHtml = renderAddressDetails(user, 'Endereço não informado.');
+
+    return `
+      <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-card-xl overflow-hidden animate-slide-up">
+          <div class="h-1 bg-gradient-to-r from-primary-500 to-secondary-500"></div>
+          <header class="flex items-start justify-between p-4 sm:p-6 border-b border-gray-100">
+            <div>
+              <h2 class="text-xl font-bold text-gray-900 flex items-center gap-2"><i class="fas fa-id-card text-primary-500"></i> Cadastro do usuário</h2>
+              <p class="text-gray-500 text-sm">Usuário #${escapeHtml(String(user.id ?? '—'))}</p>
+            </div>
+            <button class="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition" data-action="closeAdminUserDetails">✕</button>
+          </header>
+          <section class="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+            <div class="p-4 rounded-xl border border-gray-100 bg-gray-50">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <div class="text-xs text-gray-500">Nome</div>
+                  <div class="text-sm text-gray-800 font-semibold">${escapeHtml(user.name || '—')}</div>
+                </div>
+                <div>
+                  <div class="text-xs text-gray-500">Papel</div>
+                  <div class="text-sm text-gray-800 font-semibold">${escapeHtml(roleLabel)}</div>
+                </div>
+                <div class="sm:col-span-2">
+                  <div class="text-xs text-gray-500">E-mail</div>
+                  <div class="text-sm text-gray-700 break-all">${escapeHtml(user.email || '—')}</div>
+                </div>
+                <div>
+                  <div class="text-xs text-gray-500">Telefone</div>
+                  <div class="text-sm text-gray-700">${escapeHtml(formatPhone(user.phone))}</div>
+                </div>
+                <div>
+                  <div class="text-xs text-gray-500">E-mail verificado</div>
+                  <div class="text-sm text-gray-700">${user.email_verified_at ? escapeHtml(formatDateTime(user.email_verified_at)) : '—'}</div>
+                </div>
+                <div>
+                  <div class="text-xs text-gray-500">Criado em</div>
+                  <div class="text-sm text-gray-700">${escapeHtml(formatDateTime(user.created_at))}</div>
+                </div>
+                <div>
+                  <div class="text-xs text-gray-500">Último login</div>
+                  <div class="text-sm text-gray-700">${user.last_login_at ? escapeHtml(formatDateTime(user.last_login_at)) : '—'}</div>
+                </div>
+              </div>
+              ${addressHtml}
+            </div>
+          </section>
+        </div>
+      </div>
     `;
   }
 
@@ -3217,6 +4568,7 @@
           <button class="px-3 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-sm text-white font-medium transition-all" data-action="adminOpenNegotiation" data-id="${neg.id}"><i class="fas fa-eye mr-1"></i>Ver detalhes</button>
           <button class="px-3 py-2 bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 rounded-lg text-sm text-white font-medium transition-all" data-action="adminApproveNegotiation" data-id="${neg.id}"><i class="fas fa-check mr-1"></i>Aprovar</button>
           <button class="px-3 py-2 bg-gradient-to-r from-danger-500 to-danger-600 hover:from-danger-600 hover:to-danger-700 rounded-lg text-sm text-white font-medium transition-all" data-action="adminRejectNegotiation" data-id="${neg.id}"><i class="fas fa-times mr-1"></i>Reprovar</button>
+          <button class="px-3 py-2 bg-gradient-to-r from-danger-500 to-danger-600 hover:from-danger-600 hover:to-danger-700 rounded-lg text-sm text-white font-medium transition-all" data-action="adminDeleteNegotiation" data-id="${neg.id}"><i class="fas fa-trash mr-1"></i>Remover</button>
         </footer>
       </article>
     `;
@@ -3225,8 +4577,9 @@
   function renderTimelineModal() {
     const timeline = Array.isArray(state.timelineData) ? state.timelineData : [];
     return `
-      <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-        <div class="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-card-xl overflow-hidden animate-slide-up">
+      <div class="fixed inset-0 z-50 p-4">
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" data-action="closeTimeline"></div>
+        <div class="relative bg-white rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-card-xl overflow-hidden animate-slide-up" data-action="noop">
           <div class="h-1 bg-gradient-to-r from-secondary-500 to-primary-500"></div>
           <header class="flex items-start justify-between p-4 sm:p-6 border-b border-gray-100">
             <div>
@@ -3236,21 +4589,82 @@
             <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeTimeline">✕</button>
           </header>
           <section class="p-4 sm:p-6 overflow-y-auto flex-1 space-y-2">
-            ${timeline.length ? timeline.map((item) => renderTimelineItem(item)).join('') : '<p class="text-gray-400 text-center py-8">Sem eventos registrados.</p>'}
+            ${timeline.length ? timeline.map((item, index) => renderTimelineItem(item, index, timeline.length)).join('') : '<p class="text-gray-400 text-center py-8">Sem eventos registrados.</p>'}
           </section>
         </div>
       </div>
     `;
   }
 
-  function renderTimelineItem(item) {
+  function renderTimelineItem(item, index, total) {
+    const done = Boolean(item && item.date);
+    const isLast = index === total - 1;
+    const dotClass = done ? 'bg-success-500 ring-success-100' : 'bg-gray-300 ring-gray-100';
+    const lineClass = done ? 'bg-success-200' : 'bg-gray-200';
+
     return `
-      <div class="flex gap-4 relative">
-        <div class="w-3 h-3 rounded-full bg-gradient-to-br from-primary-500 to-secondary-500 mt-1.5 shrink-0 ring-4 ring-primary-100"></div>
-        <div class="flex-1 pb-4 border-l-2 border-gray-200 pl-4 -ml-1.5">
-          <strong class="text-gray-800 block">${escapeHtml(item.label)}</strong>
-          <span class="text-gray-500 text-sm">${item.date ? formatDateTime(item.date) : 'Pendente'}</span>
-          <p class="text-gray-600 text-sm mt-1">${escapeHtml(item.description || '')}</p>
+      <div class="relative pl-10">
+        <div class="absolute left-1 top-1">
+          <div class="w-4 h-4 rounded-full ${dotClass} ring-4"></div>
+        </div>
+        ${!isLast ? `<div class="absolute left-[9px] top-6 bottom-0 w-px ${lineClass}"></div>` : ''}
+
+        <div class="bg-gray-50 border border-gray-100 rounded-xl p-4">
+          <div class="flex items-start justify-between gap-3">
+            <strong class="text-gray-900">${escapeHtml(item.label)}</strong>
+            <span class="shrink-0 text-[11px] px-2 py-1 rounded-full border ${done ? 'bg-success-50 text-success-700 border-success-200' : 'bg-white text-gray-500 border-gray-200'}">
+              ${done ? escapeHtml(formatDateTime(item.date)) : 'Pendente'}
+            </span>
+          </div>
+          ${item.description ? `<p class="text-gray-600 text-sm mt-2">${escapeHtml(item.description)}</p>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderSellerGuideModal() {
+    const id = Number(state.sellerGuideNegotiationId);
+    const neg = state.currentNegotiation;
+    if (!id || !neg || Number(neg.id) !== id) return '';
+    if (!isSeller(neg)) return '';
+    if (neg.status !== 'waiting_shipment') return '';
+    if (!(neg.paid_at || neg.product_paid_at)) return '';
+
+    const address = INTERMEDIARY_ADDRESS;
+    const addressLine = [address.street, address.number].filter(Boolean).join(', ');
+    const cityLine = [address.city, address.state].filter(Boolean).join(' - ');
+
+    return `
+      <div class="fixed inset-0 z-50 p-4">
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" data-action="closeSellerGuide"></div>
+        <div class="relative w-full max-w-2xl max-h-[90vh] mx-auto bg-white rounded-2xl shadow-card-xl overflow-hidden animate-slide-up" data-action="noop">
+          <div class="h-1 bg-gradient-to-r from-warning-500 to-orange-500"></div>
+          <header class="flex items-start justify-between p-4 sm:p-6 border-b border-gray-100">
+            <div>
+              <h2 class="text-xl font-bold text-gray-900 flex items-center gap-2"><i class="fas fa-list-check text-warning-600"></i> Instruções do vendedor</h2>
+              <p class="text-gray-500 text-sm mt-1">Pagamento confirmado em ${escapeHtml(formatDateTime(neg.paid_at || neg.product_paid_at))}. Conclua a entrega digital no prazo.</p>
+            </div>
+            <button class="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors" data-action="closeSellerGuide">✕</button>
+          </header>
+
+          <section class="p-4 sm:p-6 overflow-y-auto max-h-[70vh] space-y-4">
+            <div class="p-4 bg-warning-50 border border-warning-200 rounded-xl text-warning-900 text-sm">
+              <div class="font-semibold mb-2">O que fazer agora</div>
+              <ol class="list-decimal ml-5 space-y-2">
+                <li><strong>Prazo digital:</strong> conclua a entrega em até <strong>${DIGITAL_DELIVERY_DEADLINE_BUSINESS_DAYS} dias úteis</strong> após a aprovação do pagamento.</li>
+                <li>Siga o fluxo dentro do sistema até a confirmação de entrega.</li>
+              </ol>
+            </div>
+
+            <div class="p-4 bg-danger-50 border border-danger-200 rounded-xl text-danger-800 text-sm">
+              <div class="font-semibold mb-2">Se não entregar no prazo</div>
+              <ul class="list-disc ml-5 space-y-1">
+                <li>Perda da taxa de intermediação.</li>
+                <li>Devolução integral ao comprador (valor + taxa).</li>
+                <li>Cancelamento da negociação.</li>
+              </ul>
+            </div>
+          </section>
         </div>
       </div>
     `;
@@ -3377,10 +4791,10 @@
 
   function renderFooter() {
     return `
-      <footer class="bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white py-12">
+      <footer class="bg-gray-900 text-white py-6">
         <div class="container mx-auto px-6">
           <!-- Grid de 3 colunas -->
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-8 lg:gap-12">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-10">
             <!-- Coluna 1: Logo e descrição -->
             <div class="space-y-4">
               <div class="flex items-center gap-3">
@@ -3444,7 +4858,7 @@
           </div>
 
           <!-- Linha divisória e copyright -->
-          <div class="border-t border-gray-700/50 mt-10 pt-6 flex flex-col md:flex-row items-center justify-between gap-4">
+          <div class="border-t border-gray-700/50 mt-8 pt-5 flex flex-col md:flex-row items-center justify-between gap-4">
             <p class="text-gray-500 text-sm">© ${new Date().getFullYear()} IntermediaçãoPro. Todos os direitos reservados.</p>
             <p class="text-gray-600 text-xs">Feito com <i class="fas fa-heart text-danger-400"></i> no Brasil</p>
           </div>
@@ -3458,11 +4872,17 @@
     if (state.showPendingModal && isAdmin()) {
       parts.push(renderPendingModal());
     }
+    if (state.showAdminUserDetailsModal && isAdmin()) {
+      parts.push(renderAdminUserDetailsModal());
+    }
     if (state.currentPage === 'dashboard' && state.showDashboardFiltersModal) {
       parts.push(renderDashboardFiltersModal());
     }
     if (state.timelineNegotiationId) {
       parts.push(renderTimelineModal());
+    }
+    if (state.sellerGuideNegotiationId) {
+      parts.push(renderSellerGuideModal());
     }
     if (state.showIntermediaryReportModal) {
       parts.push(renderIntermediaryReportModal());
@@ -3595,6 +5015,38 @@
     document.addEventListener('submit', handleSubmit, true);
     document.addEventListener('click', handleClick);
     document.addEventListener('input', handleInput);
+    document.addEventListener('change', handleInput);
+    document.addEventListener('keydown', handleKeydown, true);
+  }
+
+  function handleKeydown(event) {
+    if (!event) return;
+    if (event.isComposing) return;
+    if (event.key !== 'Enter') return;
+
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    // Se estiver dentro de um form, o fluxo nativo já vira submit (e a SPA intercepta)
+    if (target.closest('form')) return;
+
+    // Busca do dashboard (sidebar desktop)
+    if (target.matches('[data-action="dashboardSearch"]')) {
+      event.preventDefault();
+      event.stopPropagation();
+      const value = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target.value : '';
+      Promise.resolve(actions.dashboardSearch({ element: target, value, dataset: { ...target.dataset }, event }))
+        .catch((error) => handleError(error));
+      return;
+    }
+
+    // Modal de filtros (mobile): Enter aplica
+    if (target.matches('[data-action="updateDashboardFiltersDraft"][data-field="query"]')) {
+      event.preventDefault();
+      event.stopPropagation();
+      Promise.resolve(actions.applyDashboardFiltersModal({ element: target, dataset: {}, event }))
+        .catch((error) => handleError(error));
+    }
   }
 
   function handleSubmit(event) {
@@ -3633,11 +5085,20 @@
   }
 
   function handleClick(event) {
-    const target = event.target;
+    let target = event.target;
+    if (!(target instanceof Element)) {
+      // Some environments can report a Text node as the target (e.g., clicking on button label text).
+      target = target && target.parentElement ? target.parentElement : null;
+    }
     if (!(target instanceof Element)) return;
     const actionEl = target.closest('[data-action]');
     if (!actionEl) return;
     if (actionEl instanceof HTMLFormElement) {
+      return;
+    }
+    // Inputs/selects devem disparar via input/change, não via click.
+    // Caso contrário, clicar para abrir o dropdown (select) dispara re-render e fecha o menu.
+    if (actionEl instanceof HTMLSelectElement) {
       return;
     }
     const actionName = actionEl.dataset.action;
@@ -3770,10 +5231,11 @@
     return data;
   }
 
-  async function loadNegotiations({ force = false } = {}) {
+  async function loadNegotiations({ force = false, silent = false } = {}) {
     if (!state.token) return;
     if (!force && Date.now() - state.negotiationsLoadedAt < 15000) return;
-    await withLoader(async () => {
+
+    const task = async () => {
       const data = await apiCall('/intermediation');
       const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
       setState({
@@ -3786,19 +5248,32 @@
           setState({ currentNegotiation: updated });
         }
       }
-    }, state.negotiations.length ? null : 'Carregando negociações...');
+    };
+
+    if (silent || state.isLoading) {
+      return task();
+    }
+
+    await withLoader(task, state.negotiations.length ? null : 'Carregando negociações...');
   }
 
-  async function loadNegotiation(id) {
+  async function loadNegotiation(id, { silent = false } = {}) {
     if (!id) return;
-    await withLoader(async () => {
+
+    const task = async () => {
       const data = await apiCall(`/intermediation/${id}`);
       const negotiation = data?.data || data;
       setState({
         currentNegotiation: negotiation,
         currentPage: 'negotiation-detail'
       });
-    }, 'Carregando negociação...');
+    };
+
+    if (silent || state.isLoading) {
+      return task();
+    }
+
+    await withLoader(task, 'Carregando negociação...');
   }
 
   async function loadAdminSnapshot({ force = false } = {}) {
@@ -3844,7 +5319,12 @@
     if (visible && !isAdmin()) return;
     setState({ showPendingModal: visible });
     if (visible) {
+      // Evita re-render automático (polling) enquanto o modal está aberto
+      // para não "resetar" o dropdown/seleção do usuário.
+      stopPendingPolling();
       loadPendingNotices({ filter: state.pendingFilter, force: true });
+    } else {
+      updatePendingPolling();
     }
   }
 
@@ -3911,6 +5391,12 @@
   }
 
   function updatePendingPolling() {
+    // Não reinicia o polling enquanto o modal estiver aberto;
+    // caso contrário, qualquer render volta a ligar o timer e atrapalha o select.
+    if (state.showPendingModal || state.showCreateNegotiationModal) {
+      stopPendingPolling();
+      return;
+    }
     if (state.token && isAdmin()) {
       startPendingPolling();
     } else {
@@ -3945,13 +5431,12 @@
   function getPixPaymentInfo(neg, options = {}) {
     const pixKey = 'pix@intermediacao.com.br';
     const productAmount = Number(neg?.product_price ?? neg?.price ?? 0) || 0;
-    const buyerFee = 15;
-    const sellerFee = 15;
+    const feeByPrice = getDigitalFeeByPrice(productAmount);
 
     const inferredRole = options.role || (isBuyer(neg) ? 'buyer' : (isSeller(neg) ? 'seller' : null));
     const role = inferredRole === 'seller' ? 'seller' : 'buyer';
 
-    const fee = role === 'seller' ? sellerFee : buyerFee;
+    const fee = feeByPrice;
     const amount = role === 'seller' ? 0 : productAmount;
     const total = amount + fee;
 
@@ -3989,6 +5474,16 @@
       hour: '2-digit',
       minute: '2-digit'
     });
+  }
+
+  function formatShortDate(value) {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '—';
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = String(date.getFullYear()).slice(-2);
+    return `${day}/${month}/${year}`;
   }
 
   function formatRelativeTime(value) {
@@ -4223,49 +5718,172 @@
   function getFilteredNegotiations() {
     const list = Array.isArray(state.negotiations) ? state.negotiations : [];
     const { status, role, query } = state.negotiationFilters;
-    return list
-      .filter((item) => {
-        if (status && status !== 'all') {
-          if (item?.status !== status) return false;
-        }
+    const tokens = tokenizeSearchQuery(query);
 
-        if (!isAdmin() && role && role !== 'all') {
-          if (role === 'buyer' && !isBuyer(item)) return false;
-          if (role === 'seller' && !isSeller(item)) return false;
-        }
+    const filtered = list.filter((item) => {
+      if (status && status !== 'all') {
+        if (item?.status !== status) return false;
+      }
 
-        if (query) {
-          const q = query.toLowerCase();
-          const haystack = [
-            item?.product_title,
-            item?.product_name,
-            item?.buyer?.name,
-            item?.buyer?.email,
-            item?.seller?.name,
-            item?.seller?.email,
-            item?.id ? `#${item.id}` : ''
-          ].map((value) => (value || '').toString().toLowerCase()).join(' ');
-          if (!haystack.includes(q)) return false;
-        }
-        return true;
+      if (!isAdmin() && role && role !== 'all') {
+        if (role === 'buyer' && !isBuyer(item)) return false;
+        if (role === 'seller' && !isSeller(item)) return false;
+      }
+
+      if (tokens.length) {
+        return matchesNegotiationTokens(item, tokens);
+      }
+
+      return true;
+    });
+
+    return filtered
+      .map((item) => {
+        const priority = getStatusPriority(item?.status, item);
+        const date = new Date(item?.updated_at || item?.created_at || 0).getTime();
+        const score = tokens.length ? getNegotiationSearchScore(item, tokens) : 0;
+        return { item, priority, score, date };
       })
       .sort((a, b) => {
-        // Primeiro: ordenar por prioridade (ações pendentes primeiro)
-        const priorityA = getStatusPriority(a?.status, a);
-        const priorityB = getStatusPriority(b?.status, b);
-        if (priorityA !== priorityB) return priorityA - priorityB;
-        
-        // Segundo: ordenar por data (mais recente primeiro)
-        const dateA = new Date(a?.updated_at || a?.created_at || 0).getTime();
-        const dateB = new Date(b?.updated_at || b?.created_at || 0).getTime();
-        return dateB - dateA;
-      });
+        // 1) Prioridade por status/ação
+        if (a.priority !== b.priority) return a.priority - b.priority;
+
+        // 2) Se estiver buscando, prioriza melhor match (ex: "henrique" primeiro)
+        if (tokens.length && a.score !== b.score) return b.score - a.score;
+
+        // 3) Mais recente primeiro
+        return b.date - a.date;
+      })
+      .map((row) => row.item);
+  }
+
+  function normalizeSearchText(value) {
+    const raw = (value ?? '').toString().toLowerCase();
+    try {
+      // remove acentos/diacríticos (ex: "Henríque" -> "henrique")
+      return raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    } catch {
+      return raw;
+    }
+  }
+
+  function tokenizeSearchQuery(query) {
+    const normalized = normalizeSearchText(query).trim();
+    if (!normalized) return [];
+    return normalized.split(/\s+/g).map((t) => t.trim()).filter(Boolean);
+  }
+
+  function getNegotiationSearchFields(item) {
+    const buyerName = (item?.buyer && typeof item.buyer === 'object')
+      ? (item.buyer.name ?? item.buyer.full_name ?? '')
+      : (typeof item?.buyer === 'string' ? item.buyer : '');
+    const buyerEmail = (item?.buyer && typeof item.buyer === 'object')
+      ? (item.buyer.email ?? '')
+      : '';
+    const sellerName = (item?.seller && typeof item.seller === 'object')
+      ? (item.seller.name ?? item.seller.full_name ?? '')
+      : (typeof item?.seller === 'string' ? item.seller : '');
+    const sellerEmail = (item?.seller && typeof item.seller === 'object')
+      ? (item.seller.email ?? '')
+      : '';
+
+    const flatBuyerName = item?.buyer_name ?? item?.buyerName ?? item?.buyer_full_name ?? '';
+    const flatBuyerEmail = item?.buyer_email ?? item?.buyerEmail ?? '';
+    const flatSellerName = item?.seller_name ?? item?.sellerName ?? item?.seller_full_name ?? '';
+    const flatSellerEmail = item?.seller_email ?? item?.sellerEmail ?? '';
+
+    const participantFields = [];
+    const participants = Array.isArray(item?.participants) ? item.participants : [];
+    for (const p of participants) {
+      if (!p) continue;
+      if (typeof p === 'string') {
+        participantFields.push(p);
+        continue;
+      }
+      if (typeof p === 'object') {
+        if (p.name) participantFields.push(p.name);
+        if (p.full_name) participantFields.push(p.full_name);
+        if (p.email) participantFields.push(p.email);
+      }
+    }
+
+    return [
+      item?.product_title,
+      item?.product_name,
+      item?.title,
+      buyerName,
+      buyerEmail,
+      sellerName,
+      sellerEmail,
+      flatBuyerName,
+      flatBuyerEmail,
+      flatSellerName,
+      flatSellerEmail,
+      item?.id ? `#${item.id}` : '',
+      ...participantFields
+    ].map((value) => normalizeSearchText(value));
+  }
+
+  function matchesNegotiationTokens(item, tokens) {
+    if (!tokens || !tokens.length) return true;
+    const fields = getNegotiationSearchFields(item);
+    const joined = fields.join(' ');
+    return tokens.every((token) => joined.includes(token));
+  }
+
+  function scoreTokenAgainstField(token, fieldText, weight) {
+    if (!token || !fieldText) return 0;
+    if (!fieldText.includes(token)) return 0;
+
+    // id (#123) tende a ser intenção bem específica
+    if (token.startsWith('#') && fieldText.includes(token)) {
+      return 80 * weight;
+    }
+
+    const words = fieldText.split(/[^a-z0-9#]+/g).filter(Boolean);
+    if (words.some((w) => w === token)) return 60 * weight;
+    if (words.some((w) => w.startsWith(token))) return 35 * weight;
+    return 15 * weight;
+  }
+
+  function getNegotiationSearchScore(item, tokens) {
+    const [
+      productTitle,
+      productName,
+      buyerName,
+      buyerEmail,
+      sellerName,
+      sellerEmail,
+      idField
+    ] = getNegotiationSearchFields(item);
+
+    const weightedFields = [
+      { text: buyerName, weight: 6 },
+      { text: sellerName, weight: 6 },
+      { text: productTitle, weight: 5 },
+      { text: productName, weight: 4 },
+      { text: buyerEmail, weight: 3 },
+      { text: sellerEmail, weight: 3 },
+      { text: idField, weight: 7 }
+    ];
+
+    let total = 0;
+    for (const token of tokens) {
+      let best = 0;
+      for (const field of weightedFields) {
+        const score = scoreTokenAgainstField(token, field.text, field.weight);
+        if (score > best) best = score;
+      }
+      total += best;
+    }
+    return total;
   }
 
   function getDashboardStatusCounts(filters = null) {
     const list = Array.isArray(state.negotiations) ? state.negotiations : [];
     const role = filters && typeof filters.role === 'string' ? filters.role : state.negotiationFilters?.role;
     const query = filters && typeof filters.query === 'string' ? filters.query : state.negotiationFilters?.query;
+    const tokens = tokenizeSearchQuery(query);
 
     const scoped = list.filter((item) => {
       if (!isAdmin() && role && role !== 'all') {
@@ -4273,19 +5891,7 @@
         if (role === 'seller' && !isSeller(item)) return false;
       }
 
-      if (query) {
-        const q = query.toLowerCase();
-        const haystack = [
-          item?.product_title,
-          item?.product_name,
-          item?.buyer?.name,
-          item?.buyer?.email,
-          item?.seller?.name,
-          item?.seller?.email,
-          item?.id ? `#${item.id}` : ''
-        ].map((value) => (value || '').toString().toLowerCase()).join(' ');
-        if (!haystack.includes(q)) return false;
-      }
+      if (tokens.length && !matchesNegotiationTokens(item, tokens)) return false;
       return true;
     });
 
@@ -4330,6 +5936,7 @@
       timelineNegotiationId: null,
       gallery: null,
       showIntermediaryReportModal: false,
+      sellerGuideNegotiationId: null,
       confirmationEmail: null,
       confirmationCooldownRemaining: 0,
       successMessage: silent ? null : 'Sessão finalizada.'
@@ -4355,12 +5962,15 @@
       successMessage: null,
       showDashboardFiltersModal: false,
       showIntermediaryReportModal: false,
+      sellerGuideNegotiationId: null,
       filtersExpanded: false
     });
 
     if (page === 'dashboard') {
       if (!state.negotiations.length) {
         loadNegotiations({ force: true });
+      } else {
+        loadNegotiations({ force: true, silent: true }).catch(() => null);
       }
     } else if (page === 'admin') {
       if (state.adminTab !== 'negotiations') {
@@ -4424,6 +6034,16 @@
 
   function closeIntermediaryReport() {
     setState({ showIntermediaryReportModal: false });
+  }
+
+  function openSellerGuide(negId) {
+    const id = Number(negId);
+    if (!id) return;
+    setState({ sellerGuideNegotiationId: id });
+  }
+
+  function closeSellerGuide() {
+    setState({ sellerGuideNegotiationId: null });
   }
 
   function buildTimelineData(negId) {
@@ -4528,6 +6148,35 @@
     }, 'Reprovando...');
   }
 
+  async function adminDeleteNegotiation(negId) {
+    const id = Number(negId);
+    if (!id) return;
+    if (!isAdmin()) {
+      notify({ type: 'error', message: 'Apenas administrador pode remover.' });
+      return;
+    }
+    if (!confirm(`Remover a negociação #${id}? (Ação de teste)`)) return;
+
+    await withLoader(async () => {
+      await apiCall(`/intermediation/admin/${id}`, { method: 'DELETE' });
+      notify({ type: 'success', message: 'Negociação removida.' });
+
+      // Se estava aberta, fecha.
+      if (state.currentNegotiation?.id === id) {
+        setState({ currentNegotiation: null, currentPage: 'admin' });
+      }
+
+      await Promise.all([
+        loadAdminSnapshot({ force: true }),
+        loadNegotiations({ force: true }),
+      ]);
+
+      if (state.showPendingModal) {
+        await loadPendingNotices({ filter: state.pendingFilter, force: true });
+      }
+    }, 'Removendo negociação...');
+  }
+
   function openNegotiationDetail(negId) {
     const id = Number(negId);
     if (!id) return;
@@ -4600,6 +6249,12 @@
     navigate({ dataset }) {
       if (!dataset || !dataset.page) return;
       navigate(dataset.page, dataset);
+    },
+    openSellerGuide({ dataset }) {
+      openSellerGuide(dataset?.id);
+    },
+    closeSellerGuide() {
+      closeSellerGuide();
     },
     noop() {},
     formatPhoneInput({ element, event }) {
@@ -4795,6 +6450,21 @@
     dashboardSearch({ value }) {
       setState({ negotiationFilters: { ...state.negotiationFilters, query: value || '' }, dashboardPage: 1 });
     },
+    toggleSidebarFilterDropdown({ dataset, event }) {
+      const filter = dataset?.filter;
+      if (!filter) return;
+      if (event && typeof event.preventDefault === 'function') event.preventDefault();
+      if (filter === 'summary') {
+        setState({ sidebarSummaryOpen: !state.sidebarSummaryOpen });
+        return;
+      }
+      if (filter === 'status') {
+        setState({ sidebarStatusOpen: !state.sidebarStatusOpen });
+      }
+    },
+    statusOptionsSearch({ value }) {
+      setState({ statusOptionsQuery: value || '' });
+    },
     dashboardPrevPage() {
       const next = Math.max(1, (Number(state.dashboardPage) || 1) - 1);
       if (next !== state.dashboardPage) setState({ dashboardPage: next });
@@ -4848,6 +6518,8 @@
       setState({ 
         showCreateNegotiationModal: true,
         showCreateTerms: false,
+        showCreateFeeGuide: false,
+        createNegStep: 1,
         createNegForm: { 
           buyerFound: null, 
           buyerSearching: false, 
@@ -4855,6 +6527,14 @@
           photoError: null,
           title: '',
           category: '',
+          negotiationType: '',
+          sellerFeeMode: 'deduct',
+          deliveryDays: '',
+          digitalGame: '',
+          digitalCurrencyType: '',
+          digitalQuantity: '',
+          digitalPlatformServer: '',
+          digitalDeliveryMethod: '',
           description: '',
           price: '',
           buyerEmail: ''
@@ -4862,9 +6542,21 @@
       });
     },
     closeCreateNegotiation() {
+      try {
+        const currentPhotos = Array.isArray(state.createNegForm?.productPhotos) ? state.createNegForm.productPhotos : [];
+        currentPhotos.forEach((p) => {
+          if (p?.preview) {
+            try { URL.revokeObjectURL(p.preview); } catch { /* ignore */ }
+          }
+        });
+      } catch {
+        // ignore
+      }
       setState({ 
         showCreateNegotiationModal: false,
         showCreateTerms: false,
+        showCreateFeeGuide: false,
+        createNegStep: 1,
         createNegForm: { 
           buyerFound: null, 
           buyerSearching: false, 
@@ -4872,21 +6564,269 @@
           photoError: null,
           title: '',
           category: '',
+          negotiationType: '',
+          sellerFeeMode: 'deduct',
+          deliveryDays: '',
+          digitalGame: '',
+          digitalCurrencyType: '',
+          digitalQuantity: '',
+          digitalPlatformServer: '',
+          digitalDeliveryMethod: '',
           description: '',
           price: '',
           buyerEmail: ''
         }
       });
     },
-    updateNegFormField({ element, dataset }) {
+
+    prevCreateNegStep() {
+      try {
+        const form = document.querySelector('form[data-action="createNegotiation"]');
+        if (form instanceof HTMLFormElement) {
+          persistCreateNegotiationDraftFromDOM(form);
+        }
+      } catch {
+        // ignore
+      }
+      const next = Math.max(1, (Number(state.createNegStep) || 1) - 1);
+      state.createNegStep = next;
+      updateCreateNegotiationStepUI();
+    },
+
+    goToCreateNegStep({ dataset }) {
+      const target = Math.max(1, Math.min(4, Number(dataset?.step) || 1));
+      const current = Math.max(1, Math.min(4, Number(state.createNegStep) || 1));
+      if (target > current) return;
+      try {
+        const form = document.querySelector('form[data-action="createNegotiation"]');
+        if (form instanceof HTMLFormElement) {
+          persistCreateNegotiationDraftFromDOM(form);
+        }
+      } catch {
+        // ignore
+      }
+      state.createNegStep = target;
+      updateCreateNegotiationStepUI();
+      // When returning to step 2, refresh dynamic sections from draft.
+      if (target === 2) {
+        updateCreateNegotiationModalDynamicUI();
+      }
+    },
+
+    nextCreateNegStep() {
+      const step = Math.max(1, Math.min(4, Number(state.createNegStep) || 1));
+
+      try {
+        const form = document.querySelector('form[data-action="createNegotiation"]');
+        if (form instanceof HTMLFormElement) {
+          persistCreateNegotiationDraftFromDOM(form);
+        }
+      } catch {
+        // ignore
+      }
+
+      // Step 1 validation: category, type, price, deadline (if digital)
+      if (step === 1) {
+        const form = document.querySelector('form[data-action="createNegotiation"]');
+        if (form instanceof HTMLFormElement) {
+          const categoryEl = form.querySelector('select[name="category"]');
+          const typeEl = form.querySelector('select[name="negotiation_type"]');
+          const priceEl = form.querySelector('input[name="price"]');
+          const daysEl = form.querySelector('select[name="delivery_days"]');
+
+          const category = categoryEl instanceof HTMLSelectElement ? String(categoryEl.value || '').trim() : '';
+          const type = typeEl instanceof HTMLSelectElement ? String(typeEl.value || '').trim() : '';
+          const price = priceEl instanceof HTMLInputElement ? parsePtBrMoney(priceEl.value || '0') : 0;
+
+          if (!type) {
+            notify({ type: 'error', message: 'Selecione o tipo de negociação.' });
+            return;
+          }
+          if (!category) {
+            notify({ type: 'error', message: 'Selecione uma categoria.' });
+            return;
+          }
+
+          const allowed = type === 'digital' ? DIGITAL_PRODUCT_CATEGORIES : (type === 'physical' ? PHYSICAL_PRODUCT_CATEGORIES : []);
+          if (allowed.length && !allowed.includes(category)) {
+            notify({ type: 'error', message: 'Categoria inválida para o tipo selecionado.' });
+            return;
+          }
+          if (!price || price < 50 || price > 100000) {
+            notify({ type: 'error', message: 'Informe um valor válido (R$ 50 a R$ 100.000).' });
+            return;
+          }
+          if (type === 'digital') {
+            const deadline = getCreateNegotiationDeadlineCopy();
+            if (deadline.kind === 'selectable_days') {
+              const days = daysEl instanceof HTMLSelectElement ? parseInt(daysEl.value || '', 10) : NaN;
+              const maxDays = deadline.maxDays;
+              if (!days || days < 1 || days > maxDays) {
+                notify({ type: 'error', message: `Selecione um prazo de 1 a ${maxDays} dias.` });
+                return;
+              }
+            }
+          }
+
+          // Sync state for dynamic UI pieces without full render.
+          state.createNegForm = {
+            ...state.createNegForm,
+            category,
+            negotiationType: type,
+            price: priceEl instanceof HTMLInputElement ? priceEl.value : state.createNegForm.price,
+            deliveryDays: daysEl instanceof HTMLSelectElement ? daysEl.value : '',
+          };
+          updateCreateNegotiationModalDynamicUI();
+        }
+      }
+
+      // Step 3 validation: buyer found
+      if (step === 3) {
+        if (!state.createNegForm?.buyerFound) {
+          notify({ type: 'error', message: 'Busque e confirme o comprador antes de continuar.' });
+          return;
+        }
+      }
+
+      const next = Math.min(4, step + 1);
+      state.createNegStep = next;
+      updateCreateNegotiationStepUI();
+
+      // Step 4: refresh fee summary and dynamic UI
+      if (next === 4) {
+        updateCreateFeeSummaryUI();
+        updateCreateNegotiationModalDynamicUI();
+      }
+    },
+    toggleCreateFeeGuide() {
+      if (state.showCreateNegotiationModal) {
+        state.showCreateFeeGuide = !state.showCreateFeeGuide;
+        updateCreateNegotiationModalDynamicUI();
+        return;
+      }
+      setState({ showCreateFeeGuide: !state.showCreateFeeGuide });
+    },
+    updateNegFormField({ element, dataset, event }) {
       const field = dataset?.field;
       if (!field || !element) return;
-      const value = element.value ?? '';
+      let value = element.value ?? '';
       const currentForm = state.createNegForm || {};
       const nextForm = { ...currentForm, [field]: value };
       if (field === 'buyerEmail') {
         nextForm.buyerFound = null;
       }
+
+      // Helper: keep both snake_case and camelCase keys in sync (draft vs controlled fields)
+      const syncSnake = (snake, camel, v) => {
+        nextForm[camel] = v;
+        nextForm[snake] = v;
+      };
+
+      // Price: format on blur (change event) as "1000,00".
+      if (field === 'price') {
+        const raw = String(value || '');
+        const parsed = parsePtBrMoney(raw);
+        const shouldFormat = !event || event.type === 'change';
+        if (shouldFormat && parsed > 0) {
+          value = formatPtBrMoney(parsed);
+          try { element.value = value; } catch { /* ignore */ }
+          nextForm.price = value;
+        }
+
+        state.createNegForm = nextForm;
+        updateCreateFeeSummaryUI();
+        return;
+      }
+
+      // Quantity (currency): format as pt-BR "1.000,00" while typing; store raw formatted string.
+      if (field === 'digitalQuantity') {
+        const digits = String(value || '').replace(/\D/g, '');
+        if (!digits) {
+          value = '';
+        } else {
+          const intCents = parseInt(digits, 10);
+          const units = Math.floor(intCents / 100);
+          const cents = String(intCents % 100).padStart(2, '0');
+          const withThousands = String(units).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+          value = `${withThousands},${cents}`;
+        }
+        try { element.value = value; } catch { /* ignore */ }
+        syncSnake('digital_quantity', 'digitalQuantity', value);
+        state.createNegForm = nextForm;
+        return;
+      }
+
+      // Negotiation type change: clear category if not allowed.
+      if (field === 'negotiationType') {
+        const nextType = String(value || '').trim();
+        const nextCategory = String(currentForm.category || '').trim();
+        const allowed = nextType === 'digital'
+          ? DIGITAL_PRODUCT_CATEGORIES
+          : (nextType === 'physical' ? PHYSICAL_PRODUCT_CATEGORIES : []);
+        if (nextCategory && allowed.length && !allowed.includes(nextCategory)) {
+          nextForm.category = '';
+        }
+
+        // Clear photos when leaving physical type.
+        const hadPhotos = Array.isArray(currentForm.productPhotos) && currentForm.productPhotos.length > 0;
+        if (hadPhotos && nextType !== 'physical') {
+          const currentPhotos = Array.isArray(currentForm.productPhotos) ? currentForm.productPhotos : [];
+          currentPhotos.forEach((p) => {
+            if (p?.preview) {
+              try { URL.revokeObjectURL(p.preview); } catch { /* ignore */ }
+            }
+          });
+          nextForm.productPhotos = [];
+          nextForm.photoError = null;
+        }
+        // Re-render the modal so Step 1 category select enables and options refresh.
+        setState({ createNegForm: nextForm });
+        return;
+      }
+
+      // Re-render only when we need conditional UI updates.
+      if (field === 'category') {
+        const prevCategory = String(currentForm.category || '').trim();
+        const nextCategory = String(value || '').trim();
+        const currentType = String(currentForm.negotiationType || getCreateNegotiationType() || '').trim();
+
+        // Reset delivery days when switching between categories with different max days.
+        const prevMax = categoryDeliveryDaysMax(prevCategory);
+        const nextMax = categoryDeliveryDaysMax(nextCategory);
+        if (prevMax !== nextMax) {
+          nextForm.deliveryDays = '';
+        }
+
+        // Clear photos when leaving a category/type where photos are allowed.
+        if (categoryAllowsImages(prevCategory, currentType) && !categoryAllowsImages(nextCategory, currentType)) {
+          const currentPhotos = Array.isArray(currentForm.productPhotos) ? currentForm.productPhotos : [];
+          currentPhotos.forEach((p) => {
+            if (p?.preview) {
+              try { URL.revokeObjectURL(p.preview); } catch { /* ignore */ }
+            }
+          });
+          nextForm.productPhotos = [];
+          nextForm.photoError = null;
+        }
+
+        // Hide fee guide when leaving currency category (optional).
+        if (prevCategory === CATEGORY_CURRENCY && nextCategory !== CATEGORY_CURRENCY) {
+          state.showCreateFeeGuide = false;
+        }
+
+        // Avoid full-app re-render; update only modal dynamic sections.
+        state.createNegForm = nextForm;
+        updateCreateNegotiationModalDynamicUI();
+        return;
+      }
+
+      if (['price', 'sellerFeeMode'].includes(field)) {
+        // Update state but avoid full re-render; update summary numbers via DOM.
+        state.createNegForm = nextForm;
+        updateCreateFeeSummaryUI();
+        return;
+      }
+
       state.createNegForm = nextForm;
     },
     async searchBuyer({ element }) {
@@ -4909,27 +6849,49 @@
       }
     },
     addProductPhotos({ element }) {
+      const category = String(state.createNegForm?.category || '').trim();
+      const negotiationType = String(state.createNegForm?.negotiationType || getCreateNegotiationType() || '').trim();
+      if (!categoryAllowsImages(category, negotiationType)) {
+        notify({ type: 'info', message: 'Imagens estão disponíveis apenas para produto físico, conta de jogo e item/skin.' });
+        if (element) element.value = '';
+        return;
+      }
       const files = element?.files;
       if (!files || !files.length) return;
       const currentPhotos = [...state.createNegForm.productPhotos];
-      const maxPhotos = 8;
+      const maxPhotos = categoryMaxAllowedImages(category, negotiationType) || 8;
       const maxSize = 5 * 1024 * 1024; // 5MB
       
       for (let i = 0; i < files.length && currentPhotos.length < maxPhotos; i++) {
         const file = files[i];
         if (!file.type.startsWith('image/')) {
-          setState({ createNegForm: { ...state.createNegForm, photoError: 'Apenas imagens são permitidas.' } });
+          state.createNegForm = { ...state.createNegForm, photoError: 'Apenas imagens são permitidas.' };
+          if (state.showCreateNegotiationModal) {
+            updateCreateNegotiationModalDynamicUI();
+          } else {
+            setState({ createNegForm: { ...state.createNegForm } });
+          }
           continue;
         }
         if (file.size > maxSize) {
-          setState({ createNegForm: { ...state.createNegForm, photoError: 'Imagem muito grande. Máximo 5MB.' } });
+          state.createNegForm = { ...state.createNegForm, photoError: 'Imagem muito grande. Máximo 5MB.' };
+          if (state.showCreateNegotiationModal) {
+            updateCreateNegotiationModalDynamicUI();
+          } else {
+            setState({ createNegForm: { ...state.createNegForm } });
+          }
           continue;
         }
         const preview = URL.createObjectURL(file);
         currentPhotos.push({ file, preview });
       }
-      
-      setState({ createNegForm: { ...state.createNegForm, productPhotos: currentPhotos, photoError: null } });
+
+      state.createNegForm = { ...state.createNegForm, productPhotos: currentPhotos, photoError: null };
+      if (state.showCreateNegotiationModal) {
+        updateCreateNegotiationModalDynamicUI();
+      } else {
+        setState({ createNegForm: { ...state.createNegForm } });
+      }
       element.value = '';
     },
     removeProductPhoto({ dataset }) {
@@ -4939,9 +6901,19 @@
         URL.revokeObjectURL(currentPhotos[index].preview);
       }
       currentPhotos.splice(index, 1);
-      setState({ createNegForm: { ...state.createNegForm, productPhotos: currentPhotos } });
+      state.createNegForm = { ...state.createNegForm, productPhotos: currentPhotos };
+      if (state.showCreateNegotiationModal) {
+        updateCreateNegotiationModalDynamicUI();
+      } else {
+        setState({ createNegForm: { ...state.createNegForm } });
+      }
     },
     async createNegotiation({ values, form }) {
+      if (Number(state.createNegStep) !== 4) {
+        notify({ type: 'info', message: 'Use “Continuar” para avançar até a confirmação.' });
+        return;
+      }
+
       // Validações
       if (!values.title?.trim()) {
         notify({ type: 'error', message: 'Informe o título do produto.' });
@@ -4951,11 +6923,146 @@
         notify({ type: 'error', message: 'Selecione uma categoria.' });
         return;
       }
-      if (!values.description?.trim()) {
-        notify({ type: 'error', message: 'Informe a descrição do produto.' });
-        return;
+
+      const category = String(values.category || '').trim();
+      const requiresImages = categoryRequiresImages(category);
+      const minImages = categoryMinImages(category);
+      const maxImages = categoryMaxImages(category);
+      const isCurrency = category === CATEGORY_CURRENCY;
+      const isService = category === CATEGORY_SERVICE;
+      const isServiceExchange = category === CATEGORY_SERVICE_EXCHANGE;
+      const isGameAccount = category === CATEGORY_GAME_ACCOUNT;
+      const isKeyDlc = category === CATEGORY_KEY_DLC;
+      const isSkin = category === CATEGORY_SKIN;
+      const isItem = category === CATEGORY_ITEM;
+      const negotiationType = getCreateNegotiationType();
+      const isDigitalType = negotiationType === 'digital';
+      const needsDescription = negotiationType === 'physical' || isSkin || isGameAccount;
+      const allowsPhotos = categoryAllowsImages(category, negotiationType);
+      const maxAllowedPhotos = categoryMaxAllowedImages(category, negotiationType) || 8;
+
+      const parsePtBrToIntUnits = (raw) => {
+        const digits = String(raw || '').replace(/\D/g, '');
+        if (!digits) return 0;
+        const cents = parseInt(digits, 10);
+        if (!Number.isFinite(cents) || cents <= 0) return 0;
+        return Math.floor(cents / 100);
+      };
+
+      if (isCurrency) {
+        if (!values.digital_game?.trim()) {
+          notify({ type: 'error', message: 'Informe o jogo.' });
+          return;
+        }
+        if (!values.digital_currency_type?.trim()) {
+          notify({ type: 'error', message: 'Informe o tipo de moeda.' });
+          return;
+        }
+        const qty = parsePtBrToIntUnits(values.digital_quantity);
+        if (!qty || qty < 1) {
+          notify({ type: 'error', message: 'Informe a quantidade da moeda.' });
+          return;
+        }
+        if (!values.digital_platform_server?.trim()) {
+          notify({ type: 'error', message: 'Informe a plataforma/servidor.' });
+          return;
+        }
+        if (!values.digital_delivery_method) {
+          notify({ type: 'error', message: 'Selecione o método de entrega.' });
+          return;
+        }
       }
-      const price = parseFloat(values.price);
+
+      if (isKeyDlc) {
+        const days = parseInt(values.delivery_days || '', 10);
+        if (!days || days < 1 || days > DIGITAL_KEY_DELIVERY_MAX_DAYS) {
+          notify({ type: 'error', message: `Selecione um prazo de entrega de 1 a ${DIGITAL_KEY_DELIVERY_MAX_DAYS} dias.` });
+          return;
+        }
+      }
+
+      if (isService) {
+        const days = parseInt(values.delivery_days || '', 10);
+        if (!days || days < 1 || days > DIGITAL_SERVICE_DELIVERY_MAX_DAYS) {
+          notify({ type: 'error', message: `Selecione um prazo de entrega de 1 a ${DIGITAL_SERVICE_DELIVERY_MAX_DAYS} dias.` });
+          return;
+        }
+      }
+
+      if (isServiceExchange) {
+        const days = parseInt(values.delivery_days || '', 10);
+        if (!days || days < 1 || days > DIGITAL_SERVICE_EXCHANGE_MAX_DAYS) {
+          notify({ type: 'error', message: `Selecione um prazo de entrega de 1 a ${DIGITAL_SERVICE_EXCHANGE_MAX_DAYS} dias.` });
+          return;
+        }
+      }
+
+      if (isSkin) {
+        if (!values.game_title?.trim()) {
+          notify({ type: 'error', message: 'Informe o nome do jogo.' });
+          return;
+        }
+      }
+
+      if (isItem) {
+        if (!values.game_title?.trim()) {
+          notify({ type: 'error', message: 'Informe o nome do jogo.' });
+          return;
+        }
+        if (!values.item_name?.trim()) {
+          notify({ type: 'error', message: 'Informe o nome do item.' });
+          return;
+        }
+        if (!values.item_general_info?.trim()) {
+          notify({ type: 'error', message: 'Informe as informações gerais.' });
+          return;
+        }
+      }
+
+      if (isGameAccount) {
+        if (!values.game_account_game?.trim()) {
+          notify({ type: 'error', message: 'Informe o jogo da conta.' });
+          return;
+        }
+        if (!values.game_account_platform?.trim()) {
+          notify({ type: 'error', message: 'Informe a plataforma da conta.' });
+          return;
+        }
+        if (!values.game_account_level?.trim()) {
+          notify({ type: 'error', message: 'Informe o nível da conta.' });
+          return;
+        }
+        if (!values.game_account_rank?.trim()) {
+          notify({ type: 'error', message: 'Informe o rank da conta.' });
+          return;
+        }
+        if (String(values.game_account_has_ban ?? '').trim() === '') {
+          notify({ type: 'error', message: 'Informe se a conta possui ban.' });
+          return;
+        }
+      }
+
+      if (needsDescription) {
+        if (!values.description?.trim()) {
+          notify({ type: 'error', message: 'Informe a descrição.' });
+          return;
+        }
+
+        const desc = String(values.description || '').trim();
+        if (negotiationType === 'physical') {
+          if (desc.length > 2000) {
+            notify({ type: 'error', message: 'A descrição deve ter no máximo 2000 caracteres.' });
+            return;
+          }
+        } else {
+          if (desc.length > 200) {
+            notify({ type: 'error', message: 'A descrição curta deve ter no máximo 200 caracteres.' });
+            return;
+          }
+        }
+      }
+
+      const price = parsePtBrMoney(values.price);
       if (!price || price < 50 || price > 100000) {
         notify({ type: 'error', message: 'O preço deve ser entre R$ 50,00 e R$ 100.000,00.' });
         return;
@@ -4964,14 +7071,24 @@
         notify({ type: 'error', message: 'Busque e confirme o comprador antes de criar.' });
         return;
       }
-      if (state.createNegForm.productPhotos.length === 0) {
-        notify({ type: 'error', message: 'Adicione pelo menos 1 foto do produto.' });
-        return;
+      if (requiresImages) {
+        const count = state.createNegForm.productPhotos.length;
+        if (count < minImages) {
+          notify({ type: 'error', message: `Adicione pelo menos ${minImages} imagem(ns).` });
+          return;
+        }
+        if (maxImages && count > maxImages) {
+          notify({ type: 'error', message: `Máximo de ${maxImages} imagens.` });
+          return;
+        }
       }
-      if (!state.showCreateTerms) {
-        setState({ showCreateTerms: true });
-        notify({ type: 'info', message: 'Leia e aceite os termos antes de finalizar.' });
-        return;
+
+      if (allowsPhotos) {
+        const count = state.createNegForm.productPhotos.length;
+        if (count > maxAllowedPhotos) {
+          notify({ type: 'error', message: `Máximo de ${maxAllowedPhotos} imagens.` });
+          return;
+        }
       }
       if (!values.terms_accepted) {
         notify({ type: 'error', message: 'Você deve aceitar os termos para continuar.' });
@@ -4982,30 +7099,179 @@
         // Criar FormData para enviar com fotos
         const formData = new FormData();
         formData.append('title', values.title.trim());
-        formData.append('category', values.category);
-        formData.append('description', values.description.trim());
+        formData.append('category', category);
+        if (needsDescription && values.description?.trim()) formData.append('description', values.description.trim());
         formData.append('price', price);
         formData.append('buyer_email', state.createNegForm.buyerFound.email);
         formData.append('terms_accepted', '1');
+
+        // Seller fee preference: deduct from payout vs pay separately via Pix
+        const feeMode = String(state.createNegForm?.sellerFeeMode || 'deduct');
+        formData.append('seller_fee_deduct_from_payout', feeMode === 'deduct' ? '1' : '0');
+
+        if (isCurrency) {
+          formData.append('digital_game', values.digital_game.trim());
+          formData.append('digital_currency_type', values.digital_currency_type.trim());
+          formData.append('digital_quantity', String(parsePtBrToIntUnits(values.digital_quantity)));
+          formData.append('digital_platform_server', values.digital_platform_server.trim());
+          formData.append('digital_delivery_method', values.digital_delivery_method);
+        }
+
+        if (isKeyDlc || isService || isServiceExchange) {
+          formData.append('delivery_days', String(parseInt(values.delivery_days || '0', 10) || 0));
+        }
+
+        if (isSkin || isItem) {
+          formData.append('game_title', values.game_title.trim());
+        }
+
+        if (isItem) {
+          formData.append('item_name', values.item_name.trim());
+          formData.append('item_general_info', values.item_general_info.trim());
+        }
+
+        if (isGameAccount) {
+          formData.append('game_account_game', values.game_account_game.trim());
+          formData.append('game_account_platform', values.game_account_platform.trim());
+          formData.append('game_account_level', values.game_account_level.trim());
+          formData.append('game_account_rank', values.game_account_rank.trim());
+          formData.append('game_account_has_ban', String(values.game_account_has_ban));
+          if (values.game_account_seller_notes?.trim()) {
+            formData.append('game_account_seller_notes', values.game_account_seller_notes.trim());
+          }
+        }
         
-        state.createNegForm.productPhotos.forEach((photo, idx) => {
-          formData.append(`photos[${idx}]`, photo.file);
-        });
+        if (allowsPhotos && state.createNegForm.productPhotos.length > 0) {
+          state.createNegForm.productPhotos.forEach((photo, idx) => {
+            formData.append(`photos[${idx}]`, photo.file);
+          });
+        }
 
         await apiCall('/intermediation', {
           method: 'POST',
           body: formData,
           isFormData: true
         });
+
+        try {
+          const currentPhotos = Array.isArray(state.createNegForm?.productPhotos) ? state.createNegForm.productPhotos : [];
+          currentPhotos.forEach((p) => {
+            if (p?.preview) {
+              try { URL.revokeObjectURL(p.preview); } catch { /* ignore */ }
+            }
+          });
+        } catch {
+          // ignore
+        }
         
         notify({ type: 'success', message: 'Negociação criada com sucesso!' });
         setState({ 
           showCreateNegotiationModal: false,
           showCreateTerms: false,
-          createNegForm: { buyerFound: null, buyerSearching: false, productPhotos: [], photoError: null }
+          showCreateFeeGuide: false,
+          createNegStep: 1,
+          createNegForm: {
+            buyerFound: null,
+            buyerSearching: false,
+            productPhotos: [],
+            photoError: null,
+            title: '',
+            category: '',
+            negotiationType: '',
+            sellerFeeMode: 'deduct',
+            deliveryDays: '',
+            digitalGame: '',
+            digitalCurrencyType: '',
+            digitalQuantity: '',
+            digitalPlatformServer: '',
+            digitalDeliveryMethod: '',
+            description: '',
+            price: '',
+            buyerEmail: ''
+          }
         });
         await loadNegotiations({ force: true });
       }, 'Criando negociação...');
+    },
+
+    async submitGameAccountChangeRequest({ values, dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      const requestText = String(values.game_account_buyer_change_request || '').trim();
+      if (requestText.length < 10) {
+        notify({ type: 'error', message: 'Detalhe melhor os dados (mínimo 10 caracteres).' });
+        return;
+      }
+
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/game-account/change-request`, {
+          method: 'POST',
+          body: { game_account_buyer_change_request: requestText }
+        });
+        notify({ type: 'success', message: 'Dados enviados com sucesso.' });
+        await loadNegotiation(id);
+        await loadNegotiations({ force: true });
+      }, 'Enviando dados...');
+    },
+
+    async submitGameAccountSellerInfo({ values, dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      const sellerInfo = String(values.game_account_seller_info || '').trim();
+      if (sellerInfo.length < 10) {
+        notify({ type: 'error', message: 'Detalhe melhor os dados (mínimo 10 caracteres).' });
+        return;
+      }
+
+      const deduct = Boolean(values.seller_fee_deduct_from_payout && values.seller_fee_deduct_from_payout !== '0' && values.seller_fee_deduct_from_payout !== 'false');
+
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/game-account/seller-info`, {
+          method: 'POST',
+          body: { game_account_seller_info: sellerInfo, seller_fee_deduct_from_payout: deduct }
+        });
+        notify({ type: 'success', message: 'Dados enviados com sucesso.' });
+        await loadNegotiation(id);
+        await loadNegotiations({ force: true });
+      }, 'Enviando dados...');
+    },
+
+    async submitDigitalDeliveryInfo({ values, dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      const info = String(values.digital_delivery_info || '').trim();
+      if (info.length < 5) {
+        notify({ type: 'error', message: 'Detalhe melhor os dados (mínimo 5 caracteres).' });
+        return;
+      }
+
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/digital/seller-info`, {
+          method: 'POST',
+          body: { digital_delivery_info: info }
+        });
+        notify({ type: 'success', message: 'Dados enviados com sucesso.' });
+        await loadNegotiation(id);
+        await loadNegotiations({ force: true });
+      }, 'Enviando dados...');
+    },
+
+    async adminMarkDigitalDelivered({ dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      if (!isAdmin()) {
+        notify({ type: 'error', message: 'Apenas a intermediadora pode marcar.' });
+        return;
+      }
+      if (!confirm('Marcar como entrega digital concluída?')) return;
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/digital/delivered`, { method: 'POST', body: {} });
+        notify({ type: 'success', message: 'Entrega digital marcada como concluída.' });
+        await Promise.all([loadNegotiation(id), loadNegotiations({ force: true })]);
+        if (isAdmin()) {
+          await loadAdminSnapshot({ force: true });
+        }
+      }, 'Atualizando status...');
     },
     openNegotiation({ dataset }) {
       const id = Number(dataset?.id);
@@ -5020,7 +7286,11 @@
     },
     selectPendingFilter({ element }) {
       if (!element) return;
-      loadPendingNotices({ filter: element.value, force: true });
+      const nextFilter = element.value;
+      // Alguns navegadores/handlers podem disparar evento ao apenas abrir o select.
+      // Não recarrega se o filtro não mudou.
+      if (!nextFilter || nextFilter === state.pendingFilter) return;
+      loadPendingNotices({ filter: nextFilter, force: true });
     },
     adminSelectTab({ dataset }) {
       const tab = dataset?.tab;
@@ -5029,6 +7299,20 @@
       if (tab === 'negotiations' && !state.adminNegotiations.length) {
         loadAdminSnapshot({ force: true });
       }
+    },
+    adminOpenUserDetails({ dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      const users = Array.isArray(state.adminUsers) ? state.adminUsers : [];
+      const user = users.find((u) => Number(u?.id) === id);
+      if (!user) {
+        notify({ type: 'error', message: 'Usuário não encontrado na lista.' });
+        return;
+      }
+      setState({ adminUserDetails: user, showAdminUserDetailsModal: true });
+    },
+    closeAdminUserDetails() {
+      setState({ showAdminUserDetailsModal: false, adminUserDetails: null });
     },
     adminSelectNegotiationsView({ dataset }) {
       const view = dataset?.view;
@@ -5057,6 +7341,9 @@
     },
     adminRejectNegotiation({ dataset }) {
       adminReject(dataset?.id);
+    },
+    adminDeleteNegotiation({ dataset }) {
+      adminDeleteNegotiation(dataset?.id);
     },
     adminOpenNegotiation({ dataset }) {
       openNegotiationDetail(dataset?.id);
@@ -5110,6 +7397,38 @@
       await withLoader(async () => {
         await apiCall(`/intermediation/${id}/confirm-payment`, { method: 'POST', body: {} });
         notify({ type: 'success', message: 'Pagamento registrado! Aguardando confirmação.' });
+        await loadNegotiation(id);
+        await loadNegotiations({ force: true });
+      }, 'Confirmando pagamento...');
+    },
+
+    openConfirmPaymentProof({ dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      setState({ confirmPaymentProofForId: id });
+    },
+
+    cancelConfirmPaymentProof() {
+      setState({ confirmPaymentProofForId: null });
+    },
+
+    async confirmPaymentWithProof({ dataset, form }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      if (!confirm('Confirma que realizou o pagamento via Pix?')) return;
+
+      const formEl = form;
+      const fileInput = formEl instanceof HTMLFormElement ? formEl.querySelector('input[name="payment_proof"]') : null;
+      const file = fileInput instanceof HTMLInputElement ? (fileInput.files?.[0] || null) : null;
+
+      await withLoader(async () => {
+        const formData = new FormData();
+        if (file) {
+          formData.append('payment_proof', file);
+        }
+        await apiCall(`/intermediation/${id}/confirm-payment`, { method: 'POST', body: formData, isFormData: true });
+        notify({ type: 'success', message: 'Pagamento registrado! Aguardando confirmação.' });
+        setState({ confirmPaymentProofForId: null });
         await loadNegotiation(id);
         await loadNegotiations({ force: true });
       }, 'Confirmando pagamento...');
@@ -5243,7 +7562,7 @@
     async adminDeleteUser({ dataset }) {
       const userId = dataset?.id;
       if (!userId) return;
-      if (!confirm('Remover este usuário?')) return;
+      if (!confirm('Remover este usuário? (Apenas se todas as negociações estiverem ENTREGUE)')) return;
       await withLoader(async () => {
         await apiCall(`/admin/users/${userId}`, { method: 'DELETE' });
         notify({ type: 'success', message: 'Usuário removido.' });

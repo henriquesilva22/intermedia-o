@@ -125,8 +125,11 @@
     </style>
 </head>
 <body class="bg-gray-50 font-sans text-gray-800 antialiased">
-    <noscript>Habilite o JavaScript para utilizar o sistema de intermediação.</noscript>
-    <div id="app"></div>
+    @include('partials.interactive-bg')
+    <div style="position:relative; z-index:1;">
+        <noscript>Habilite o JavaScript para utilizar o sistema de intermediação.</noscript>
+        <div id="app"></div>
+    </div>
     <script src="{{ asset('app/sp-cities.js') }}" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" defer></script>
     <script src="{{ asset('app/app.js') }}" defer></script>
