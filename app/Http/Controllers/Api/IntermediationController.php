@@ -5,9 +5,12 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Negotiation;
 use App\Services\Payments\MercadoPagoService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -48,6 +51,51 @@ class IntermediationController extends Controller
             self::SERVICE_CATEGORY,
             self::SERVICE_EXCHANGE_CATEGORY,
         ], true);
+    }
+
+    private function isCurrencyCategory(?string $category): bool
+    {
+        return trim((string) $category) === self::CURRENCY_CATEGORY;
+    }
+
+    private function formatPtBrNumber(mixed $value, int $decimals = 2): string
+    {
+        $number = is_numeric($value) ? (float) $value : 0.0;
+        return number_format($number, $decimals, ',', '.');
+    }
+
+    private function normalizeTimeOptions(mixed $value): array
+    {
+        if ($value === null || $value === '') {
+            return [];
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                $value = $decoded;
+            }
+        }
+
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $options = [];
+        foreach ($value as $item) {
+            $text = trim((string) $item);
+            if ($text === '') {
+                continue;
+            }
+            $options[] = $text;
+        }
+
+        $options = array_values(array_unique($options));
+        if (count($options) > 5) {
+            $options = array_slice($options, 0, 5);
+        }
+
+        return $options;
     }
 
     private function nextStatusAfterPayment(Negotiation $negotiation): string
@@ -171,6 +219,9 @@ class IntermediationController extends Controller
             'digital_quantity' => ['nullable', 'integer', 'min:1'],
             'digital_platform_server' => ['nullable', 'string', 'max:120'],
             'digital_delivery_method' => ['nullable', 'string', 'in:trade,mail,gift'],
+            'gold_seller_time_options' => ['nullable', 'array', 'max:5'],
+            'gold_seller_time_options.*' => ['string', 'max:120'],
+            'gold_seller_delivery_method' => ['nullable', 'string', 'in:trade,mail,gift'],
             'battle_pass_game' => ['nullable', 'string', 'max:100'],
             'battle_pass_platform' => ['nullable', 'string', 'max:60'],
             'battle_pass_type' => ['nullable', 'string', 'max:120'],
@@ -287,6 +338,24 @@ class IntermediationController extends Controller
                 if (! in_array($method, ['trade', 'mail', 'gift'], true)) {
                     $validator->errors()->add('digital_delivery_method', 'Selecione o método de entrega.');
                 }
+
+                $goldTimes = $request->input('gold_seller_time_options');
+                if (! is_array($goldTimes) || count($goldTimes) < 1) {
+                    $validator->errors()->add('gold_seller_time_options', 'Informe pelo menos 1 horário disponível (máx 5).');
+                } elseif (count($goldTimes) > 5) {
+                    $validator->errors()->add('gold_seller_time_options', 'Máximo de 5 horários.');
+                } else {
+                    foreach ($goldTimes as $idx => $item) {
+                        if (trim((string) $item) === '') {
+                            $validator->errors()->add("gold_seller_time_options.$idx", 'Horário inválido.');
+                        }
+                    }
+                }
+
+                $goldMethod = (string) $request->input('gold_seller_delivery_method');
+                if (! in_array($goldMethod, ['trade', 'mail', 'gift'], true)) {
+                    $validator->errors()->add('gold_seller_delivery_method', 'Selecione o método de entrega do vendedor.');
+                }
             }
 
             if ($isBattlePass) {
@@ -368,6 +437,22 @@ class IntermediationController extends Controller
             $description = null;
         }
 
+        $goldSellerTimeOptions = null;
+        $goldSellerDeliveryMethod = null;
+        $goldSellerAvailabilityText = null;
+        $goldSellerSubmittedAt = null;
+        if ($this->isCurrencyCategory($category)) {
+            $goldSellerTimeOptions = $this->normalizeTimeOptions($data['gold_seller_time_options'] ?? []);
+            $goldSellerDeliveryMethod = array_key_exists('gold_seller_delivery_method', $data)
+                ? (string) $data['gold_seller_delivery_method']
+                : null;
+
+            if ($goldSellerTimeOptions) {
+                $goldSellerAvailabilityText = implode("\n", $goldSellerTimeOptions);
+                $goldSellerSubmittedAt = now();
+            }
+        }
+
         $negotiation = Negotiation::create([
             'seller_id' => $user->id,
             'buyer_id' => $buyerId,
@@ -384,6 +469,10 @@ class IntermediationController extends Controller
             'digital_quantity' => $data['digital_quantity'] ?? null,
             'digital_platform_server' => $data['digital_platform_server'] ?? null,
             'digital_delivery_method' => $data['digital_delivery_method'] ?? null,
+            'gold_seller_time_options' => $goldSellerTimeOptions,
+            'gold_seller_delivery_method' => $goldSellerDeliveryMethod,
+            'gold_seller_availability' => $goldSellerAvailabilityText,
+            'gold_seller_info_submitted_at' => $goldSellerSubmittedAt,
             'battle_pass_game' => $data['battle_pass_game'] ?? null,
             'battle_pass_platform' => $data['battle_pass_platform'] ?? null,
             'battle_pass_type' => $data['battle_pass_type'] ?? null,
@@ -512,7 +601,67 @@ class IntermediationController extends Controller
             Storage::disk('public')->delete($paths);
         }
 
-        $negotiation->delete();
+        // Em MySQL, negociações podem ter tabelas-filhas (ex: payments) com FK
+        // restringindo o delete. Como esse endpoint é apenas para teste/local,
+        // limpamos dependências automaticamente antes de remover a negociação.
+
+        // Fallback explícito (mais robusto, mesmo sem acesso a information_schema).
+        foreach ([
+            ['payments', 'negotiation_id'],
+            ['shipments', 'negotiation_id'],
+            ['test_reports', 'negotiation_id'],
+        ] as [$table, $column]) {
+            try {
+                if (Schema::hasTable($table) && Schema::hasColumn($table, $column)) {
+                    DB::table($table)->where($column, $negotiation->id)->delete();
+                }
+            } catch (\Throwable $exception) {
+                Log::warning('adminDestroy: failed to cleanup known child table', [
+                    'negotiation_id' => $negotiation->id,
+                    'table' => $table,
+                    'column' => $column,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        // Descoberta dinâmica (cobre outras tabelas que referenciem negotiations).
+        try {
+            $references = DB::select(
+                "select TABLE_NAME, COLUMN_NAME
+                 from information_schema.KEY_COLUMN_USAGE
+                 where REFERENCED_TABLE_SCHEMA = database()
+                   and REFERENCED_TABLE_NAME = 'negotiations'"
+            );
+
+            foreach ($references as $ref) {
+                $table = (string) ($ref->TABLE_NAME ?? '');
+                $column = (string) ($ref->COLUMN_NAME ?? '');
+                if ($table === '' || $column === '') {
+                    continue;
+                }
+
+                if (! Schema::hasTable($table) || ! Schema::hasColumn($table, $column)) {
+                    continue;
+                }
+
+                DB::table($table)->where($column, $negotiation->id)->delete();
+            }
+        } catch (\Throwable $exception) {
+            Log::warning('adminDestroy: failed to cleanup child rows via information_schema', [
+                'negotiation_id' => $negotiation->id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+
+        try {
+            $negotiation->delete();
+        } catch (QueryException $exception) {
+            return response()->json([
+                'message' => 'Não foi possível remover a negociação por dependências no banco (FK).',
+                'error' => $exception->getMessage(),
+            ], 409);
+        }
 
         return response()->json(['success' => true]);
     }
@@ -693,22 +842,49 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Apenas compradores podem aceitar uma negociação.'], 403);
         }
 
+        $goldBuyerUpdates = [];
+        if ($this->isCurrencyCategory($negotiation->category)) {
+            $buyerData = Validator::make($request->all(), [
+                'gold_buyer_character_name' => ['required', 'string', 'max:120'],
+                'gold_buyer_server' => ['required', 'string', 'max:120'],
+                'gold_buyer_faction' => ['required', 'string', 'max:60'],
+                'gold_buyer_time_options' => ['required', 'array', 'min:1', 'max:5'],
+                'gold_buyer_time_options.*' => ['string', 'max:120'],
+                'gold_buyer_notes' => ['nullable', 'string', 'max:2000'],
+            ])->validate();
+
+            $timeOptions = $this->normalizeTimeOptions($buyerData['gold_buyer_time_options'] ?? []);
+            if (! $timeOptions) {
+                return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 5).'], 422);
+            }
+
+            $goldBuyerUpdates = [
+                'gold_buyer_character_name' => (string) $buyerData['gold_buyer_character_name'],
+                'gold_buyer_server' => (string) $buyerData['gold_buyer_server'],
+                'gold_buyer_faction' => (string) $buyerData['gold_buyer_faction'],
+                'gold_buyer_time_options' => $timeOptions,
+                'gold_buyer_availability' => implode("\n", $timeOptions),
+                'gold_buyer_notes' => array_key_exists('gold_buyer_notes', $buyerData) ? (string) $buyerData['gold_buyer_notes'] : null,
+                'gold_buyer_info_submitted_at' => now(),
+            ];
+        }
+
         // If no buyer yet, current user becomes buyer by accepting
         if (! $negotiation->buyer_id) {
-            $negotiation->update([
+            $negotiation->update(array_merge([
                 'buyer_id' => $user->id,
                 'status' => 'awaiting_admin_approval',
                 'accepted_at' => now(),
-            ]);
+            ], $goldBuyerUpdates));
             return response()->json(['success' => true]);
         }
 
         // Buyer accepts
         if ($negotiation->isBuyer($user)) {
-            $negotiation->update([
+            $negotiation->update(array_merge([
                 'status' => 'awaiting_admin_approval',
                 'accepted_at' => now(),
-            ]);
+            ], $goldBuyerUpdates));
             return response()->json(['success' => true]);
         }
 
@@ -1091,6 +1267,277 @@ class IntermediationController extends Controller
             'digital_delivery_info_sent_at' => now(),
             'digital_delivery_info_viewed_by_buyer_at' => null,
         ]);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Buyer submits gold delivery details (character/server/faction + availability).
+     */
+    public function submitGoldBuyerInfo(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $negotiation = Negotiation::find($id);
+
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $this->isCurrencyCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+        }
+
+        if ($negotiation->buyer_id !== $user->id) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        if ($negotiation->status !== 'waiting_digital_delivery') {
+            return response()->json(['message' => 'Dados da entrega disponíveis apenas após o pagamento confirmado.'], 422);
+        }
+
+        $data = Validator::make($request->all(), [
+            'gold_buyer_character_name' => ['required', 'string', 'max:120'],
+            'gold_buyer_server' => ['required', 'string', 'max:120'],
+            'gold_buyer_faction' => ['required', 'string', 'max:60'],
+            'gold_buyer_time_options' => ['required', 'array', 'min:1', 'max:5'],
+            'gold_buyer_time_options.*' => ['string', 'max:120'],
+            'gold_buyer_notes' => ['nullable', 'string', 'max:2000'],
+        ])->validate();
+
+        $timeOptions = $this->normalizeTimeOptions($data['gold_buyer_time_options'] ?? []);
+        if (! $timeOptions) {
+            return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 5).'], 422);
+        }
+
+        $negotiation->update([
+            'gold_buyer_character_name' => (string) $data['gold_buyer_character_name'],
+            'gold_buyer_server' => (string) $data['gold_buyer_server'],
+            'gold_buyer_faction' => (string) $data['gold_buyer_faction'],
+            'gold_buyer_time_options' => $timeOptions,
+            'gold_buyer_availability' => implode("\n", $timeOptions),
+            'gold_buyer_notes' => array_key_exists('gold_buyer_notes', $data) ? (string) $data['gold_buyer_notes'] : null,
+            'gold_buyer_info_submitted_at' => now(),
+        ]);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Seller submits gold delivery schedule + method.
+     */
+    public function submitGoldSellerInfo(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $negotiation = Negotiation::find($id);
+
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $this->isCurrencyCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+        }
+
+        if ($negotiation->seller_id !== $user->id) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        if ($negotiation->status !== 'waiting_digital_delivery') {
+            return response()->json(['message' => 'Envio disponível apenas após o pagamento confirmado.'], 422);
+        }
+
+        $data = Validator::make($request->all(), [
+            'gold_seller_time_options' => ['required', 'array', 'min:1', 'max:5'],
+            'gold_seller_time_options.*' => ['string', 'max:120'],
+            'gold_seller_delivery_method' => ['required', 'string', 'in:trade,mail,gift'],
+        ])->validate();
+
+        $timeOptions = $this->normalizeTimeOptions($data['gold_seller_time_options'] ?? []);
+        if (! $timeOptions) {
+            return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 5).'], 422);
+        }
+
+        $negotiation->update([
+            'gold_seller_time_options' => $timeOptions,
+            'gold_seller_availability' => implode("\n", $timeOptions),
+            'gold_seller_delivery_method' => (string) $data['gold_seller_delivery_method'],
+            'gold_seller_info_submitted_at' => now(),
+            // Seller changed schedule/method => buyer must confirm again.
+            'gold_schedule_confirmed_at' => null,
+            'gold_buyer_selected_time' => null,
+        ]);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Buyer confirms the seller schedule for gold delivery.
+     */
+    public function confirmGoldSchedule(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $negotiation = Negotiation::find($id);
+
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $this->isCurrencyCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+        }
+
+        if ($negotiation->buyer_id !== $user->id) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        if (! in_array($negotiation->status, ['awaiting_admin_approval', 'waiting_digital_delivery'], true)) {
+            return response()->json(['message' => 'Confirmação disponível apenas após aceitar a negociação.'], 422);
+        }
+
+        if (! $negotiation->gold_seller_time_options || ! $negotiation->gold_seller_delivery_method) {
+            return response()->json(['message' => 'O vendedor ainda não informou horário/método de entrega.'], 422);
+        }
+
+        $data = Validator::make($request->all(), [
+            'gold_buyer_selected_time' => ['required', 'string', 'max:120'],
+        ])->validate();
+
+        $selected = trim((string) $data['gold_buyer_selected_time']);
+        $sellerOptions = $this->normalizeTimeOptions($negotiation->gold_seller_time_options);
+        if ($sellerOptions && ! in_array($selected, $sellerOptions, true)) {
+            return response()->json(['message' => 'Selecione um horário enviado pelo vendedor.'], 422);
+        }
+
+        $negotiation->update([
+            'gold_schedule_confirmed_at' => now(),
+            'gold_buyer_selected_time' => $selected,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'notice' => 'Horário confirmado. Ambos devem aguardar até 10 minutos para o outro entrar.',
+        ]);
+    }
+
+    /**
+     * Buyer requests a new schedule (if cannot attend).
+     */
+    public function submitGoldBuyerReschedule(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $negotiation = Negotiation::find($id);
+
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $this->isCurrencyCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+        }
+
+        if ($negotiation->buyer_id !== $user->id) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        if ($negotiation->status !== 'waiting_digital_delivery') {
+            return response()->json(['message' => 'Solicitação disponível apenas após o pagamento confirmado.'], 422);
+        }
+
+        $data = Validator::make($request->all(), [
+            'gold_buyer_reschedule_request' => ['required', 'string', 'min:10', 'max:2000'],
+        ])->validate();
+
+        $negotiation->update([
+            'gold_buyer_reschedule_request' => (string) $data['gold_buyer_reschedule_request'],
+            'gold_buyer_reschedule_requested_at' => now(),
+            'gold_schedule_confirmed_at' => null,
+            'gold_buyer_selected_time' => null,
+        ]);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Buyer confirms they received the gold in-game.
+     */
+    public function confirmGoldBuyerReceived(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $negotiation = Negotiation::find($id);
+
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $this->isCurrencyCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+        }
+
+        if ($negotiation->buyer_id !== $user->id) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        if ($negotiation->status !== 'waiting_digital_delivery') {
+            return response()->json(['message' => 'Confirmação disponível apenas após o pagamento confirmado.'], 422);
+        }
+
+        if (! $negotiation->gold_schedule_confirmed_at) {
+            return response()->json(['message' => 'Confirme o horário antes de confirmar o recebimento.'], 422);
+        }
+
+        $negotiation->update([
+            'gold_buyer_received_confirmed_at' => now(),
+            'buyer_confirmed_at' => now(),
+        ]);
+
+        if ($negotiation->gold_seller_sent_confirmed_at) {
+            $negotiation->update([
+                'status' => 'delivered',
+                'delivered_at' => $negotiation->delivered_at ?? now(),
+            ]);
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Seller confirms they delivered the gold in-game.
+     */
+    public function confirmGoldSellerSent(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $negotiation = Negotiation::find($id);
+
+        if (! $negotiation) {
+            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        if (! $this->isCurrencyCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+        }
+
+        if ($negotiation->seller_id !== $user->id) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        if ($negotiation->status !== 'waiting_digital_delivery') {
+            return response()->json(['message' => 'Confirmação disponível apenas após o pagamento confirmado.'], 422);
+        }
+
+        if (! $negotiation->gold_schedule_confirmed_at) {
+            return response()->json(['message' => 'Confirme o horário antes de confirmar o envio.'], 422);
+        }
+
+        $negotiation->update([
+            'gold_seller_sent_confirmed_at' => now(),
+        ]);
+
+        if ($negotiation->gold_buyer_received_confirmed_at) {
+            $negotiation->update([
+                'status' => 'delivered',
+                'delivered_at' => $negotiation->delivered_at ?? now(),
+            ]);
+        }
 
         return response()->json(['success' => true]);
     }
@@ -1491,6 +1938,7 @@ class IntermediationController extends Controller
 
         $isGameAccount = $this->isGameAccountCategory($negotiation->category);
         $isDigitalDelivery = $this->isDigitalDeliveryCategory($negotiation->category);
+        $isCurrency = $this->isCurrencyCategory($negotiation->category);
 
         $status = (string) $negotiation->status;
         $digitalViewAllowedByStatus = in_array($status, ['waiting_digital_delivery', 'approved', 'delivered'], true);
@@ -1535,6 +1983,33 @@ class IntermediationController extends Controller
             }
         }
 
+        $goldDelivery = null;
+        if ($isCurrency && ($isAdminOrInspector || $isBuyer || $isSeller)) {
+            $goldDelivery = [
+                'buyer' => [
+                    'character_name' => $negotiation->gold_buyer_character_name,
+                    'server' => $negotiation->gold_buyer_server,
+                    'faction' => $negotiation->gold_buyer_faction,
+                    'time_options' => $this->normalizeTimeOptions($negotiation->gold_buyer_time_options),
+                    'availability' => $negotiation->gold_buyer_availability,
+                    'notes' => $negotiation->gold_buyer_notes,
+                    'submitted_at' => $this->toIso8601StringOrNull($negotiation->gold_buyer_info_submitted_at),
+                ],
+                'seller' => [
+                    'time_options' => $this->normalizeTimeOptions($negotiation->gold_seller_time_options),
+                    'availability' => $negotiation->gold_seller_availability,
+                    'delivery_method' => $negotiation->gold_seller_delivery_method,
+                    'submitted_at' => $this->toIso8601StringOrNull($negotiation->gold_seller_info_submitted_at),
+                ],
+                'buyer_selected_time' => $negotiation->gold_buyer_selected_time,
+                'schedule_confirmed_at' => $this->toIso8601StringOrNull($negotiation->gold_schedule_confirmed_at),
+                'buyer_received_confirmed_at' => $this->toIso8601StringOrNull($negotiation->gold_buyer_received_confirmed_at),
+                'seller_sent_confirmed_at' => $this->toIso8601StringOrNull($negotiation->gold_seller_sent_confirmed_at),
+                'buyer_reschedule_request' => $negotiation->gold_buyer_reschedule_request,
+                'buyer_reschedule_requested_at' => $this->toIso8601StringOrNull($negotiation->gold_buyer_reschedule_requested_at),
+            ];
+        }
+
         return [
             'id' => $negotiation->id,
             'title' => $title,
@@ -1545,6 +2020,7 @@ class IntermediationController extends Controller
             'item_name' => $negotiation->item_name,
             'item_general_info' => $negotiation->item_general_info,
             'digital_quantity' => $negotiation->digital_quantity,
+            'digital_quantity_formatted' => $this->formatPtBrNumber($negotiation->digital_quantity, 2),
             'digital_game' => $negotiation->digital_game,
             'digital_currency_type' => $negotiation->digital_currency_type,
             'digital_platform_server' => $negotiation->digital_platform_server,
@@ -1563,6 +2039,7 @@ class IntermediationController extends Controller
                 'has_ban' => $negotiation->game_account_has_ban,
             ] : null,
             'price' => $price,
+            'price_formatted' => $this->formatPtBrNumber($price, 2),
             'status' => $negotiation->status,
             'seller_fee_deduct_from_payout' => $sellerFeeDeductFromPayout,
             'game_account' => $isGameAccount ? [
@@ -1577,6 +2054,7 @@ class IntermediationController extends Controller
                 'seller_info_sent_at' => $digitalDeliveryInfoSentAt,
                 'seller_info_viewed_by_buyer_at' => $digitalDeliveryInfoViewedByBuyerAt,
             ] : null,
+            'gold_delivery' => $goldDelivery,
             'seller' => $negotiation->seller ? [
                 'id' => $negotiation->seller->id,
                 'name' => $negotiation->seller->name,

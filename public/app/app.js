@@ -217,6 +217,30 @@
   const DIGITAL_SERVICE_DELIVERY_MAX_DAYS = 25;
   const DIGITAL_SERVICE_EXCHANGE_MAX_DAYS = 3;
 
+  function toTitleCasePtBr(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/(^|[\s\-\/])([A-Za-zÀ-ÖØ-öø-ÿ])/g, (_, sep, ch) => `${sep}${String(ch).toLocaleUpperCase('pt-BR')}`);
+  }
+
+  function normalizeTimeOptions(raw) {
+    const text = Array.isArray(raw) ? raw.join('\n') : String(raw || '');
+    const items = text
+      .split(/\r?\n/)
+      .map((line) => String(line || '').trim())
+      .filter(Boolean);
+    const seen = new Set();
+    const unique = [];
+    for (const item of items) {
+      const key = item.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(item);
+      if (unique.length >= 5) break;
+    }
+    return unique;
+  }
+
   function isDigitalDeliveryCategory(category) {
     const c = String(category || '').trim();
     return c === CATEGORY_GAME_ACCOUNT || c === CATEGORY_CURRENCY || c === CATEGORY_KEY_DLC || c === CATEGORY_SERVICE || c === CATEGORY_SERVICE_EXCHANGE;
@@ -367,6 +391,7 @@
         'digital_quantity',
         'digital_platform_server',
         'digital_delivery_method',
+        'gold_seller_time_options',
         'description'
       ];
 
@@ -378,6 +403,19 @@
         if (value !== undefined) {
           draft[name] = value;
         }
+      }
+
+      // Seller time options (up to 5) - stored as array
+      try {
+        const times = Array.from(form.querySelectorAll('[name="gold_seller_time_options[]"]'))
+          .map((el) => (el instanceof HTMLInputElement ? String(el.value || '').trim() : ''))
+          .filter(Boolean)
+          .slice(0, 5);
+        if (times.length) {
+          draft.gold_seller_time_options = times;
+        }
+      } catch {
+        // ignore
       }
 
       state.createNegForm = { ...state.createNegForm, ...draft };
@@ -424,11 +462,26 @@
       const snakeToCamel = (value) => String(value || '').replace(/_([a-z])/g, (_, c) => String(c || '').toUpperCase());
       const getDraft = (name) => {
         const direct = draft?.[name];
+        if (Array.isArray(direct)) return direct.join('\n');
         if (typeof direct === 'string' || typeof direct === 'number') return String(direct);
         const camel = snakeToCamel(name);
         const alt = draft?.[camel];
+        if (Array.isArray(alt)) return alt.join('\n');
         if (typeof alt === 'string' || typeof alt === 'number') return String(alt);
         return '';
+      };
+
+      const getDraftArray = (name) => {
+        const direct = draft?.[name];
+        if (Array.isArray(direct)) {
+          return direct.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 5);
+        }
+        const text = getDraft(name);
+        return String(text || '')
+          .split(/\r?\n/)
+          .map((v) => String(v || '').trim())
+          .filter(Boolean)
+          .slice(0, 5);
       };
 
       const photosHtml = productPhotos.map((photo, idx) => `
@@ -551,6 +604,7 @@
       }
 
       if (currency instanceof HTMLElement) {
+        const sellerTimesDraft = getDraftArray('gold_seller_time_options');
         currency.innerHTML = showCurrencyFields ? `
           <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
             <div class="flex items-center gap-2 text-gray-900 font-semibold">
@@ -576,8 +630,8 @@
                 <p class="text-xs text-gray-500 mt-1">Digite apenas números. Formato: 1.000,00</p>
               </div>
               <div>
-                <label class="block text-sm text-gray-700 font-medium mb-2">Plataforma / Servidor *</label>
-                <input type="text" name="digital_platform_server" required value="${escapeAttr(getDraft('digital_platform_server'))}" placeholder="Ex: PC - Azralon" data-action="updateNegFormField" data-field="digitalPlatformServer" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                <label class="block text-sm text-gray-700 font-medium mb-2">Servidor *</label>
+                <input type="text" name="digital_platform_server" required value="${escapeAttr(getDraft('digital_platform_server'))}" placeholder="Ex: Azralon" data-action="updateNegFormField" data-field="digitalPlatformServer" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
               </div>
             </div>
 
@@ -590,6 +644,16 @@
                 <option value="gift" ${getDraft('digital_delivery_method') === 'gift' ? 'selected' : ''}>Presente (gift)</option>
               </select>
               <p class="text-xs text-gray-500 mt-1">Escolha como o Gold/Coins será entregue dentro do jogo.</p>
+            </div>
+
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Horários disponíveis para entrega (até 5) *</label>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                ${Array.from({ length: 5 }).map((_, idx) => `
+                  <input type="time" name="gold_seller_time_options[]" value="${escapeAttr(sellerTimesDraft[idx] || '')}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                `).join('')}
+              </div>
+              <p class="text-xs text-gray-500 mt-1">O comprador escolherá 1 opção clicando no horário preferido.</p>
             </div>
           </div>
         ` : '';
@@ -2170,7 +2234,7 @@
         </div>
         <ul class="text-sm text-gray-700 space-y-2 text-left">
           <li><strong>Prazo:</strong> o vendedor deve entregar dentro do prazo informado (quando aplicável) após a confirmação do pagamento/aprovação.</li>
-          <li><strong>Entrega dentro do jogo:</strong> para moedas/gold, a entrega deve seguir o método selecionado e o servidor/plataforma informados.</li>
+          <li><strong>Entrega dentro do jogo:</strong> para moedas/gold, a entrega deve seguir o método selecionado e o servidor informado.</li>
           <li><strong>Dados sensíveis:</strong> não inclua login/senha em campos públicos; use apenas os canais apropriados quando solicitado pela plataforma.</li>
         </ul>
       </div>
@@ -2251,7 +2315,7 @@
             <section class="space-y-5 ${step === 2 ? '' : 'hidden'}" data-create-step="2">
               <div>
                 <label class="block text-sm text-gray-700 font-medium mb-2">Título do produto *</label>
-                <input type="text" name="title" required maxlength="255" placeholder="Ex: Conta nível 80 com 3 skins" data-focus-key="create-neg-title" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                <input type="text" name="title" required maxlength="255" placeholder="Ex: Conta nível 80 com 3 skins" data-focus-key="create-neg-title" data-action="updateNegFormField" data-field="title" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
               </div>
 
               <div data-create-neg-structured>
@@ -2777,6 +2841,16 @@
     const isIntermediaryRole = isAdmin();
     const status = negotiation.status || '—';
 
+    const isCurrencyCategory = String(negotiation?.category || '').trim() === CATEGORY_CURRENCY;
+    const goldDelivery = negotiation?.gold_delivery || null;
+    const goldSellerTimes = Array.isArray(goldDelivery?.seller?.time_options) ? goldDelivery.seller.time_options : [];
+    const goldBuyerTimes = Array.isArray(goldDelivery?.buyer?.time_options) ? goldDelivery.buyer.time_options : [];
+    const goldSelectedTime = String(goldDelivery?.buyer_selected_time || '').trim();
+    const goldBuyerCharacter = String(goldDelivery?.buyer?.character_name || '').trim();
+    const goldBuyerServer = String(goldDelivery?.buyer?.server || '').trim();
+    const goldBuyerFaction = String(goldDelivery?.buyer?.faction || '').trim();
+    const goldBuyerNotes = String(goldDelivery?.buyer?.notes || '').trim();
+
     const productPhotos = Array.isArray(negotiation?.product_photos || negotiation?.photos)
       ? (negotiation.product_photos || negotiation.photos)
       : [];
@@ -2879,7 +2953,7 @@
                   <dd class="text-gray-700">${escapeHtml(negotiation?.digital_quantity ? formatPtBrMoney(Number(negotiation.digital_quantity) || 0) : '—')}</dd>
                 </div>
                 <div>
-                  <dt class="text-gray-500">Servidor / Plataforma</dt>
+                  <dt class="text-gray-500">Servidor</dt>
                   <dd class="text-gray-700">${escapeHtml(negotiation?.digital_platform_server || '—')}</dd>
                 </div>
                 <div class="sm:col-span-2">
@@ -2894,6 +2968,42 @@
                 </div>
               ` : ''}
             </dl>
+
+            ${isCurrencyCategory ? `
+              <section class="mt-6 pt-4 border-t border-gray-100">
+                <h3 class="text-sm font-medium text-gray-600 mb-2">Entrega de Gold</h3>
+                <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <dt class="text-gray-500">Horário escolhido</dt>
+                    <dd class="text-gray-700">${escapeHtml(goldSelectedTime || '—')}</dd>
+                  </div>
+                  <div>
+                    <dt class="text-gray-500">Horários do vendedor</dt>
+                    <dd class="text-gray-700">${escapeHtml(goldSellerTimes.length ? goldSellerTimes.join(' | ') : '—')}</dd>
+                  </div>
+                  <div>
+                    <dt class="text-gray-500">Personagem (comprador)</dt>
+                    <dd class="text-gray-700">${escapeHtml(goldBuyerCharacter || '—')}</dd>
+                  </div>
+                  <div>
+                    <dt class="text-gray-500">Servidor (comprador)</dt>
+                    <dd class="text-gray-700">${escapeHtml(goldBuyerServer || '—')}</dd>
+                  </div>
+                  <div>
+                    <dt class="text-gray-500">Facção (comprador)</dt>
+                    <dd class="text-gray-700">${escapeHtml(goldBuyerFaction || '—')}</dd>
+                  </div>
+                  <div>
+                    <dt class="text-gray-500">Horários do comprador</dt>
+                    <dd class="text-gray-700">${escapeHtml(goldBuyerTimes.length ? goldBuyerTimes.join(' | ') : '—')}</dd>
+                  </div>
+                  <div class="sm:col-span-2">
+                    <dt class="text-gray-500">Obs</dt>
+                    <dd class="text-gray-700">${escapeHtml(goldBuyerNotes || '—')}</dd>
+                  </div>
+                </dl>
+              </section>
+            ` : ''}
 
             ${isIntermediaryRole ? `
               <section class="mt-6 pt-4 border-t border-gray-100">
@@ -3131,6 +3241,8 @@
 
     const category = String(neg?.category || '').trim();
     const isCurrency = category === CATEGORY_CURRENCY;
+    const gold = neg?.gold_delivery || null;
+    const sellerTimeOptions = Array.isArray(gold?.seller?.time_options) ? gold.seller.time_options : [];
     const hasDesc = Boolean(neg?.description && String(neg.description).trim());
     const methodLabel = (m) => {
       const v = String(m || '').trim();
@@ -3178,7 +3290,7 @@
                 <dd class="text-gray-800 font-medium">${escapeHtml(qtyLabel || '—')}</dd>
               </div>
               <div>
-                <dt class="text-gray-500">Servidor / Plataforma</dt>
+                <dt class="text-gray-500">Servidor</dt>
                 <dd class="text-gray-800 font-medium">${escapeHtml(neg?.digital_platform_server || '—')}</dd>
               </div>
               <div class="sm:col-span-2">
@@ -3194,15 +3306,81 @@
             </dl>
           </div>
         ` : ''}
+
+        ${isCurrency ? `
+          <form class="p-4 rounded-xl border border-success-200 bg-white mb-4 space-y-4" data-action="acceptNegotiation" data-id="${neg.id}">
+            <div class="flex items-center gap-2 text-gray-900 font-semibold">
+              <i class="fas fa-clock text-success-600"></i>
+              Horário e dados do comprador
+            </div>
+
+            <div>
+              <div class="text-sm text-gray-700 font-medium mb-2">Escolha 1 horário do vendedor *</div>
+              ${sellerTimeOptions.length ? `
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  ${sellerTimeOptions.map((opt) => `
+                    <label class="flex items-center gap-2 p-3 rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 cursor-pointer">
+                      <input type="radio" name="gold_buyer_selected_time" value="${escapeAttr(opt)}" required>
+                      <span class="text-sm text-gray-800 font-medium">${escapeHtml(opt)}</span>
+                    </label>
+                  `).join('')}
+                </div>
+              ` : `
+                <div class="text-sm text-gray-600">O vendedor ainda não informou horários.</div>
+              `}
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Nome do personagem *</label>
+                <input type="text" name="gold_buyer_character_name" required maxlength="100" placeholder="Ex: Arthas" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Servidor *</label>
+                <input type="text" name="gold_buyer_server" required maxlength="100" placeholder="Ex: Azralon" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Facção *</label>
+                <input type="text" name="gold_buyer_faction" required maxlength="100" placeholder="Ex: Horda / Aliança" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Seus horários disponíveis no dia (até 5) *</label>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                ${Array.from({ length: 5 }).map(() => `
+                  <input type="time" name="gold_buyer_time_options[]" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+                `).join('')}
+              </div>
+              <p class="text-xs text-gray-500 mt-1">Preencha pelo menos 1 horário.</p>
+            </div>
+
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Obs (opcional)</label>
+              <textarea name="gold_buyer_notes" rows="2" maxlength="1000" placeholder="Ex: Chego 5 min antes, posso esperar até 10 min." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+            </div>
+
+            <div class="flex flex-wrap gap-3">
+              <button type="submit" class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2" ${sellerTimeOptions.length ? '' : 'disabled'}>
+                <i class="fas fa-check"></i> Aceitar e participar
+              </button>
+              <button type="button" class="px-5 py-2.5 bg-danger-100 hover:bg-danger-200 text-danger-700 rounded-lg font-medium transition flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
+                <i class="fas fa-times"></i> Recusar
+              </button>
+            </div>
+          </form>
+        ` : ''}
         
-        <div class="flex flex-wrap gap-3">
-          <button class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2" data-action="acceptNegotiation" data-id="${neg.id}">
-            <i class="fas fa-check"></i> Aceitar e participar
-          </button>
-          <button class="px-5 py-2.5 bg-danger-100 hover:bg-danger-200 text-danger-700 rounded-lg font-medium transition flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
-            <i class="fas fa-times"></i> Recusar
-          </button>
-        </div>
+        ${isCurrency ? '' : `
+          <div class="flex flex-wrap gap-3">
+            <button class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2" data-action="acceptNegotiation" data-id="${neg.id}">
+              <i class="fas fa-check"></i> Aceitar e participar
+            </button>
+            <button class="px-5 py-2.5 bg-danger-100 hover:bg-danger-200 text-danger-700 rounded-lg font-medium transition flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
+              <i class="fas fa-times"></i> Recusar
+            </button>
+          </div>
+        `}
       </article>
     `;
   }
@@ -6716,6 +6894,22 @@
         nextForm.buyerFound = null;
       }
 
+      // Title-case some text fields on blur/change.
+      const shouldTitleCase = [
+        'title',
+        'digitalGame',
+        'digitalCurrencyType',
+        'digitalPlatformServer',
+      ].includes(field);
+      if (shouldTitleCase) {
+        const shouldFormat = !event || event.type === 'change';
+        if (shouldFormat) {
+          value = toTitleCasePtBr(value);
+          try { element.value = value; } catch { /* ignore */ }
+          nextForm[field] = value;
+        }
+      }
+
       // Helper: keep both snake_case and camelCase keys in sync (draft vs controlled fields)
       const syncSnake = (snake, camel, v) => {
         nextForm[camel] = v;
@@ -6964,11 +7158,18 @@
           return;
         }
         if (!values.digital_platform_server?.trim()) {
-          notify({ type: 'error', message: 'Informe a plataforma/servidor.' });
+          notify({ type: 'error', message: 'Informe o servidor.' });
           return;
         }
         if (!values.digital_delivery_method) {
           notify({ type: 'error', message: 'Selecione o método de entrega.' });
+          return;
+        }
+
+        const sellerTimesRaw = values['gold_seller_time_options[]'] ?? values.gold_seller_time_options;
+        const sellerTimes = normalizeTimeOptions(sellerTimesRaw);
+        if (!sellerTimes.length) {
+          notify({ type: 'error', message: 'Informe pelo menos 1 horário de entrega (até 5).' });
           return;
         }
       }
@@ -7115,6 +7316,12 @@
           formData.append('digital_quantity', String(parsePtBrToIntUnits(values.digital_quantity)));
           formData.append('digital_platform_server', values.digital_platform_server.trim());
           formData.append('digital_delivery_method', values.digital_delivery_method);
+
+          // Campos específicos do fluxo de gold/moedas (backend espera gold_*).
+          formData.append('gold_seller_delivery_method', values.digital_delivery_method);
+          const sellerTimesRaw = values['gold_seller_time_options[]'] ?? values.gold_seller_time_options;
+          const sellerTimes = normalizeTimeOptions(sellerTimesRaw);
+          sellerTimes.forEach((t) => formData.append('gold_seller_time_options[]', t));
         }
 
         if (isKeyDlc || isService || isServiceExchange) {
@@ -7348,12 +7555,73 @@
     adminOpenNegotiation({ dataset }) {
       openNegotiationDetail(dataset?.id);
     },
-    async acceptNegotiation({ dataset }) {
+    async acceptNegotiation({ dataset, values }) {
       const id = Number(dataset?.id);
       if (!id) return;
-      if (!confirm('Confirma que deseja aceitar esta negociação?')) return;
+
+      const hasValues = values && typeof values === 'object';
+
+      const normalizeTimes = (raw) => {
+        const asArray = Array.isArray(raw) ? raw : raw ? [raw] : [];
+        return asArray
+          .map((v) => String(v || '').trim())
+          .filter(Boolean)
+          .slice(0, 5);
+      };
+
+      if (!hasValues) {
+        if (!confirm('Confirma que deseja aceitar esta negociação?')) return;
+      }
+
+      const buyerTimes = hasValues
+        ? normalizeTimes(values['gold_buyer_time_options[]'] ?? values.gold_buyer_time_options)
+        : [];
+
+      const payload = hasValues
+        ? {
+            gold_buyer_character_name: toTitleCasePtBr(String(values.gold_buyer_character_name || '').trim()),
+            gold_buyer_server: toTitleCasePtBr(String(values.gold_buyer_server || '').trim()),
+            gold_buyer_faction: toTitleCasePtBr(String(values.gold_buyer_faction || '').trim()),
+            gold_buyer_notes: String(values.gold_buyer_notes || '').trim() || null,
+            gold_buyer_time_options: buyerTimes,
+          }
+        : {};
+
+      if (hasValues) {
+        if (!payload.gold_buyer_character_name) {
+          notify({ type: 'error', message: 'Informe o nome do personagem.' });
+          return;
+        }
+        if (!payload.gold_buyer_server) {
+          notify({ type: 'error', message: 'Informe o servidor.' });
+          return;
+        }
+        if (!payload.gold_buyer_faction) {
+          notify({ type: 'error', message: 'Informe a facção.' });
+          return;
+        }
+        if (!payload.gold_buyer_time_options?.length) {
+          notify({ type: 'error', message: 'Informe pelo menos 1 horário disponível (máx 5).' });
+          return;
+        }
+      }
+
+      const selectedSellerTime = hasValues ? String(values.gold_buyer_selected_time || '').trim() : '';
+      if (hasValues && !selectedSellerTime) {
+        notify({ type: 'error', message: 'Escolha 1 horário do vendedor.' });
+        return;
+      }
+
       await withLoader(async () => {
-        await apiCall(`/intermediation/${id}/approve`, { method: 'POST', body: {} });
+        await apiCall(`/intermediation/${id}/approve`, { method: 'POST', body: payload });
+
+        if (hasValues && selectedSellerTime) {
+          await apiCall(`/intermediation/${id}/gold/confirm-schedule`, {
+            method: 'POST',
+            body: { gold_buyer_selected_time: selectedSellerTime }
+          });
+        }
+
         notify({ type: 'success', message: 'Negociação aceita! Aguarde as próximas etapas.' });
         await loadNegotiation(id);
         await loadNegotiations({ force: true });

@@ -50,6 +50,15 @@ Route::middleware('auth:api')->group(function () {
     Route::post('/intermediation/{id}/game-account/digital-delivered', [IntermediationController::class, 'markDigitalDelivered']);
     Route::post('/intermediation/{id}/digital/seller-info', [IntermediationController::class, 'submitDigitalDeliveryInfo']);
     Route::post('/intermediation/{id}/digital/delivered', [IntermediationController::class, 'markDigitalDelivered']);
+
+    // Gold/currency delivery scheduling (Moedas / Gold / Créditos)
+    Route::post('/intermediation/{id}/gold/buyer-info', [IntermediationController::class, 'submitGoldBuyerInfo']);
+    Route::post('/intermediation/{id}/gold/seller-info', [IntermediationController::class, 'submitGoldSellerInfo']);
+    Route::post('/intermediation/{id}/gold/confirm-schedule', [IntermediationController::class, 'confirmGoldSchedule']);
+    Route::post('/intermediation/{id}/gold/buyer-reschedule', [IntermediationController::class, 'submitGoldBuyerReschedule']);
+    Route::post('/intermediation/{id}/gold/buyer-confirm-received', [IntermediationController::class, 'confirmGoldBuyerReceived']);
+    Route::post('/intermediation/{id}/gold/seller-confirm-sent', [IntermediationController::class, 'confirmGoldSellerSent']);
+
     Route::post('/intermediation/{id}/payments/mercadopago/pix', [MercadoPagoController::class, 'generatePix']);
     Route::post('/intermediation/{id}/tracking', [IntermediationController::class, 'tracking']);
     Route::post('/intermediation/{id}/tracking/buyer', [IntermediationController::class, 'trackingBuyer']);
