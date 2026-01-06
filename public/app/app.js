@@ -155,7 +155,12 @@
     negotiationLogs: [],
     // Modal de rejeição do comprador
     showBuyerRejectModal: false,
-    rejectNegotiationId: null
+    rejectNegotiationId: null,
+
+    // Entrega de gold (comprador): mostrar/ocultar formulário de novo horário
+    showBuyerGoldRescheduleForm: false,
+    // Entrega de gold (vendedor): mostrar/ocultar formulário de alteração de horário/método
+    showSellerGoldScheduleForm: false
   };
 
   //#endregion PART 1/3: Constantes e Estado
@@ -2846,6 +2851,9 @@
     const goldSellerTimes = Array.isArray(goldDelivery?.seller?.time_options) ? goldDelivery.seller.time_options : [];
     const goldBuyerTimes = Array.isArray(goldDelivery?.buyer?.time_options) ? goldDelivery.buyer.time_options : [];
     const goldSelectedTime = String(goldDelivery?.buyer_selected_time || '').trim();
+    const goldScheduleConfirmedAt = String(goldDelivery?.schedule_confirmed_at || '').trim();
+    const goldBuyerReceivedAt = String(goldDelivery?.buyer_received_confirmed_at || '').trim();
+    const goldSellerSentAt = String(goldDelivery?.seller_sent_confirmed_at || '').trim();
     const goldBuyerCharacter = String(goldDelivery?.buyer?.character_name || '').trim();
     const goldBuyerServer = String(goldDelivery?.buyer?.server || '').trim();
     const goldBuyerFaction = String(goldDelivery?.buyer?.faction || '').trim();
@@ -2916,38 +2924,38 @@
         </header>
 
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
-            <div class="flex items-start justify-between gap-3 mb-4">
-              <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2"><i class="fas fa-receipt text-primary-500"></i> Resumo</h2>
-              ${hasIntermediaryReportData ? `
-                <button
-                  type="button"
-                  class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white"
-                  data-action="openIntermediaryReport"
-                >
-                  Relatório do intermediador
-                </button>
-              ` : ''}
-            </div>
+          ${isCurrencyCategory ? `
+            <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+              <div class="flex items-start justify-between gap-3 mb-4">
+                <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2"><i class="fas fa-receipt text-primary-500"></i> Resumo</h2>
+                ${hasIntermediaryReportData ? `
+                  <button
+                    type="button"
+                    class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white"
+                    data-action="openIntermediaryReport"
+                  >
+                    Relatório do intermediador
+                  </button>
+                ` : ''}
+              </div>
 
-            <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <dt class="text-gray-500">Valor do produto</dt>
-                <dd class="text-gray-700">${formatCurrency(productAmount)}</dd>
-              </div>
-              <div>
-                <dt class="text-gray-500">Taxa (comprador)</dt>
-                <dd class="text-gray-700">${formatCurrency(buyerFee)}</dd>
-              </div>
-              <div>
-                <dt class="text-gray-500">Total (comprador)</dt>
-                <dd class="text-gray-700">${formatCurrency(buyerTotal)}</dd>
-              </div>
-              <div>
-                <dt class="text-gray-500">Entrega combinada</dt>
-                <dd class="text-gray-700">${negotiation.delivery_days ? `${negotiation.delivery_days} dias` : '—'}</dd>
-              </div>
-              ${String(negotiation?.category || '').trim() === CATEGORY_CURRENCY ? `
+              <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <dt class="text-gray-500">Valor do produto</dt>
+                  <dd class="text-gray-700">${formatCurrency(productAmount)}</dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500">Taxa (comprador)</dt>
+                  <dd class="text-gray-700">${formatCurrency(buyerFee)}</dd>
+                </div>
+                <div class="sm:col-span-2">
+                  <dt class="text-gray-500">Total (comprador)</dt>
+                  <dd class="text-gray-700">${formatCurrency(buyerTotal)}</dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500">Entrega combinada</dt>
+                  <dd class="text-gray-700">${negotiation.delivery_days ? `${negotiation.delivery_days} dias` : '—'}</dd>
+                </div>
                 <div>
                   <dt class="text-gray-500">Quantidade (Gold/Moeda)</dt>
                   <dd class="text-gray-700">${escapeHtml(negotiation?.digital_quantity ? formatPtBrMoney(Number(negotiation.digital_quantity) || 0) : '—')}</dd>
@@ -2959,17 +2967,19 @@
                 <div class="sm:col-span-2">
                   <dt class="text-gray-500">Método de entrega</dt>
                   <dd class="text-gray-700">${escapeHtml((() => {
-                    const v = String(negotiation?.digital_delivery_method || '').trim();
+                    const v = String(goldDelivery?.seller?.delivery_method || negotiation?.digital_delivery_method || '').trim();
                     if (v === 'trade') return 'Trade (troca/encontro no jogo)';
                     if (v === 'mail') return 'Correio do jogo (mail)';
                     if (v === 'gift') return 'Presente (gift)';
                     return '—';
                   })())}</dd>
                 </div>
-              ` : ''}
-            </dl>
+              </dl>
+            </article>
 
-            ${isCurrencyCategory ? `
+            <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+              <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-truck text-secondary-500"></i> Informações para entrega</h2>
+
               <section class="mt-6 pt-4 border-t border-gray-100">
                 <h3 class="text-sm font-medium text-gray-600 mb-2">Entrega de Gold</h3>
                 <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -3002,37 +3012,214 @@
                     <dd class="text-gray-700">${escapeHtml(goldBuyerNotes || '—')}</dd>
                   </div>
                 </dl>
-              </section>
-            ` : ''}
 
-            ${isIntermediaryRole ? `
-              <section class="mt-6 pt-4 border-t border-gray-100">
-                <h3 class="text-sm font-medium text-gray-600 mb-2">Comprovante do pagamento (comprador)</h3>
-                ${paymentProofUrl ? `
-                  <div class="flex items-center justify-between gap-3">
-                    <p class="text-sm text-gray-600">Enviado${paymentProofUploadedAt ? ` em <strong>${escapeHtml(formatDateTime(paymentProofUploadedAt))}</strong>` : ''}.</p>
-                    <a class="px-4 py-2 bg-white border border-gray-200 hover:border-secondary-400 text-gray-700 hover:text-secondary-600 rounded-lg text-sm font-semibold transition" href="${escapeAttr(paymentProofUrl)}" target="_blank" rel="noopener">Abrir comprovante</a>
-                  </div>
-                ` : `
-                  <p class="text-sm text-gray-500">Nenhum comprovante enviado.</p>
-                `}
-              </section>
-            ` : ''}
+                ${isBuyerRole ? (() => {
+                  const canAct = status === 'waiting_digital_delivery';
+                  const canConfirmTrade = canAct && Boolean(goldScheduleConfirmedAt) && !goldBuyerReceivedAt;
+                  const canSendNewTime = canAct;
+                  const showForm = Boolean(state.showBuyerGoldRescheduleForm);
+                  return `
+                    <div class="mt-4 pt-4 border-t border-gray-100 space-y-3">
+                      <div>
+                        <button
+                          type="button"
+                          class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-white border border-gray-200 hover:border-secondary-400 text-gray-700 hover:text-secondary-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                          data-action="toggleBuyerGoldRescheduleForm"
+                          data-id="${negotiation.id}"
+                          ${canSendNewTime ? '' : 'disabled'}
+                        >
+                          Mandar novo horário
+                        </button>
+                        ${!canAct ? `<p class="text-xs text-gray-500 mt-1">Disponível apenas após o pagamento confirmado.</p>` : ''}
+                      </div>
 
-            ${description ? `
-              <section class="mt-6 pt-4 border-t border-gray-100">
-                <h3 class="text-sm font-medium text-gray-600 mb-2">Descrição enviada pelo vendedor</h3>
-                <p class="text-gray-500">${escapeHtml(description)}</p>
-                <div class="mt-4 flex justify-end">
-                  ${productImageButton}
-                </div>
+                      ${showForm ? `
+                        <form class="p-4 rounded-xl border border-gray-200 bg-gray-50 space-y-3" data-action="submitBuyerGoldReschedule" data-id="${negotiation.id}">
+                          <div>
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Novo horário (apenas 1) *</label>
+                            <input type="time" name="gold_buyer_new_time" required class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+                            <p class="text-xs text-gray-600 mt-2">No horário informado, entrem no jogo e realizem a troca (moedas/itens) conforme combinado.</p>
+                          </div>
+                          <div class="flex flex-wrap gap-3">
+                            <button type="submit" class="px-5 py-2.5 bg-secondary-600 hover:bg-secondary-700 rounded-lg text-white font-semibold transition flex items-center gap-2">
+                              <i class="fas fa-paper-plane"></i> Enviar novo horário
+                            </button>
+                            <button type="button" class="px-5 py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg font-medium transition" data-action="toggleBuyerGoldRescheduleForm" data-id="${negotiation.id}">
+                              Cancelar
+                            </button>
+                          </div>
+                        </form>
+                      ` : ''}
+
+                      <div>
+                        ${goldBuyerReceivedAt ? `
+                          <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
+                            <p class="text-sm text-gray-700 font-semibold">Aguardando pagamento da intermediadora</p>
+                            <p class="text-sm text-gray-500 mt-1">Você já confirmou o recebimento. Agora a intermediadora fará o repasse ao vendedor.</p>
+                          </div>
+                        ` : `
+                          <button
+                            type="button"
+                            class="w-full px-5 py-3 bg-success-600 hover:bg-success-700 rounded-lg text-white font-bold transition disabled:opacity-50 disabled:cursor-not-allowed"
+                            data-action="buyerConfirmGoldReceived"
+                            data-id="${negotiation.id}"
+                            ${canConfirmTrade ? '' : 'disabled'}
+                          >
+                            Confirmar que recebi
+                          </button>
+                          ${!goldScheduleConfirmedAt ? `<p class="text-xs text-gray-500 mt-2">Confirme um horário antes de confirmar o recebimento.</p>` : ''}
+                        `}
+                      </div>
+                    </div>
+                  `;
+                })() : ''}
+
+                ${isSellerRole ? (() => {
+                  const canAct = status === 'waiting_digital_delivery';
+                  const canConfirmDelivery = canAct && Boolean(goldScheduleConfirmedAt) && !goldSellerSentAt;
+                  const showForm = Boolean(state.showSellerGoldScheduleForm);
+
+                  const methodValue = String(goldDelivery?.seller?.delivery_method || negotiation?.digital_delivery_method || '').trim();
+                  const safeMethod = (methodValue === 'trade' || methodValue === 'mail' || methodValue === 'gift') ? methodValue : 'trade';
+
+                  return `
+                    <div class="mt-4 pt-4 border-t border-gray-100 space-y-3">
+                      <div class="flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-white border border-gray-200 hover:border-secondary-400 text-gray-700 hover:text-secondary-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                          data-action="toggleSellerGoldScheduleForm"
+                          data-id="${negotiation.id}"
+                          ${canAct ? '' : 'disabled'}
+                        >
+                          Alterar horário da entrega
+                        </button>
+                        ${!canAct ? `<p class="text-xs text-gray-500 mt-1">Disponível apenas após o pagamento confirmado.</p>` : ''}
+                      </div>
+
+                      ${showForm ? `
+                        <form class="p-4 rounded-xl border border-gray-200 bg-gray-50 space-y-3" data-action="submitSellerGoldSchedule" data-id="${negotiation.id}">
+                          <div>
+                            <div class="text-sm text-gray-700 font-medium mb-2">Seus horários disponíveis (até 5) *</div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              ${Array.from({ length: 5 }).map(() => `
+                                <input type="time" name="gold_seller_time_options[]" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all">
+                              `).join('')}
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1">Preencha pelo menos 1 horário.</p>
+                          </div>
+
+                          <div>
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Método de entrega *</label>
+                            <select name="gold_seller_delivery_method" required class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all">
+                              <option value="trade" ${safeMethod === 'trade' ? 'selected' : ''}>Trade (troca/encontro no jogo)</option>
+                              <option value="mail" ${safeMethod === 'mail' ? 'selected' : ''}>Correio do jogo (mail)</option>
+                              <option value="gift" ${safeMethod === 'gift' ? 'selected' : ''}>Presente (gift)</option>
+                            </select>
+                          </div>
+
+                          <div class="flex flex-wrap gap-3">
+                            <button type="submit" class="px-5 py-2.5 bg-secondary-600 hover:bg-secondary-700 rounded-lg text-white font-semibold transition flex items-center gap-2">
+                              <i class="fas fa-save"></i> Salvar horário
+                            </button>
+                            <button type="button" class="px-5 py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg font-medium transition" data-action="toggleSellerGoldScheduleForm" data-id="${negotiation.id}">
+                              Cancelar
+                            </button>
+                          </div>
+                        </form>
+                      ` : ''}
+
+                      <div>
+                        <button
+                          type="button"
+                          class="w-full px-5 py-3 bg-success-600 hover:bg-success-700 rounded-lg text-white font-bold transition disabled:opacity-50 disabled:cursor-not-allowed"
+                          data-action="sellerConfirmGoldSent"
+                          data-id="${negotiation.id}"
+                          ${canConfirmDelivery ? '' : 'disabled'}
+                        >
+                          Confirmar entrega
+                        </button>
+                        ${goldSellerSentAt ? `<p class="text-xs text-gray-500 mt-2">Você já confirmou a entrega.</p>` : (!goldScheduleConfirmedAt ? `<p class="text-xs text-gray-500 mt-2">Confirme um horário antes de confirmar a entrega.</p>` : '')}
+                      </div>
+                    </div>
+                  `;
+                })() : ''}
               </section>
-            ` : `
+
+              ${isIntermediaryRole ? `
+                <section class="mt-6 pt-4 border-t border-gray-100">
+                  <h3 class="text-sm font-medium text-gray-600 mb-2">Comprovante do pagamento (comprador)</h3>
+                  ${paymentProofUrl ? `
+                    <div class="flex items-center justify-between gap-3">
+                      <p class="text-sm text-gray-600">Enviado${paymentProofUploadedAt ? ` em <strong>${escapeHtml(formatDateTime(paymentProofUploadedAt))}</strong>` : ''}.</p>
+                      <a class="px-4 py-2 bg-white border border-gray-200 hover:border-secondary-400 text-gray-700 hover:text-secondary-600 rounded-lg text-sm font-semibold transition" href="${escapeAttr(paymentProofUrl)}" target="_blank" rel="noopener">Abrir comprovante</a>
+                    </div>
+                  ` : `
+                    <p class="text-sm text-gray-500">Nenhum comprovante enviado.</p>
+                  `}
+                </section>
+              ` : ''}
+
+              ${description ? `
+                <section class="mt-6 pt-4 border-t border-gray-100">
+                  <h3 class="text-sm font-medium text-gray-600 mb-2">Descrição enviada pelo vendedor</h3>
+                  <p class="text-gray-500">${escapeHtml(description)}</p>
+                </section>
+              ` : ''}
+
               <div class="mt-6 flex justify-end">
                 ${productImageButton}
               </div>
-            `}
-          </article>
+            </article>
+          ` : `
+            <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
+              <div class="flex items-start justify-between gap-3 mb-4">
+                <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2"><i class="fas fa-receipt text-primary-500"></i> Resumo</h2>
+                ${hasIntermediaryReportData ? `
+                  <button
+                    type="button"
+                    class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white"
+                    data-action="openIntermediaryReport"
+                  >
+                    Relatório do intermediador
+                  </button>
+                ` : ''}
+              </div>
+
+              <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <dt class="text-gray-500">Valor do produto</dt>
+                  <dd class="text-gray-700">${formatCurrency(productAmount)}</dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500">Taxa (comprador)</dt>
+                  <dd class="text-gray-700">${formatCurrency(buyerFee)}</dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500">Total (comprador)</dt>
+                  <dd class="text-gray-700">${formatCurrency(buyerTotal)}</dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500">Entrega combinada</dt>
+                  <dd class="text-gray-700">${negotiation.delivery_days ? `${negotiation.delivery_days} dias` : '—'}</dd>
+                </div>
+              </dl>
+
+              ${description ? `
+                <section class="mt-6 pt-4 border-t border-gray-100">
+                  <h3 class="text-sm font-medium text-gray-600 mb-2">Descrição enviada pelo vendedor</h3>
+                  <p class="text-gray-500">${escapeHtml(description)}</p>
+                  <div class="mt-4 flex justify-end">
+                    ${productImageButton}
+                  </div>
+                </section>
+              ` : `
+                <div class="mt-6 flex justify-end">
+                  ${productImageButton}
+                </div>
+              `}
+            </article>
+          `}
 
           <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
             <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-users text-secondary-500"></i> Participantes</h2>
@@ -3264,9 +3451,12 @@
           <h3 class="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
             <i class="fas fa-info-circle text-secondary-500"></i> Informações importantes
           </h3>
-          <p class="text-sm text-gray-600 mb-2">${isDigitalDeliveryCategory(neg?.category)
-            ? `O vendedor deve concluir a entrega digital em até <strong>${deadlineDays} ${deadlineDays === 1 ? 'dia' : 'dias'}</strong> após você aceitar.`
-            : 'O vendedor deve postar o produto após você aceitar.'
+          <p class="text-sm text-gray-600 mb-2">${isCurrency
+            ? 'Para moedas/gold, após você aceitar e pagar, vocês devem confirmar um horário para realizar a troca dentro do jogo.'
+            : (isDigitalDeliveryCategory(neg?.category)
+              ? `O vendedor deve concluir a entrega digital em até <strong>${deadlineDays} ${deadlineDays === 1 ? 'dia' : 'dias'}</strong> após você aceitar.`
+              : 'O vendedor deve postar o produto após você aceitar.'
+            )
           }</p>
           <p class="text-sm text-gray-600">Após o aceite, você receberá as instruções de pagamento.</p>
         </div>
@@ -3638,6 +3828,8 @@
   function renderDigitalDeliverySellerInfoSection(neg, { isSeller } = {}) {
     if (!isSeller) return '';
     const category = String(neg?.category || '').trim();
+    // Moedas / Gold / Créditos tem fluxo próprio (gold_*). Não usa entrega digital genérica.
+    if (category === CATEGORY_CURRENCY) return '';
     if (!isDigitalDeliveryCategory(category) || category === CATEGORY_GAME_ACCOUNT) return '';
     if (neg.status !== 'waiting_digital_delivery') return '';
 
@@ -3679,6 +3871,8 @@
   function renderDigitalDeliveryBuyerInfoSection(neg, { isBuyer } = {}) {
     if (!isBuyer) return '';
     const category = String(neg?.category || '').trim();
+    // Moedas / Gold / Créditos tem fluxo próprio (gold_*). Não usa entrega digital genérica.
+    if (category === CATEGORY_CURRENCY) return '';
     if (!isDigitalDeliveryCategory(category) || category === CATEGORY_GAME_ACCOUNT) return '';
     if (!['waiting_digital_delivery', 'approved'].includes(neg.status)) return '';
 
@@ -3875,7 +4069,11 @@
     const showInspectionForm = atIntermediary && Boolean(neg.inspection_saved_at) && !neg.intermediary_approval_confirmed_at;
     const showFinalize = neg.status === 'delivered';
     const showMarkReceived = neg.status === 'shipped' && !neg.intermediary_received_status;
-    const showDigitalDelivery = neg.status === 'waiting_digital_delivery' && isDigitalDeliveryCategory(neg?.category);
+    const showDigitalDelivery = neg.status === 'waiting_digital_delivery' && isDigitalDeliveryCategory(neg?.category) && !isCurrencyCategory(neg?.category);
+
+    const goldBuyerReceivedAt = neg?.gold_delivery?.buyer_received_confirmed_at;
+    const goldSellerSentAt = neg?.gold_delivery?.seller_sent_confirmed_at;
+    const showUrgentSellerPayout = isCurrencyCategory(neg?.category) && Boolean(goldBuyerReceivedAt) && Boolean(goldSellerSentAt);
 
     const sections = [];
 
@@ -3947,6 +4145,17 @@
         <section class="pt-4 border-t border-gray-100">
           <h3 class="text-sm font-medium text-gray-700 mb-3">Confirmação de chegada na intermediadora</h3>
           <button class="px-4 py-2 bg-gradient-to-r from-secondary-500 to-secondary-600 hover:from-secondary-600 hover:to-secondary-700 rounded-lg text-white font-medium transition shadow-md" data-action="markIntermediaryReceived" data-id="${neg.id}"><i class="fas fa-box-open mr-2"></i>Marcar como recebido</button>
+        </section>
+      `);
+    }
+
+    if (showUrgentSellerPayout) {
+      sections.push(`
+        <section class="pt-4 border-t border-gray-100">
+          <div class="p-4 rounded-xl border border-warning-200 bg-warning-50">
+            <h3 class="text-sm font-bold text-warning-700 mb-2"><i class="fas fa-exclamation-triangle mr-2"></i>URGENTE: fazer o pagamento ao vendedor</h3>
+            <p class="text-sm text-warning-700">Comprador e vendedor já confirmaram a entrega/recebimento do Gold. Faça o repasse ao vendedor agora.</p>
+          </div>
         </section>
       `);
     }
@@ -4201,6 +4410,18 @@
             </div>
             <button type="submit" class="px-4 py-2 bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 rounded-lg text-white font-medium transition"><i class="fas fa-paper-plane mr-2"></i>Enviar feedback</button>
           </form>
+        </section>
+      `);
+    }
+
+    if (isBuyer && neg.buyer_confirmed_at) {
+      sections.push(`
+        <section class="pt-4 border-t border-gray-100 first:border-t-0 first:pt-0">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">Pagamento da intermediadora</h3>
+          <div class="p-4 rounded-xl border border-gray-200 bg-gray-50">
+            <p class="text-sm text-gray-700 font-semibold">Aguardando pagamento da intermediadora</p>
+            <p class="text-sm text-gray-500 mt-1">Você já confirmou o recebimento. A intermediadora fará o repasse ao vendedor e finalizará a negociação.</p>
+          </div>
         </section>
       `);
     }
@@ -7570,6 +7791,22 @@
       };
 
       if (!hasValues) {
+        // If the user clicked "accept" from a list/card (no form), currency negotiations
+        // require buyer info + schedule selection. Redirect to the detail page with the form.
+        try {
+          const data = await apiCall(`/intermediation/${id}`);
+          const neg = data?.data || data;
+          const isCurrency = String(neg?.category || '').trim() === CATEGORY_CURRENCY;
+          if (isCurrency) {
+            openNegotiationDetail(id);
+            notify({ type: 'error', message: 'Para aceitar, preencha os dados (personagem/servidor/facção) e selecione um horário no detalhe da negociação.' });
+            return;
+          }
+        } catch (error) {
+          // If we cannot load details, fall back to the old confirm + attempt.
+          console.warn('Falha ao carregar negociação antes do aceite:', error);
+        }
+
         if (!confirm('Confirma que deseja aceitar esta negociação?')) return;
       }
 
@@ -7626,6 +7863,101 @@
         await loadNegotiation(id);
         await loadNegotiations({ force: true });
       }, 'Aceitando negociação...');
+    },
+
+    toggleBuyerGoldRescheduleForm() {
+      setState({ showBuyerGoldRescheduleForm: !state.showBuyerGoldRescheduleForm });
+    },
+
+    toggleSellerGoldScheduleForm() {
+      setState({ showSellerGoldScheduleForm: !state.showSellerGoldScheduleForm });
+    },
+
+    async submitSellerGoldSchedule({ dataset, values }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+
+      const normalizeTimes = (raw) => {
+        const asArray = Array.isArray(raw) ? raw : raw ? [raw] : [];
+        return asArray
+          .map((v) => String(v || '').trim())
+          .filter(Boolean)
+          .slice(0, 5);
+      };
+
+      const rawTimes = values?.['gold_seller_time_options[]'] ?? values?.gold_seller_time_options;
+      const times = normalizeTimes(rawTimes);
+      const method = String(values?.gold_seller_delivery_method || '').trim();
+
+      if (!times.length) {
+        notify({ type: 'error', message: 'Informe pelo menos 1 horário (até 5).' });
+        return;
+      }
+      if (!['trade', 'mail', 'gift'].includes(method)) {
+        notify({ type: 'error', message: 'Selecione o método de entrega.' });
+        return;
+      }
+
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/gold/seller-info`, {
+          method: 'POST',
+          body: {
+            gold_seller_time_options: times,
+            gold_seller_delivery_method: method,
+          }
+        });
+        notify({ type: 'success', message: 'Horário/método atualizados.' });
+        setState({ showSellerGoldScheduleForm: false });
+        await loadNegotiation(id, { silent: true });
+        await loadNegotiations({ force: true, silent: true });
+      }, 'Salvando horário...');
+    },
+
+    async sellerConfirmGoldSent({ dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      if (!confirm('Confirma que a entrega foi realizada?')) return;
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/gold/seller-confirm-sent`, { method: 'POST', body: {} });
+        notify({ type: 'success', message: 'Confirmação registrada.' });
+        await loadNegotiation(id, { silent: true });
+        await loadNegotiations({ force: true, silent: true });
+      }, 'Confirmando entrega...');
+    },
+
+    async submitBuyerGoldReschedule({ dataset, values }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      const time = String(values?.gold_buyer_new_time || '').trim();
+      if (!time) {
+        notify({ type: 'error', message: 'Informe 1 horário.' });
+        return;
+      }
+
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/gold/buyer-reschedule`, {
+          method: 'POST',
+          body: {
+            gold_buyer_reschedule_request: `Novo horário sugerido: ${time}`
+          }
+        });
+        notify({ type: 'success', message: 'Novo horário enviado.' });
+        setState({ showBuyerGoldRescheduleForm: false });
+        await loadNegotiation(id, { silent: true });
+        await loadNegotiations({ force: true, silent: true });
+      }, 'Enviando novo horário...');
+    },
+
+    async buyerConfirmGoldReceived({ dataset }) {
+      const id = Number(dataset?.id);
+      if (!id) return;
+      if (!confirm('Confirma que você recebeu o Gold/moedas?')) return;
+      await withLoader(async () => {
+        await apiCall(`/intermediation/${id}/gold/buyer-confirm-received`, { method: 'POST', body: {} });
+        notify({ type: 'success', message: 'Recebimento confirmado.' });
+        await loadNegotiation(id, { silent: true });
+        await loadNegotiations({ force: true, silent: true });
+      }, 'Confirmando recebimento...');
     },
     // Modal de rejeição do comprador
     openRejectModal({ dataset }) {

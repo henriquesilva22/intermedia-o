@@ -1234,7 +1234,8 @@ class IntermediationController extends Controller
     }
 
     /**
-     * Seller submits digital delivery info for non-account digital categories (e.g., Moedas / Chave / DLC).
+     * Seller submits digital delivery info for non-account digital categories (e.g., Chave / DLC, Serviços).
+     * Moedas / Gold / Créditos possui fluxo próprio via rotas /gold/*.
      */
     public function submitDigitalDeliveryInfo(Request $request, int $id): JsonResponse
     {
@@ -1245,8 +1246,10 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
         }
 
-        if (! $this->isDigitalDeliveryCategory($negotiation->category) || $this->isGameAccountCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para categorias digitais (exceto Conta de jogo).'], 422);
+        if (! $this->isDigitalDeliveryCategory($negotiation->category)
+            || $this->isGameAccountCategory($negotiation->category)
+            || $this->isCurrencyCategory($negotiation->category)) {
+            return response()->json(['message' => 'Ação disponível apenas para categorias digitais (exceto Conta de jogo e Moedas / Gold / Créditos).'], 422);
         }
 
         if ($negotiation->seller_id !== $user->id) {
