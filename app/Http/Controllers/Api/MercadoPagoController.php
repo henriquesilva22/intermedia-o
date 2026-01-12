@@ -4,9 +4,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Negotiation;
+use App\Models\Payment;
 use App\Services\Payments\MercadoPagoService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -24,6 +26,25 @@ class MercadoPagoController extends Controller
      */
     public function webhook(Request $request, MercadoPagoService $service): JsonResponse
     {
+        $expectedToken = (string) config('services.mercadopago.webhook_token', '');
+        $tokens = array_values(array_filter(array_map('trim', explode(',', $expectedToken))));
+        if (! empty($tokens)) {
+            $provided = (string) ($request->header('X-Webhook-Token') ?? $request->query('token') ?? '');
+
+            $ok = false;
+            foreach ($tokens as $token) {
+                if ($token !== '' && hash_equals($token, $provided)) {
+                    $ok = true;
+                    break;
+                }
+            }
+
+            if (! $ok) {
+                // Always reply 200 so MercadoPago doesn't keep retrying.
+                return response()->json(['success' => true]);
+            }
+        }
+
         $payload = $request->all();
 
         $paymentId = $payload['data']['id'] ?? $payload['id'] ?? $request->query('data.id') ?? $request->query('id');
@@ -48,8 +69,12 @@ class MercadoPagoController extends Controller
             }
 
             if ($negotiationId) {
-                $negotiation = Negotiation::find($negotiationId);
-                if ($negotiation) {
+                DB::transaction(function () use ($negotiationId, $paymentId, $status, $payment) {
+                    $negotiation = Negotiation::lockForUpdate()->find($negotiationId);
+                    if (! $negotiation) {
+                        return;
+                    }
+
                     // Atualiza Pix code (se vier) e confirma pagamento quando aprovado.
                     $transactionData = $payment['point_of_interaction']['transaction_data'] ?? [];
                     $pixCode = $transactionData['qr_code'] ?? null;
@@ -60,22 +85,51 @@ class MercadoPagoController extends Controller
                         $updates['pix_generated_at'] = now();
                     }
 
+                    $confirmedNow = false;
                     if ($status === 'approved' && $negotiation->status === 'waiting_payment') {
                         $updates['status'] = $this->isDigitalDeliveryCategory($negotiation->category)
                             ? 'waiting_digital_delivery'
                             : 'waiting_shipment';
                         $updates['paid_at'] = now();
                         $updates['payment_confirmed_by_buyer'] = true;
+                        $confirmedNow = true;
                     }
 
                     if (! empty($updates)) {
                         $negotiation->update($updates);
                     }
-                }
+
+                    if ($confirmedNow) {
+                        $buyerFee = (float) config('services.mercadopago.buyer_fee_brl', 15);
+                        if ($buyerFee < 0) {
+                            $buyerFee = 0;
+                        }
+
+                        Payment::updateOrCreate(
+                            ['negotiation_id' => $negotiation->id, 'type' => 'buyer_fee'],
+                            [
+                                'amount' => $buyerFee,
+                                'currency' => 'BRL',
+                                'provider' => 'mercadopago',
+                                'provider_reference' => (string) $paymentId,
+                                'confirmed_at' => $negotiation->paid_at ?? now(),
+                                'meta' => [
+                                    'status' => (string) ($payment['status'] ?? ''),
+                                ],
+                            ]
+                        );
+
+                        Payment::firstOrCreate(
+                            ['negotiation_id' => $negotiation->id, 'type' => 'release'],
+                            ['amount' => (float) $negotiation->price, 'currency' => 'BRL']
+                        );
+                    }
+                });
             }
         } catch (\Throwable $exception) {
             Log::warning('MercadoPago webhook error: ' . $exception->getMessage(), [
-                'payload' => $payload,
+                'payment_id' => $paymentId ?? null,
+                'type' => $payload['type'] ?? null,
             ]);
             // Sempre responder 200 para o MP não ficar re-tentando indefinidamente por falhas transitórias.
         }

@@ -1025,6 +1025,16 @@
     }
   }
 
+  function setInteractiveBackgroundEnabled(enabled) {
+    try {
+      const bg = document.getElementById('interactiveBg');
+      if (!bg) return;
+      bg.style.display = enabled ? '' : 'none';
+    } catch {
+      // ignore
+    }
+  }
+
   //#region Core State/Render (setState -> render -> hydrate)
 
   function setState(updater) {
@@ -1169,6 +1179,9 @@
     const root = document.getElementById('app');
     if (!root) return;
 
+    const interactiveBgEnabled = state.currentPage !== 'login';
+    setInteractiveBackgroundEnabled(interactiveBgEnabled);
+
     // Preserve scroll position inside the create negotiation modal form.
     let createModalScrollTop = null;
     try {
@@ -1206,8 +1219,9 @@
       }
     }
     const isAuthenticated = Boolean(state.token && state.user);
+    const appBackgroundClass = interactiveBgEnabled ? 'bg-transparent' : 'bg-gray-200';
     const content = `
-      <div class="min-h-screen bg-gray-200 text-gray-900 flex flex-col overflow-x-hidden">
+      <div class="min-h-screen ${appBackgroundClass} text-gray-900 flex flex-col overflow-x-hidden">
         ${renderHeader(isAuthenticated)}
         ${isAuthenticated ? renderProtectedView() : renderPublicLayout()}
         ${renderFooter()}

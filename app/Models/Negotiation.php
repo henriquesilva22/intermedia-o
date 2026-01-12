@@ -5,10 +5,78 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Str;
 
 class Negotiation extends Model
 {
     use HasFactory;
+
+    private function looksLikeLaravelEncryptedString(string $value): bool
+    {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return false;
+        }
+
+        // Common Laravel payload starts with base64(JSON{"iv":...}) which often begins with eyJpdiI6
+        if (! Str::startsWith($trimmed, 'eyJpdiI6')) {
+            return false;
+        }
+
+        $decoded = base64_decode($trimmed, true);
+        if (! is_string($decoded) || $decoded === '') {
+            return false;
+        }
+
+        $json = json_decode($decoded, true);
+        return is_array($json)
+            && array_key_exists('iv', $json)
+            && array_key_exists('value', $json)
+            && array_key_exists('mac', $json);
+    }
+
+    private function encryptIfNeeded(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $text = (string) $value;
+        if (trim($text) === '') {
+            return '';
+        }
+
+        if ($this->looksLikeLaravelEncryptedString($text)) {
+            return $text;
+        }
+
+        return Crypt::encryptString($text);
+    }
+
+    private function decryptIfNeeded(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $text = (string) $value;
+        if (trim($text) === '') {
+            return $text;
+        }
+
+        if (! $this->looksLikeLaravelEncryptedString($text)) {
+            return $text;
+        }
+
+        try {
+            return Crypt::decryptString($text);
+        } catch (\Throwable $exception) {
+            // If the app key changes or legacy data is malformed, fall back to raw.
+            return $text;
+        }
+    }
 
     protected $fillable = [
         'seller_id',
@@ -154,6 +222,41 @@ class Negotiation extends Model
     public function buyer(): BelongsTo
     {
         return $this->belongsTo(User::class, 'buyer_id');
+    }
+
+    public function payments(): HasMany
+    {
+        return $this->hasMany(Payment::class, 'negotiation_id');
+    }
+
+    public function setGameAccountSellerInfoAttribute(mixed $value): void
+    {
+        $this->attributes['game_account_seller_info'] = $this->encryptIfNeeded($value);
+    }
+
+    public function getGameAccountSellerInfoAttribute(mixed $value): ?string
+    {
+        return $this->decryptIfNeeded($value);
+    }
+
+    public function setDigitalDeliveryInfoAttribute(mixed $value): void
+    {
+        $this->attributes['digital_delivery_info'] = $this->encryptIfNeeded($value);
+    }
+
+    public function getDigitalDeliveryInfoAttribute(mixed $value): ?string
+    {
+        return $this->decryptIfNeeded($value);
+    }
+
+    public function setGameAccountBuyerChangeRequestAttribute(mixed $value): void
+    {
+        $this->attributes['game_account_buyer_change_request'] = $this->encryptIfNeeded($value);
+    }
+
+    public function getGameAccountBuyerChangeRequestAttribute(mixed $value): ?string
+    {
+        return $this->decryptIfNeeded($value);
     }
 
     /**

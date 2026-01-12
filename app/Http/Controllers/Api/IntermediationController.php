@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Negotiation;
+use App\Models\Payment;
+use App\Support\AuditLogger;
 use App\Services\Payments\MercadoPagoService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
@@ -12,6 +14,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 
@@ -105,6 +108,54 @@ class IntermediationController extends Controller
             : 'waiting_shipment';
     }
 
+    private function withLockedNegotiation(int $id, callable $callback): mixed
+    {
+        return DB::transaction(function () use ($id, $callback) {
+            $negotiation = Negotiation::lockForUpdate()->find($id);
+            if (! $negotiation) {
+                abort(404, 'Negociacao nao encontrada.');
+            }
+
+            return $callback($negotiation);
+        });
+    }
+
+    private function upsertPaymentsAfterPaymentConfirmed(
+        Negotiation $negotiation,
+        ?string $provider = null,
+        ?string $providerReference = null,
+        ?string $idempotencyKey = null,
+    ): void {
+        $buyerFee = (float) config('services.mercadopago.buyer_fee_brl', 15);
+        if ($buyerFee < 0) {
+            $buyerFee = 0;
+        }
+
+        $paidAt = $negotiation->paid_at ? \Illuminate\Support\Carbon::instance($negotiation->paid_at) : now();
+
+        // Fee (confirmada quando o pagamento do comprador é confirmado)
+        Payment::updateOrCreate(
+            ['negotiation_id' => $negotiation->id, 'type' => 'buyer_fee'],
+            [
+                'amount' => $buyerFee,
+                'currency' => 'BRL',
+                'provider' => $provider,
+                'provider_reference' => $providerReference,
+                'idempotency_key' => $idempotencyKey,
+                'confirmed_at' => $paidAt,
+            ]
+        );
+
+        // Repasse/liberação (pendente até a intermediadora efetuar o pagamento ao vendedor)
+        Payment::firstOrCreate(
+            ['negotiation_id' => $negotiation->id, 'type' => 'release'],
+            [
+                'amount' => (float) $negotiation->price,
+                'currency' => 'BRL',
+            ]
+        );
+    }
+
     private function isGameAccountCategory(?string $category): bool
     {
         return trim((string) $category) === self::GAME_ACCOUNT_CATEGORY;
@@ -138,7 +189,11 @@ class IntermediationController extends Controller
     {
         $user = $request->user();
 
-        $negotiations = Negotiation::with(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state'])
+        $negotiations = Negotiation::with([
+            'payments',
+            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+        ])
             ->where('seller_id', $user->id)
             ->orWhere('buyer_id', $user->id)
             ->orderByDesc('updated_at')
@@ -155,7 +210,11 @@ class IntermediationController extends Controller
     {
         $user = $request->user();
 
-        $negotiation = Negotiation::with(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state'])
+        $negotiation = Negotiation::with([
+            'payments',
+            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+        ])
             ->find($id);
 
         if (! $negotiation) {
@@ -506,7 +565,11 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        $negotiations = Negotiation::with(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state'])
+        $negotiations = Negotiation::with([
+            'payments',
+            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+        ])
             ->orderByDesc('updated_at')
             ->get()
             ->map(fn ($n) => $this->transform($n, $user, ['include_photos' => false]));
@@ -525,6 +588,7 @@ class IntermediationController extends Controller
         }
 
         $query = Negotiation::with([
+            'payments',
             'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
             'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
         ])
@@ -663,6 +727,8 @@ class IntermediationController extends Controller
             ], 409);
         }
 
+        AuditLogger::log($request, 'negotiation.admin_destroy', $negotiation);
+
         return response()->json(['success' => true]);
     }
 
@@ -699,18 +765,25 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        $negotiation = Negotiation::find($id);
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
+        $negotiation = null;
+        $response = $this->withLockedNegotiation($id, function (Negotiation $locked) use (&$negotiation, $request) {
+            if ($locked->status !== 'awaiting_admin_approval') {
+                return response()->json(['message' => 'Aprovação não disponível neste status.'], 422);
+            }
 
-        if ($negotiation->status !== 'awaiting_admin_approval') {
-            return response()->json(['message' => 'Aprovação não disponível neste status.'], 422);
-        }
+            $locked->update([
+                'status' => 'waiting_payment',
+            ]);
 
-        $negotiation->update([
-            'status' => 'waiting_payment',
-        ]);
+            $negotiation = $locked;
+            AuditLogger::log($request, 'negotiation.admin_approve', $locked);
+
+            return null;
+        });
+
+        if ($response instanceof JsonResponse) {
+            return $response;
+        }
 
         // Se Mercado Pago estiver configurado, tenta gerar Pix automaticamente para o comprador.
         // Isso permite que o front mostre um Pix real (em vez do fallback).
@@ -760,19 +833,21 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        $negotiation = Negotiation::find($id);
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
+        $reason = (string) $request->input('reason', '');
 
-        $reason = $request->input('reason', '');
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($reason, $request) {
+            $negotiation->update([
+                'status' => 'rejected_by_admin',
+                'rejection_reason' => $reason,
+            ]);
 
-        $negotiation->update([
-            'status' => 'rejected_by_admin',
-            'rejection_reason' => $reason,
-        ]);
+            AuditLogger::log($request, 'negotiation.admin_reject', $negotiation, [
+                'has_reason' => trim((string) $reason) !== '',
+                'reason_length' => strlen((string) $reason),
+            ]);
 
-        return response()->json(['success' => true]);
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -781,21 +856,9 @@ class IntermediationController extends Controller
     public function approve(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
 
         // Intermediadora/inspector: aprovar/reprovar após inspeção
         if (in_array($user->role, ['admin', 'inspector'], true) && $request->has('approved')) {
-            if ($negotiation->status !== 'at_intermediary') {
-                return response()->json(['message' => 'Ação disponível apenas quando o produto está na intermediadora.'], 422);
-            }
-            if (! $negotiation->inspection_saved_at) {
-                return response()->json(['message' => 'Envie o relatório de inspeção antes de aprovar/reprovar.'], 422);
-            }
-
             $approvedRaw = $request->input('approved');
             $approved = filter_var($approvedRaw, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
             if ($approved === null) {
@@ -803,92 +866,121 @@ class IntermediationController extends Controller
             }
 
             $notes = (string) ($request->input('notes') ?? $request->input('intermediary_notes') ?? '');
+            $trackingToBuyer = trim((string) $request->input('tracking_to_buyer'));
 
-            if ($approved) {
-                $trackingToBuyer = trim((string) $request->input('tracking_to_buyer'));
-                if ($trackingToBuyer === '') {
-                    return response()->json(['message' => 'Informe o rastreio para o comprador.'], 422);
+            return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($request, $approved, $notes, $trackingToBuyer) {
+                if ($negotiation->status !== 'at_intermediary') {
+                    return response()->json(['message' => 'Ação disponível apenas quando o produto está na intermediadora.'], 422);
+                }
+                if (! $negotiation->inspection_saved_at) {
+                    return response()->json(['message' => 'Envie o relatório de inspeção antes de aprovar/reprovar.'], 422);
+                }
+
+                if ($approved) {
+                    if ($trackingToBuyer === '') {
+                        return response()->json(['message' => 'Informe o rastreio para o comprador.'], 422);
+                    }
+
+                    $negotiation->update([
+                        'buyer_tracking_code' => $trackingToBuyer,
+                        'status' => 'approved',
+                        'intermediary_approval_confirmed_at' => now(),
+                        'sent_to_buyer_at' => now(),
+                        'intermediary_notes' => $notes !== '' ? $notes : $negotiation->intermediary_notes,
+                    ]);
+
+                    AuditLogger::log($request, 'negotiation.intermediary_approve', $negotiation);
+
+                    return response()->json(['success' => true]);
                 }
 
                 $negotiation->update([
-                    'buyer_tracking_code' => $trackingToBuyer,
-                    'status' => 'approved',
+                    'status' => 'rejected_by_admin',
+                    'rejection_reason' => $notes !== '' ? $notes : $negotiation->rejection_reason,
                     'intermediary_approval_confirmed_at' => now(),
-                    'sent_to_buyer_at' => now(),
-                    'intermediary_notes' => $notes !== '' ? $notes : $negotiation->intermediary_notes,
+                ]);
+
+                AuditLogger::log($request, 'negotiation.intermediary_reject', $negotiation, [
+                    'has_reason' => trim($notes) !== '',
+                    'reason_length' => strlen($notes),
+                ]);
+
+                return response()->json(['success' => true]);
+            });
+        }
+
+        // Buyer accepts the negotiation
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($request, $user) {
+            if ($negotiation->status !== 'pending_acceptance') {
+                return response()->json(['message' => 'Aceite não disponível neste status.'], 422);
+            }
+
+            if ($negotiation->seller_id === $user->id) {
+                return response()->json(['message' => 'O vendedor não pode aceitar a própria negociação.'], 403);
+            }
+
+            if ($user->role !== 'buyer') {
+                return response()->json(['message' => 'Apenas compradores podem aceitar uma negociação.'], 403);
+            }
+
+            $goldBuyerUpdates = [];
+            if ($this->isCurrencyCategory($negotiation->category)) {
+                $buyerData = Validator::make($request->all(), [
+                    'gold_buyer_character_name' => ['required', 'string', 'max:120'],
+                    'gold_buyer_server' => ['required', 'string', 'max:120'],
+                    'gold_buyer_faction' => ['required', 'string', 'max:60'],
+                    'gold_buyer_time_options' => ['required', 'array', 'min:1', 'max:5'],
+                    'gold_buyer_time_options.*' => ['string', 'max:120'],
+                    'gold_buyer_notes' => ['nullable', 'string', 'max:2000'],
+                ])->validate();
+
+                $timeOptions = $this->normalizeTimeOptions($buyerData['gold_buyer_time_options'] ?? []);
+                if (! $timeOptions) {
+                    return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 5).'], 422);
+                }
+
+                $goldBuyerUpdates = [
+                    'gold_buyer_character_name' => (string) $buyerData['gold_buyer_character_name'],
+                    'gold_buyer_server' => (string) $buyerData['gold_buyer_server'],
+                    'gold_buyer_faction' => (string) $buyerData['gold_buyer_faction'],
+                    'gold_buyer_time_options' => $timeOptions,
+                    'gold_buyer_availability' => implode("\n", $timeOptions),
+                    'gold_buyer_notes' => array_key_exists('gold_buyer_notes', $buyerData) ? (string) $buyerData['gold_buyer_notes'] : null,
+                    'gold_buyer_info_submitted_at' => now(),
+                ];
+            }
+
+            $becameBuyer = false;
+            if (! $negotiation->buyer_id) {
+                $becameBuyer = true;
+                $negotiation->update(array_merge([
+                    'buyer_id' => $user->id,
+                    'status' => 'awaiting_admin_approval',
+                    'accepted_at' => now(),
+                ], $goldBuyerUpdates));
+
+                AuditLogger::log($request, 'negotiation.accepted_by_buyer', $negotiation, [
+                    'became_buyer' => true,
                 ]);
 
                 return response()->json(['success' => true]);
             }
 
-            $negotiation->update([
-                'status' => 'rejected_by_admin',
-                'rejection_reason' => $notes !== '' ? $notes : $negotiation->rejection_reason,
-                'intermediary_approval_confirmed_at' => now(),
-            ]);
+            if ($negotiation->isBuyer($user)) {
+                $negotiation->update(array_merge([
+                    'status' => 'awaiting_admin_approval',
+                    'accepted_at' => now(),
+                ], $goldBuyerUpdates));
 
-            return response()->json(['success' => true]);
-        }
+                AuditLogger::log($request, 'negotiation.accepted_by_buyer', $negotiation, [
+                    'became_buyer' => $becameBuyer,
+                ]);
 
-        if ($negotiation->status !== 'pending_acceptance') {
-            return response()->json(['message' => 'Aceite não disponível neste status.'], 422);
-        }
-
-        if ($negotiation->seller_id === $user->id) {
-            return response()->json(['message' => 'O vendedor não pode aceitar a própria negociação.'], 403);
-        }
-
-        if ($user->role !== 'buyer') {
-            return response()->json(['message' => 'Apenas compradores podem aceitar uma negociação.'], 403);
-        }
-
-        $goldBuyerUpdates = [];
-        if ($this->isCurrencyCategory($negotiation->category)) {
-            $buyerData = Validator::make($request->all(), [
-                'gold_buyer_character_name' => ['required', 'string', 'max:120'],
-                'gold_buyer_server' => ['required', 'string', 'max:120'],
-                'gold_buyer_faction' => ['required', 'string', 'max:60'],
-                'gold_buyer_time_options' => ['required', 'array', 'min:1', 'max:5'],
-                'gold_buyer_time_options.*' => ['string', 'max:120'],
-                'gold_buyer_notes' => ['nullable', 'string', 'max:2000'],
-            ])->validate();
-
-            $timeOptions = $this->normalizeTimeOptions($buyerData['gold_buyer_time_options'] ?? []);
-            if (! $timeOptions) {
-                return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 5).'], 422);
+                return response()->json(['success' => true]);
             }
 
-            $goldBuyerUpdates = [
-                'gold_buyer_character_name' => (string) $buyerData['gold_buyer_character_name'],
-                'gold_buyer_server' => (string) $buyerData['gold_buyer_server'],
-                'gold_buyer_faction' => (string) $buyerData['gold_buyer_faction'],
-                'gold_buyer_time_options' => $timeOptions,
-                'gold_buyer_availability' => implode("\n", $timeOptions),
-                'gold_buyer_notes' => array_key_exists('gold_buyer_notes', $buyerData) ? (string) $buyerData['gold_buyer_notes'] : null,
-                'gold_buyer_info_submitted_at' => now(),
-            ];
-        }
-
-        // If no buyer yet, current user becomes buyer by accepting
-        if (! $negotiation->buyer_id) {
-            $negotiation->update(array_merge([
-                'buyer_id' => $user->id,
-                'status' => 'awaiting_admin_approval',
-                'accepted_at' => now(),
-            ], $goldBuyerUpdates));
-            return response()->json(['success' => true]);
-        }
-
-        // Buyer accepts
-        if ($negotiation->isBuyer($user)) {
-            $negotiation->update(array_merge([
-                'status' => 'awaiting_admin_approval',
-                'accepted_at' => now(),
-            ], $goldBuyerUpdates));
-            return response()->json(['success' => true]);
-        }
-
-        return response()->json(['message' => 'Acao nao permitida.'], 403);
+            return response()->json(['message' => 'Acao nao permitida.'], 403);
+        });
     }
 
     /**
@@ -901,25 +993,24 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        $negotiation = Negotiation::find($id);
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($request) {
+            if ($this->isDigitalDeliveryCategory($negotiation->category)) {
+                return response()->json(['message' => 'Negociação digital não possui recebimento físico na intermediadora.'], 422);
+            }
 
-        if ($this->isDigitalDeliveryCategory($negotiation->category)) {
-            return response()->json(['message' => 'Negociação digital não possui recebimento físico na intermediadora.'], 422);
-        }
+            if ($negotiation->status !== 'shipped') {
+                return response()->json(['message' => 'Recebimento disponível apenas após envio (Em Trânsito).'], 422);
+            }
 
-        if ($negotiation->status !== 'shipped') {
-            return response()->json(['message' => 'Recebimento disponível apenas após envio (Em Trânsito).'], 422);
-        }
+            $negotiation->update([
+                'status' => 'at_intermediary',
+                'received_at' => now(),
+            ]);
 
-        $negotiation->update([
-            'status' => 'at_intermediary',
-            'received_at' => now(),
-        ]);
+            AuditLogger::log($request, 'negotiation.received_at_intermediary', $negotiation);
 
-        return response()->json(['success' => true]);
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -928,20 +1019,6 @@ class IntermediationController extends Controller
     public function buyerConfirm(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        if (! $negotiation->isBuyer($user)) {
-            return response()->json(['message' => 'Apenas o comprador pode confirmar.'], 403);
-        }
-
-        if ($negotiation->status !== 'approved') {
-            return response()->json(['message' => 'Confirmação de entrega disponível apenas após aprovação da intermediadora.'], 422);
-        }
-
         $data = Validator::make($request->all(), [
             'rating' => ['nullable', 'integer', 'min:1', 'max:10'],
             'comment' => ['nullable', 'string', 'max:500'],
@@ -950,15 +1027,30 @@ class IntermediationController extends Controller
         $rating = array_key_exists('rating', $data) ? $data['rating'] : null;
         $comment = array_key_exists('comment', $data) ? $data['comment'] : null;
 
-        $negotiation->update([
-            'status' => 'delivered',
-            'delivered_at' => now(),
-            'buyer_confirmed_at' => now(),
-            'buyer_rating' => $rating ?? $negotiation->buyer_rating,
-            'buyer_rating_note' => is_string($comment) ? trim($comment) : $negotiation->buyer_rating_note,
-        ]);
 
-        return response()->json(['success' => true]);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($request, $user, $rating, $comment) {
+            if (! $negotiation->isBuyer($user)) {
+                return response()->json(['message' => 'Apenas o comprador pode confirmar.'], 403);
+            }
+
+            if ($negotiation->status !== 'approved') {
+                return response()->json(['message' => 'Confirmação de entrega disponível apenas após aprovação da intermediadora.'], 422);
+            }
+
+            $negotiation->update([
+                'status' => 'delivered',
+                'delivered_at' => now(),
+                'buyer_confirmed_at' => now(),
+                'buyer_rating' => $rating ?? $negotiation->buyer_rating,
+                'buyer_rating_note' => is_string($comment) ? trim($comment) : $negotiation->buyer_rating_note,
+            ]);
+
+            AuditLogger::log($request, 'negotiation.buyer_confirmed_delivery', $negotiation, [
+                'has_rating' => $rating !== null,
+            ]);
+
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1032,47 +1124,57 @@ class IntermediationController extends Controller
     public function tracking(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        if ($this->isDigitalDeliveryCategory($negotiation->category)) {
-            return response()->json(['message' => 'Negociação digital não utiliza rastreio físico.'], 422);
-        }
-
         $isAdmin = $user->role === 'admin';
 
-        if (! $negotiation->isSeller($user) && ! $isAdmin) {
-            return response()->json(['message' => 'Apenas o vendedor pode adicionar rastreio.'], 403);
-        }
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($request, $user, $isAdmin) {
+            if ($this->isDigitalDeliveryCategory($negotiation->category)) {
+                return response()->json(['message' => 'Negociação digital não utiliza rastreio físico.'], 422);
+            }
 
-        // Vendedor só pode registrar o envio quando estiver em "Aguardando Envio".
-        // Admin pode corrigir/editar o código mesmo em outros status (sem alterar o status automaticamente).
-        if (! $isAdmin && $negotiation->status !== 'waiting_shipment') {
-            return response()->json(['message' => 'Rastreio disponível apenas após confirmação do pagamento (Aguardando Envio).'], 422);
-        }
+            if (! $negotiation->isSeller($user) && ! $isAdmin) {
+                return response()->json(['message' => 'Apenas o vendedor pode adicionar rastreio.'], 403);
+            }
 
-        $data = Validator::make($request->all(), [
-            'tracking_code' => ['required', 'string', 'max:100'],
-            'tracking_carrier' => ['nullable', 'string', 'max:100'],
-        ])->validate();
+            $statusBefore = (string) $negotiation->status;
 
-        $update = [
-            'tracking_code' => $data['tracking_code'],
-            'tracking_carrier' => $data['tracking_carrier'] ?? null,
-        ];
+            // Vendedor só pode registrar o envio quando estiver em "Aguardando Envio".
+            // Admin pode corrigir/editar o código mesmo em outros status (sem alterar o status automaticamente).
+            if (! $isAdmin && $statusBefore !== 'waiting_shipment') {
+                return response()->json(['message' => 'Rastreio disponível apenas após confirmação do pagamento (Aguardando Envio).'], 422);
+            }
 
-        // Só força transição de status quando estiver no fluxo normal de envio.
-        if ($negotiation->status === 'waiting_shipment') {
-            $update['status'] = 'shipped';
-            $update['shipped_at'] = $negotiation->shipped_at ?? now();
-        }
+            $data = Validator::make($request->all(), [
+                'tracking_code' => ['required', 'string', 'max:100'],
+                'tracking_carrier' => ['nullable', 'string', 'max:100'],
+            ])->validate();
 
-        $negotiation->update($update);
+            $update = [
+                'tracking_code' => $data['tracking_code'],
+                'tracking_carrier' => $data['tracking_carrier'] ?? null,
+            ];
 
-        return response()->json(['success' => true]);
+            $autoTransition = false;
+
+            // Só força transição de status quando estiver no fluxo normal de envio.
+            if ($statusBefore === 'waiting_shipment') {
+                $autoTransition = true;
+                $update['status'] = 'shipped';
+                $update['shipped_at'] = $negotiation->shipped_at ?? now();
+            }
+
+            $negotiation->update($update);
+
+            AuditLogger::log($request, 'negotiation.tracking_set', $negotiation, [
+                'actor_role' => (string) $user->role,
+                'status_before' => $statusBefore,
+                'status_after' => (string) $negotiation->status,
+                'auto_transition' => $autoTransition,
+                'carrier_provided' => ! empty($data['tracking_carrier']),
+                'tracking_code_length' => strlen((string) $data['tracking_code']),
+            ]);
+
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1085,37 +1187,49 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        $negotiation = Negotiation::find($id);
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($request, $user) {
+            if ($this->isDigitalDeliveryCategory($negotiation->category)) {
+                return response()->json(['message' => 'Negociação digital não possui envio físico para comprador.'], 422);
+            }
 
-        if ($this->isDigitalDeliveryCategory($negotiation->category)) {
-            return response()->json(['message' => 'Negociação digital não possui envio físico para comprador.'], 422);
-        }
+            $statusBefore = (string) $negotiation->status;
 
-        if ($negotiation->status !== 'at_intermediary' && $negotiation->status !== 'approved') {
-            return response()->json(['message' => 'Ação não disponível neste status.'], 422);
-        }
+            if ($statusBefore !== 'at_intermediary' && $statusBefore !== 'approved') {
+                return response()->json(['message' => 'Ação não disponível neste status.'], 422);
+            }
 
-        if (! $negotiation->inspection_saved_at) {
-            return response()->json(['message' => 'Envie o relatório de inspeção antes de informar o rastreio do comprador.'], 422);
-        }
+            if (! $negotiation->inspection_saved_at) {
+                return response()->json(['message' => 'Envie o relatório de inspeção antes de informar o rastreio do comprador.'], 422);
+            }
 
-        $data = Validator::make($request->all(), [
-            'tracking_code' => ['required', 'string', 'max:100'],
-            'tracking_carrier' => ['nullable', 'string', 'max:100'],
-        ])->validate();
+            $data = Validator::make($request->all(), [
+                'tracking_code' => ['required', 'string', 'max:100'],
+                'tracking_carrier' => ['nullable', 'string', 'max:100'],
+            ])->validate();
 
-        $negotiation->update([
-            'buyer_tracking_code' => $data['tracking_code'],
-            'buyer_tracking_carrier' => $data['tracking_carrier'] ?? null,
-            'status' => 'approved',
-            'sent_to_buyer_at' => $negotiation->sent_to_buyer_at ?? now(),
-            'intermediary_approval_confirmed_at' => $negotiation->intermediary_approval_confirmed_at ?? now(),
-        ]);
+            $sentToBuyerAtBefore = $negotiation->sent_to_buyer_at;
+            $approvalConfirmedAtBefore = $negotiation->intermediary_approval_confirmed_at;
 
-        return response()->json(['success' => true]);
+            $negotiation->update([
+                'buyer_tracking_code' => $data['tracking_code'],
+                'buyer_tracking_carrier' => $data['tracking_carrier'] ?? null,
+                'status' => 'approved',
+                'sent_to_buyer_at' => $sentToBuyerAtBefore ?? now(),
+                'intermediary_approval_confirmed_at' => $approvalConfirmedAtBefore ?? now(),
+            ]);
+
+            AuditLogger::log($request, 'negotiation.buyer_tracking_set', $negotiation, [
+                'actor_role' => (string) $user->role,
+                'status_before' => $statusBefore,
+                'status_after' => (string) $negotiation->status,
+                'carrier_provided' => ! empty($data['tracking_carrier']),
+                'buyer_tracking_code_length' => strlen((string) $data['tracking_code']),
+                'sent_to_buyer_at_was_set' => $sentToBuyerAtBefore ? false : true,
+                'approval_confirmed_at_was_set' => $approvalConfirmedAtBefore ? false : true,
+            ]);
+
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1124,29 +1238,30 @@ class IntermediationController extends Controller
     public function buyerReject(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        if ($negotiation->buyer_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
         $data = Validator::make($request->all(), [
             'reason_type' => ['required', 'string', 'max:50'],
             'reason_details' => ['nullable', 'string', 'max:500'],
         ])->validate();
 
-        $negotiation->update([
-            'status' => 'cancelled',
-            'buyer_rejection_reason' => $data['reason_type'],
-            'buyer_rejection_details' => $data['reason_details'] ?? null,
-            'cancelled_at' => now(),
-        ]);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($request, $user, $data) {
+            if ($negotiation->buyer_id !== $user->id) {
+                return response()->json(['message' => 'Acesso negado.'], 403);
+            }
 
-        return response()->json(['success' => true]);
+            $negotiation->update([
+                'status' => 'cancelled',
+                'buyer_rejection_reason' => $data['reason_type'],
+                'buyer_rejection_details' => $data['reason_details'] ?? null,
+                'cancelled_at' => now(),
+            ]);
+
+            AuditLogger::log($request, 'negotiation.buyer_rejected', $negotiation, [
+                'reason_type' => (string) $data['reason_type'],
+                'details_length' => isset($data['reason_details']) ? strlen((string) $data['reason_details']) : 0,
+            ]);
+
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1155,44 +1270,101 @@ class IntermediationController extends Controller
     public function confirmPayment(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        $isAdmin = $user && $user->role === 'admin';
-        if (! $isAdmin && $negotiation->buyer_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
-        if ($negotiation->status !== 'waiting_payment') {
-            return response()->json(['message' => 'Pagamento nao esperado neste status.'], 400);
-        }
 
         $data = Validator::make($request->all(), [
-            'payment_proof' => ['nullable', 'file', 'max:5120', 'mimes:jpg,jpeg,png,pdf'],
+            'payment_proof' => ['nullable', 'file', 'max:5120', 'mimes:jpg,jpeg,png,pdf', 'mimetypes:image/jpeg,image/png,application/pdf'],
         ])->validate();
 
         $proofPath = null;
         if ($request->hasFile('payment_proof')) {
-            $proofPath = $request->file('payment_proof')->store('negotiations/payment-proofs', 'public');
+            // Store privately (local disk is configured to storage/app/private)
+            $proofPath = $request->file('payment_proof')->store('negotiations/payment-proofs', 'local');
         }
 
-        $nextStatus = $this->nextStatusAfterPayment($negotiation);
+        DB::transaction(function () use ($id, $user, $proofPath, $request) {
+            $negotiation = Negotiation::lockForUpdate()->find($id);
 
-        $payload = [
-            'status' => $nextStatus,
-            'paid_at' => now(),
-            'payment_confirmed_by_buyer' => true,
-        ];
+            if (! $negotiation) {
+                abort(404, 'Negociacao nao encontrada.');
+            }
 
-        if ($proofPath) {
-            $payload['buyer_payment_proof'] = $proofPath;
-            $payload['buyer_payment_proof_uploaded_at'] = now();
+            $isAdmin = $user && $user->role === 'admin';
+            if (! $isAdmin && $negotiation->buyer_id !== $user->id) {
+                abort(403, 'Acesso negado.');
+            }
+
+            if ($negotiation->status !== 'waiting_payment') {
+                abort(400, 'Pagamento nao esperado neste status.');
+            }
+
+            $nextStatus = $this->nextStatusAfterPayment($negotiation);
+
+            $payload = [
+                'status' => $nextStatus,
+                'paid_at' => now(),
+                'payment_confirmed_by_buyer' => true,
+            ];
+
+            if ($proofPath) {
+                $payload['buyer_payment_proof'] = $proofPath;
+                $payload['buyer_payment_proof_uploaded_at'] = now();
+            }
+
+            $negotiation->update($payload);
+
+            AuditLogger::log($request, 'negotiation.payment_confirmed', $negotiation, [
+                'has_proof' => (bool) $proofPath,
+            ]);
+
+            $this->upsertPaymentsAfterPaymentConfirmed(
+                $negotiation,
+                $proofPath ? 'manual' : null,
+                null,
+                null,
+            );
+        });
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Admin: confirmar que o repasse ao vendedor foi feito (marca payment.type=release como confirmado).
+     */
+    public function confirmReleasePayment(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if (! $user || $user->role !== 'admin') {
+            return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        $negotiation->update($payload);
+        DB::transaction(function () use ($id, $request) {
+            $negotiation = Negotiation::lockForUpdate()->find($id);
+            if (! $negotiation) {
+                abort(404, 'Negociacao nao encontrada.');
+            }
+
+            $isGoldReady = $this->isCurrencyCategory($negotiation->category)
+                && (bool) $negotiation->gold_buyer_received_confirmed_at
+                && (bool) $negotiation->gold_seller_sent_confirmed_at;
+
+            if ($negotiation->status !== 'delivered' && ! $isGoldReady) {
+                abort(422, 'Repasse disponível apenas após conclusão da negociação.');
+            }
+
+            $payment = Payment::firstOrCreate(
+                ['negotiation_id' => $negotiation->id, 'type' => 'release'],
+                ['amount' => (float) $negotiation->price, 'currency' => 'BRL']
+            );
+
+            if (! $payment->confirmed_at) {
+                $payment->forceFill([
+                    'confirmed_at' => now(),
+                    'provider' => $payment->provider ?? 'manual',
+                ])->save();
+            }
+
+            AuditLogger::log($request, 'negotiation.release_payment_confirmed', $negotiation);
+        });
 
         return response()->json(['success' => true]);
     }
@@ -1203,34 +1375,30 @@ class IntermediationController extends Controller
     public function submitGameAccountChangeRequest(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        if (! $this->isGameAccountCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para Conta de jogo.'], 422);
-        }
-
-        if ($negotiation->buyer_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
-        if ($negotiation->status !== 'waiting_digital_delivery') {
-            return response()->json(['message' => 'Dados de alteração disponíveis apenas após o pagamento confirmado.'], 422);
-        }
-
         $data = Validator::make($request->all(), [
             'game_account_buyer_change_request' => ['required', 'string', 'min:10', 'max:5000'],
         ])->validate();
 
-        $negotiation->update([
-            'game_account_buyer_change_request' => (string) $data['game_account_buyer_change_request'],
-            'game_account_buyer_change_requested_at' => now(),
-        ]);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user, $data) {
+            if (! $this->isGameAccountCategory($negotiation->category)) {
+                return response()->json(['message' => 'Ação disponível apenas para Conta de jogo.'], 422);
+            }
 
-        return response()->json(['success' => true]);
+            if ($negotiation->buyer_id !== $user->id) {
+                return response()->json(['message' => 'Acesso negado.'], 403);
+            }
+
+            if ($negotiation->status !== 'waiting_digital_delivery') {
+                return response()->json(['message' => 'Dados de alteração disponíveis apenas após o pagamento confirmado.'], 422);
+            }
+
+            $negotiation->update([
+                'game_account_buyer_change_request' => (string) $data['game_account_buyer_change_request'],
+                'game_account_buyer_change_requested_at' => now(),
+            ]);
+
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1240,38 +1408,34 @@ class IntermediationController extends Controller
     public function submitDigitalDeliveryInfo(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        if (! $this->isDigitalDeliveryCategory($negotiation->category)
-            || $this->isGameAccountCategory($negotiation->category)
-            || $this->isCurrencyCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para categorias digitais (exceto Conta de jogo e Moedas / Gold / Créditos).'], 422);
-        }
-
-        if ($negotiation->seller_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
-        if ($negotiation->status !== 'waiting_digital_delivery') {
-            return response()->json(['message' => 'Envio digital disponível apenas após o pagamento confirmado.'], 422);
-        }
-
         $data = Validator::make($request->all(), [
             'digital_delivery_info' => ['required', 'string', 'min:5', 'max:5000'],
         ])->validate();
 
-        $negotiation->update([
-            'digital_delivery_info' => (string) $data['digital_delivery_info'],
-            'digital_delivery_info_sent_by_user_id' => $user->id,
-            'digital_delivery_info_sent_at' => now(),
-            'digital_delivery_info_viewed_by_buyer_at' => null,
-        ]);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user, $data) {
+            if (! $this->isDigitalDeliveryCategory($negotiation->category)
+                || $this->isGameAccountCategory($negotiation->category)
+                || $this->isCurrencyCategory($negotiation->category)) {
+                return response()->json(['message' => 'Ação disponível apenas para categorias digitais (exceto Conta de jogo e Moedas / Gold / Créditos).'], 422);
+            }
 
-        return response()->json(['success' => true]);
+            if ($negotiation->seller_id !== $user->id) {
+                return response()->json(['message' => 'Acesso negado.'], 403);
+            }
+
+            if ($negotiation->status !== 'waiting_digital_delivery') {
+                return response()->json(['message' => 'Envio digital disponível apenas após o pagamento confirmado.'], 422);
+            }
+
+            $negotiation->update([
+                'digital_delivery_info' => (string) $data['digital_delivery_info'],
+                'digital_delivery_info_sent_by_user_id' => $user->id,
+                'digital_delivery_info_sent_at' => now(),
+                'digital_delivery_info_viewed_by_buyer_at' => null,
+            ]);
+
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1280,24 +1444,6 @@ class IntermediationController extends Controller
     public function submitGoldBuyerInfo(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        if (! $this->isCurrencyCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
-        }
-
-        if ($negotiation->buyer_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
-        if ($negotiation->status !== 'waiting_digital_delivery') {
-            return response()->json(['message' => 'Dados da entrega disponíveis apenas após o pagamento confirmado.'], 422);
-        }
-
         $data = Validator::make($request->all(), [
             'gold_buyer_character_name' => ['required', 'string', 'max:120'],
             'gold_buyer_server' => ['required', 'string', 'max:120'],
@@ -1312,17 +1458,31 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 5).'], 422);
         }
 
-        $negotiation->update([
-            'gold_buyer_character_name' => (string) $data['gold_buyer_character_name'],
-            'gold_buyer_server' => (string) $data['gold_buyer_server'],
-            'gold_buyer_faction' => (string) $data['gold_buyer_faction'],
-            'gold_buyer_time_options' => $timeOptions,
-            'gold_buyer_availability' => implode("\n", $timeOptions),
-            'gold_buyer_notes' => array_key_exists('gold_buyer_notes', $data) ? (string) $data['gold_buyer_notes'] : null,
-            'gold_buyer_info_submitted_at' => now(),
-        ]);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user, $data, $timeOptions) {
+            if (! $this->isCurrencyCategory($negotiation->category)) {
+                return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+            }
 
-        return response()->json(['success' => true]);
+            if ($negotiation->buyer_id !== $user->id) {
+                return response()->json(['message' => 'Acesso negado.'], 403);
+            }
+
+            if ($negotiation->status !== 'waiting_digital_delivery') {
+                return response()->json(['message' => 'Dados da entrega disponíveis apenas após o pagamento confirmado.'], 422);
+            }
+
+            $negotiation->update([
+                'gold_buyer_character_name' => (string) $data['gold_buyer_character_name'],
+                'gold_buyer_server' => (string) $data['gold_buyer_server'],
+                'gold_buyer_faction' => (string) $data['gold_buyer_faction'],
+                'gold_buyer_time_options' => $timeOptions,
+                'gold_buyer_availability' => implode("\n", $timeOptions),
+                'gold_buyer_notes' => array_key_exists('gold_buyer_notes', $data) ? (string) $data['gold_buyer_notes'] : null,
+                'gold_buyer_info_submitted_at' => now(),
+            ]);
+
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1331,24 +1491,6 @@ class IntermediationController extends Controller
     public function submitGoldSellerInfo(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        if (! $this->isCurrencyCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
-        }
-
-        if ($negotiation->seller_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
-        if ($negotiation->status !== 'waiting_digital_delivery') {
-            return response()->json(['message' => 'Envio disponível apenas após o pagamento confirmado.'], 422);
-        }
-
         $data = Validator::make($request->all(), [
             'gold_seller_time_options' => ['required', 'array', 'min:1', 'max:5'],
             'gold_seller_time_options.*' => ['string', 'max:120'],
@@ -1360,17 +1502,31 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 5).'], 422);
         }
 
-        $negotiation->update([
-            'gold_seller_time_options' => $timeOptions,
-            'gold_seller_availability' => implode("\n", $timeOptions),
-            'gold_seller_delivery_method' => (string) $data['gold_seller_delivery_method'],
-            'gold_seller_info_submitted_at' => now(),
-            // Seller changed schedule/method => buyer must confirm again.
-            'gold_schedule_confirmed_at' => null,
-            'gold_buyer_selected_time' => null,
-        ]);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user, $data, $timeOptions) {
+            if (! $this->isCurrencyCategory($negotiation->category)) {
+                return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+            }
 
-        return response()->json(['success' => true]);
+            if ($negotiation->seller_id !== $user->id) {
+                return response()->json(['message' => 'Acesso negado.'], 403);
+            }
+
+            if ($negotiation->status !== 'waiting_digital_delivery') {
+                return response()->json(['message' => 'Envio disponível apenas após o pagamento confirmado.'], 422);
+            }
+
+            $negotiation->update([
+                'gold_seller_time_options' => $timeOptions,
+                'gold_seller_availability' => implode("\n", $timeOptions),
+                'gold_seller_delivery_method' => (string) $data['gold_seller_delivery_method'],
+                'gold_seller_info_submitted_at' => now(),
+                // Seller changed schedule/method => buyer must confirm again.
+                'gold_schedule_confirmed_at' => null,
+                'gold_buyer_selected_time' => null,
+            ]);
+
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1379,47 +1535,44 @@ class IntermediationController extends Controller
     public function confirmGoldSchedule(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        if (! $this->isCurrencyCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
-        }
-
-        if ($negotiation->buyer_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
-        if (! in_array($negotiation->status, ['awaiting_admin_approval', 'waiting_digital_delivery'], true)) {
-            return response()->json(['message' => 'Confirmação disponível apenas após aceitar a negociação.'], 422);
-        }
-
-        if (! $negotiation->gold_seller_time_options || ! $negotiation->gold_seller_delivery_method) {
-            return response()->json(['message' => 'O vendedor ainda não informou horário/método de entrega.'], 422);
-        }
-
         $data = Validator::make($request->all(), [
             'gold_buyer_selected_time' => ['required', 'string', 'max:120'],
         ])->validate();
 
         $selected = trim((string) $data['gold_buyer_selected_time']);
-        $sellerOptions = $this->normalizeTimeOptions($negotiation->gold_seller_time_options);
-        if ($sellerOptions && ! in_array($selected, $sellerOptions, true)) {
-            return response()->json(['message' => 'Selecione um horário enviado pelo vendedor.'], 422);
-        }
 
-        $negotiation->update([
-            'gold_schedule_confirmed_at' => now(),
-            'gold_buyer_selected_time' => $selected,
-        ]);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user, $selected) {
+            if (! $this->isCurrencyCategory($negotiation->category)) {
+                return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+            }
 
-        return response()->json([
-            'success' => true,
-            'notice' => 'Horário confirmado. Ambos devem aguardar até 10 minutos para o outro entrar.',
-        ]);
+            if ($negotiation->buyer_id !== $user->id) {
+                return response()->json(['message' => 'Acesso negado.'], 403);
+            }
+
+            if (! in_array($negotiation->status, ['awaiting_admin_approval', 'waiting_digital_delivery'], true)) {
+                return response()->json(['message' => 'Confirmação disponível apenas após aceitar a negociação.'], 422);
+            }
+
+            if (! $negotiation->gold_seller_time_options || ! $negotiation->gold_seller_delivery_method) {
+                return response()->json(['message' => 'O vendedor ainda não informou horário/método de entrega.'], 422);
+            }
+
+            $sellerOptions = $this->normalizeTimeOptions($negotiation->gold_seller_time_options);
+            if ($sellerOptions && ! in_array($selected, $sellerOptions, true)) {
+                return response()->json(['message' => 'Selecione um horário enviado pelo vendedor.'], 422);
+            }
+
+            $negotiation->update([
+                'gold_schedule_confirmed_at' => now(),
+                'gold_buyer_selected_time' => $selected,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'notice' => 'Horário confirmado. Ambos devem aguardar até 10 minutos para o outro entrar.',
+            ]);
+        });
     }
 
     /**
@@ -1428,36 +1581,32 @@ class IntermediationController extends Controller
     public function submitGoldBuyerReschedule(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        if (! $this->isCurrencyCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
-        }
-
-        if ($negotiation->buyer_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
-        if ($negotiation->status !== 'waiting_digital_delivery') {
-            return response()->json(['message' => 'Solicitação disponível apenas após o pagamento confirmado.'], 422);
-        }
-
         $data = Validator::make($request->all(), [
             'gold_buyer_reschedule_request' => ['required', 'string', 'min:10', 'max:2000'],
         ])->validate();
 
-        $negotiation->update([
-            'gold_buyer_reschedule_request' => (string) $data['gold_buyer_reschedule_request'],
-            'gold_buyer_reschedule_requested_at' => now(),
-            'gold_schedule_confirmed_at' => null,
-            'gold_buyer_selected_time' => null,
-        ]);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user, $data) {
+            if (! $this->isCurrencyCategory($negotiation->category)) {
+                return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+            }
 
-        return response()->json(['success' => true]);
+            if ($negotiation->buyer_id !== $user->id) {
+                return response()->json(['message' => 'Acesso negado.'], 403);
+            }
+
+            if ($negotiation->status !== 'waiting_digital_delivery') {
+                return response()->json(['message' => 'Solicitação disponível apenas após o pagamento confirmado.'], 422);
+            }
+
+            $negotiation->update([
+                'gold_buyer_reschedule_request' => (string) $data['gold_buyer_reschedule_request'],
+                'gold_buyer_reschedule_requested_at' => now(),
+                'gold_schedule_confirmed_at' => null,
+                'gold_buyer_selected_time' => null,
+            ]);
+
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1466,41 +1615,40 @@ class IntermediationController extends Controller
     public function confirmGoldBuyerReceived(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user) {
+            if (! $this->isCurrencyCategory($negotiation->category)) {
+                return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+            }
 
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
+            if ($negotiation->buyer_id !== $user->id) {
+                return response()->json(['message' => 'Acesso negado.'], 403);
+            }
 
-        if (! $this->isCurrencyCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
-        }
+            if ($negotiation->status !== 'waiting_digital_delivery') {
+                return response()->json(['message' => 'Confirmação disponível apenas após o pagamento confirmado.'], 422);
+            }
 
-        if ($negotiation->buyer_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
+            if (! $negotiation->gold_schedule_confirmed_at) {
+                return response()->json(['message' => 'Confirme o horário antes de confirmar o recebimento.'], 422);
+            }
 
-        if ($negotiation->status !== 'waiting_digital_delivery') {
-            return response()->json(['message' => 'Confirmação disponível apenas após o pagamento confirmado.'], 422);
-        }
+            if (! $negotiation->gold_buyer_received_confirmed_at) {
+                $negotiation->update([
+                    'gold_buyer_received_confirmed_at' => now(),
+                    'buyer_confirmed_at' => now(),
+                ]);
+                $negotiation->refresh();
+            }
 
-        if (! $negotiation->gold_schedule_confirmed_at) {
-            return response()->json(['message' => 'Confirme o horário antes de confirmar o recebimento.'], 422);
-        }
+            if ($negotiation->gold_seller_sent_confirmed_at && $negotiation->status !== 'delivered') {
+                $negotiation->update([
+                    'status' => 'delivered',
+                    'delivered_at' => $negotiation->delivered_at ?? now(),
+                ]);
+            }
 
-        $negotiation->update([
-            'gold_buyer_received_confirmed_at' => now(),
-            'buyer_confirmed_at' => now(),
-        ]);
-
-        if ($negotiation->gold_seller_sent_confirmed_at) {
-            $negotiation->update([
-                'status' => 'delivered',
-                'delivered_at' => $negotiation->delivered_at ?? now(),
-            ]);
-        }
-
-        return response()->json(['success' => true]);
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1509,40 +1657,39 @@ class IntermediationController extends Controller
     public function confirmGoldSellerSent(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user) {
+            if (! $this->isCurrencyCategory($negotiation->category)) {
+                return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
+            }
 
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
+            if ($negotiation->seller_id !== $user->id) {
+                return response()->json(['message' => 'Acesso negado.'], 403);
+            }
 
-        if (! $this->isCurrencyCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para Moedas / Gold / Créditos.'], 422);
-        }
+            if ($negotiation->status !== 'waiting_digital_delivery') {
+                return response()->json(['message' => 'Confirmação disponível apenas após o pagamento confirmado.'], 422);
+            }
 
-        if ($negotiation->seller_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
+            if (! $negotiation->gold_schedule_confirmed_at) {
+                return response()->json(['message' => 'Confirme o horário antes de confirmar o envio.'], 422);
+            }
 
-        if ($negotiation->status !== 'waiting_digital_delivery') {
-            return response()->json(['message' => 'Confirmação disponível apenas após o pagamento confirmado.'], 422);
-        }
+            if (! $negotiation->gold_seller_sent_confirmed_at) {
+                $negotiation->update([
+                    'gold_seller_sent_confirmed_at' => now(),
+                ]);
+                $negotiation->refresh();
+            }
 
-        if (! $negotiation->gold_schedule_confirmed_at) {
-            return response()->json(['message' => 'Confirme o horário antes de confirmar o envio.'], 422);
-        }
+            if ($negotiation->gold_buyer_received_confirmed_at && $negotiation->status !== 'delivered') {
+                $negotiation->update([
+                    'status' => 'delivered',
+                    'delivered_at' => $negotiation->delivered_at ?? now(),
+                ]);
+            }
 
-        $negotiation->update([
-            'gold_seller_sent_confirmed_at' => now(),
-        ]);
-
-        if ($negotiation->gold_buyer_received_confirmed_at) {
-            $negotiation->update([
-                'status' => 'delivered',
-                'delivered_at' => $negotiation->delivered_at ?? now(),
-            ]);
-        }
-
-        return response()->json(['success' => true]);
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1551,24 +1698,6 @@ class IntermediationController extends Controller
     public function submitGameAccountSellerInfo(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        $negotiation = Negotiation::find($id);
-
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
-
-        if (! $this->isGameAccountCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para Conta de jogo.'], 422);
-        }
-
-        if ($negotiation->seller_id !== $user->id) {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
-        if ($negotiation->status !== 'waiting_digital_delivery') {
-            return response()->json(['message' => 'Dados da conta disponíveis apenas após o pagamento confirmado.'], 422);
-        }
-
         $data = Validator::make($request->all(), [
             'game_account_seller_info' => ['required', 'string', 'min:10', 'max:5000'],
             'seller_fee_deduct_from_payout' => ['nullable'],
@@ -1584,15 +1713,29 @@ class IntermediationController extends Controller
             $deduct = ((int) $deductRaw) === 1;
         }
 
-        $negotiation->update([
-            'game_account_seller_info' => (string) $data['game_account_seller_info'],
-            'seller_fee_deduct_from_payout' => $deduct,
-            'game_account_seller_info_sent_by_user_id' => $user->id,
-            'game_account_seller_info_sent_at' => now(),
-            'game_account_seller_info_viewed_by_buyer_at' => null,
-        ]);
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user, $data, $deduct) {
+            if (! $this->isGameAccountCategory($negotiation->category)) {
+                return response()->json(['message' => 'Ação disponível apenas para Conta de jogo.'], 422);
+            }
 
-        return response()->json(['success' => true]);
+            if ($negotiation->seller_id !== $user->id) {
+                return response()->json(['message' => 'Acesso negado.'], 403);
+            }
+
+            if ($negotiation->status !== 'waiting_digital_delivery') {
+                return response()->json(['message' => 'Dados da conta disponíveis apenas após o pagamento confirmado.'], 422);
+            }
+
+            $negotiation->update([
+                'game_account_seller_info' => (string) $data['game_account_seller_info'],
+                'seller_fee_deduct_from_payout' => $deduct,
+                'game_account_seller_info_sent_by_user_id' => $user->id,
+                'game_account_seller_info_sent_at' => now(),
+                'game_account_seller_info_viewed_by_buyer_at' => null,
+            ]);
+
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1605,25 +1748,24 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        $negotiation = Negotiation::find($id);
-        if (! $negotiation) {
-            return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
-        }
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) {
+            if (! $this->isDigitalDeliveryCategory($negotiation->category)) {
+                return response()->json(['message' => 'Ação disponível apenas para negociações digitais.'], 422);
+            }
 
-        if (! $this->isDigitalDeliveryCategory($negotiation->category)) {
-            return response()->json(['message' => 'Ação disponível apenas para negociações digitais.'], 422);
-        }
+            if ($negotiation->status !== 'waiting_digital_delivery') {
+                return response()->json(['message' => 'Entrega digital não disponível neste status.'], 422);
+            }
 
-        if ($negotiation->status !== 'waiting_digital_delivery') {
-            return response()->json(['message' => 'Entrega digital não disponível neste status.'], 422);
-        }
+            if ($negotiation->status !== 'delivered') {
+                $negotiation->update([
+                    'status' => 'delivered',
+                    'delivered_at' => now(),
+                ]);
+            }
 
-        $negotiation->update([
-            'status' => 'delivered',
-            'delivered_at' => now(),
-        ]);
-
-        return response()->json(['success' => true]);
+            return response()->json(['success' => true]);
+        });
     }
 
     /**
@@ -1673,6 +1815,10 @@ class IntermediationController extends Controller
             'inspection_saved_at' => now(),
         ]);
 
+        AuditLogger::log($request, 'negotiation.inspection_report_saved', $negotiation, [
+            'photos_count' => is_array($allPhotos) ? count($allPhotos) : 0,
+        ]);
+
         $negotiation->load(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state']);
 
         return response()->json([
@@ -1718,6 +1864,10 @@ class IntermediationController extends Controller
         ];
 
         $negotiation->update(['internal_logs' => $logs]);
+
+        AuditLogger::log($request, 'negotiation.internal_log_added', $negotiation, [
+            'type' => $data['type'] ?? 'note',
+        ]);
 
         $negotiation->load(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state']);
 
@@ -1835,6 +1985,10 @@ class IntermediationController extends Controller
             'intermediary_photos' => null,
         ]);
 
+        AuditLogger::log($request, 'negotiation.images_purged', $negotiation, [
+            'deleted' => $deleted,
+        ]);
+
         return response()->json([
             'success' => true,
             'deleted' => $deleted,
@@ -1848,6 +2002,7 @@ class IntermediationController extends Controller
     protected function transform(Negotiation $negotiation, $currentUser, array $options = []): array
     {
         $publicDisk = Storage::disk('public');
+        $privateDisk = Storage::disk('local');
 
         $includePhotos = $options['include_photos'] ?? true;
 
@@ -1882,8 +2037,13 @@ class IntermediationController extends Controller
 
         $buyerPaymentProofUrl = null;
         if ($includePhotos && isset($negotiation->buyer_payment_proof) && is_string($negotiation->buyer_payment_proof) && $negotiation->buyer_payment_proof !== '') {
-            if ($publicDisk->exists($negotiation->buyer_payment_proof)) {
-                $buyerPaymentProofUrl = $publicDisk->url($negotiation->buyer_payment_proof);
+            // Do not expose direct storage URLs; generate a short-lived signed download URL.
+            if ($privateDisk->exists($negotiation->buyer_payment_proof) || $publicDisk->exists($negotiation->buyer_payment_proof)) {
+                $buyerPaymentProofUrl = URL::temporarySignedRoute(
+                    'files.negotiations.payment-proof',
+                    now()->addMinutes(10),
+                    ['id' => $negotiation->id]
+                );
             }
         }
 
@@ -2013,6 +2173,28 @@ class IntermediationController extends Controller
             ];
         }
 
+        $paymentsData = [];
+        try {
+            $payments = $negotiation->relationLoaded('payments')
+                ? $negotiation->payments
+                : $negotiation->payments()->get();
+
+            $paymentsData = $payments
+                ->sortBy(fn ($p) => (string) $p->type)
+                ->map(fn ($p) => [
+                    'id' => $p->id,
+                    'type' => $p->type,
+                    'description' => $p->description,
+                    'amount' => is_numeric($p->amount) ? (float) $p->amount : 0.0,
+                    'currency' => $p->currency,
+                    'confirmed_at' => $this->toIso8601StringOrNull($p->confirmed_at),
+                ])
+                ->values()
+                ->all();
+        } catch (\Throwable $exception) {
+            $paymentsData = [];
+        }
+
         return [
             'id' => $negotiation->id,
             'title' => $title,
@@ -2119,6 +2301,7 @@ class IntermediationController extends Controller
             'internal_logs' => $internalLogs,
             'pix_code' => $negotiation->pix_code,
             'pix_generated_at' => $this->toIso8601StringOrNull($negotiation->pix_generated_at),
+            'payments' => $paymentsData,
             'buyer_payment_proof_url' => $isAdminOrInspector ? $buyerPaymentProofUrl : null,
             'buyer_payment_proof_uploaded_at' => $isAdminOrInspector ? $this->toIso8601StringOrNull($negotiation->buyer_payment_proof_uploaded_at) : null,
             'accepted_at' => $this->toIso8601StringOrNull($negotiation->accepted_at),

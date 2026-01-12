@@ -2,6 +2,10 @@
 
 return [
 
+    // TTL (days) for API tokens issued by AuthController@login.
+    // Enforced by the api.token.expiry middleware.
+    'api_token_ttl_days' => (int) env('API_TOKEN_TTL_DAYS', 30),
+
     /*
     |--------------------------------------------------------------------------
     | Authentication Defaults

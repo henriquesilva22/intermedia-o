@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Intermediação Segura - Plataforma de Transações Online Seguras</title>
     
-    <!-- Tailwind CSS via CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Twind CSS via CDN (compatível com CSP atual) -->
+    <script src="https://cdn.twind.style" crossorigin></script>
     
     <!-- Fontes do Google -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -264,9 +264,10 @@
         }
     </style>
     
-    <!-- Configuração do Tailwind -->
     <script>
-        tailwind.config = {
+        // Twind: habilita classes estilo Tailwind sem build step
+        twind.install({
+            hash: false,
             theme: {
                 extend: {
                     colors: {
@@ -277,15 +278,11 @@
                         accent: '#8b5cf6',
                     },
                     fontFamily: {
-                        'inter': ['Inter', 'sans-serif'],
+                        inter: ['Inter', 'sans-serif'],
                     },
-                    animation: {
-                        'fade-in': 'fadeIn 0.6s ease forwards',
-                        'pulse-slow': 'pulse 3s infinite',
-                    }
-                }
-            }
-        }
+                },
+            },
+        });
     </script>
 </head>
 <body class="font-inter text-gray-800 bg-gray-100">
@@ -857,14 +854,25 @@
         
         // Botão voltar ao topo
         const backToTopBtn = document.getElementById('backToTop');
-        
-        window.addEventListener('scroll', function() {
-            if (window.pageYOffset > 300) {
+
+        let backToTopTicking = false;
+        const updateBackToTopVisibility = () => {
+            const y = window.scrollY || window.pageYOffset || 0;
+            if (y > 300) {
                 backToTopBtn.classList.add('visible');
             } else {
                 backToTopBtn.classList.remove('visible');
             }
-        });
+        };
+
+        window.addEventListener('scroll', function() {
+            if (backToTopTicking) return;
+            backToTopTicking = true;
+            window.requestAnimationFrame(() => {
+                updateBackToTopVisibility();
+                backToTopTicking = false;
+            });
+        }, { passive: true });
         
         backToTopBtn.addEventListener('click', function() {
             window.scrollTo({

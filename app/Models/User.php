@@ -55,6 +55,7 @@ class User extends Authenticatable
             'email_verification_expires_at' => 'datetime',
             'email_verification_sent_at' => 'datetime',
             'last_login_at' => 'datetime',
+            'api_token_expires_at' => 'datetime',
             'confirmation_code_expires_at' => 'datetime',
             'confirmation_code_last_sent_at' => 'datetime',
             'password' => 'hashed',

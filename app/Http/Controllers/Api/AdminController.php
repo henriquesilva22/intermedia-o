@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Negotiation;
 use App\Models\User;
+use App\Support\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -144,6 +145,10 @@ class AdminController extends Controller
                 'message' => 'Não foi possível remover o usuário. Verifique vínculos ativos e tente novamente.' . $debugInfo
             ], 409);
         }
+
+        AuditLogger::log($request, 'admin.user.soft_delete', $user, [
+            'target_user_id' => $id,
+        ]);
 
         return response()->json([
             'success' => true,

@@ -121,7 +121,11 @@
         ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
         
         /* Transições suaves */
-        * { transition-property: color, background-color, border-color, box-shadow, transform, opacity; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 150ms; }
+        a, button, input, select, textarea, [role="button"] {
+            transition-property: color, background-color, border-color, box-shadow, transform, opacity;
+            transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+            transition-duration: 150ms;
+        }
     </style>
 </head>
 <body class="bg-gray-50 font-sans text-gray-800 antialiased">

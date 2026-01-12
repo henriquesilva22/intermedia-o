@@ -49,6 +49,9 @@ return [
         'test_token' => env('MERCADOPAGO_TEST_TOKEN', false),
         // URL pública para webhooks (ex.: https://seu-dominio.com/api/payments/mercadopago/webhook)
         'webhook_url' => env('MERCADOPAGO_WEBHOOK_URL'),
+        // Token compartilhado opcional para validar o webhook.
+        // Se definido, envie o mesmo valor no header X-Webhook-Token (ou query ?token=...).
+        'webhook_token' => env('MERCADOPAGO_WEBHOOK_TOKEN'),
         // Taxa fixa do comprador (em BRL) somada ao valor do produto.
         'buyer_fee_brl' => (float) env('BUYER_FEE_BRL', 15),
     ],

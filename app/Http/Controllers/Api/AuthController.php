@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
 
 class AuthController extends Controller
 {
@@ -36,7 +37,11 @@ class AuthController extends Controller
             'district' => ['nullable', 'string', 'max:100'],
             'city' => ['nullable', 'string', 'max:100'],
             'state' => ['nullable', 'string', 'max:2'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
+            'password' => [
+                'required',
+                'confirmed',
+                Password::min(10)->mixedCase()->numbers()->symbols()->uncompromised(),
+            ],
         ])->validate();
 
         $phone = isset($data['phone']) ? preg_replace('/\D+/', '', $data['phone']) : null;
@@ -119,8 +124,14 @@ class AuthController extends Controller
 
         $plainTextToken = Str::random(60);
 
+        $ttlDays = (int) config('auth.api_token_ttl_days', 30);
+        if ($ttlDays < 1) {
+            $ttlDays = 30;
+        }
+
         $user->forceFill([
             'api_token' => hash('sha256', $plainTextToken),
+            'api_token_expires_at' => now()->addDays($ttlDays),
             'last_login_at' => now(),
         ])->save();
 
@@ -148,7 +159,10 @@ class AuthController extends Controller
         $user = $request->user();
 
         if ($user) {
-            $user->forceFill(['api_token' => null])->save();
+            $user->forceFill([
+                'api_token' => null,
+                'api_token_expires_at' => null,
+            ])->save();
         }
 
         return response()->json([
