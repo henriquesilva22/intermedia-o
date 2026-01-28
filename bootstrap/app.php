@@ -17,6 +17,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'role' => \App\Http\Middleware\EnsureRole::class,
             'api.token.expiry' => \App\Http\Middleware\EnsureApiTokenNotExpired::class,
+            'last.seen' => \App\Http\Middleware\UpdateLastSeenAt::class,
         ]);
 
         $middleware->append(\App\Http\Middleware\SecurityHeaders::class);

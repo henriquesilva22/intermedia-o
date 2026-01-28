@@ -262,6 +262,34 @@
         .glow-effect {
             box-shadow: 0 0 20px rgba(139, 92, 246, 0.15);
         }
+
+        /* Performance: evita custo de render para seções fora da viewport */
+        section#como-funciona,
+        section#vantagens,
+        section#taxas,
+        section#depoimentos,
+        section#cta {
+            content-visibility: auto;
+            contain-intrinsic-size: 1px 900px;
+        }
+
+        /* Em mobile, reduz sombras/efeitos caros durante scroll */
+        @media (max-width: 768px) {
+            .shadow-soft {
+                box-shadow: 0 6px 18px rgba(79, 70, 229, 0.06);
+            }
+
+            .glow-effect {
+                box-shadow: none;
+            }
+
+            .step-card:hover,
+            .fee-card:hover,
+            .testimonial-card:hover {
+                transform: none;
+                box-shadow: none;
+            }
+        }
     </style>
     
     <script>
@@ -287,7 +315,7 @@
 </head>
 <body class="font-inter text-gray-800 bg-gray-100">
 
-    @include('partials.interactive-bg')
+    {{-- Fundo animado removido por performance (scroll/jank em desktop) --}}
 
     <div style="position:relative; z-index:1;">
     
@@ -916,6 +944,7 @@
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
                     entry.target.classList.add('animate-fade-in');
+                    observer.unobserve(entry.target);
                 }
             });
         }, observerOptions);

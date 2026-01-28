@@ -176,12 +176,38 @@ class AuthController extends Controller
     public function searchByEmail(Request $request): JsonResponse
     {
         $email = $request->query('email');
-        
-        if (!$email) {
-            return response()->json(['message' => 'Email é obrigatório.'], 400);
+        $tag = $request->query('tag');
+
+        if (!$email && !$tag) {
+            return response()->json(['message' => 'Informe email ou tag.'], 400);
         }
 
-        $user = User::where('email', $email)->first();
+        $user = null;
+        if ($email) {
+            $user = User::where('email', $email)->first();
+        } else {
+            $raw = trim((string) $tag);
+            $idPart = $raw;
+            $namePart = '';
+            if (str_contains($raw, '#')) {
+                $chunks = explode('#', $raw);
+                $idPart = trim((string) end($chunks));
+                array_pop($chunks);
+                $namePart = trim(implode('#', $chunks));
+            }
+
+            if (!ctype_digit($idPart)) {
+                return response()->json(['user' => null, 'found' => false, 'message' => 'Formato inválido. Use nome#id (ex: henrique#15).']);
+            }
+
+            $user = User::find((int) $idPart);
+            if ($user && $namePart) {
+                $firstName = trim(explode(' ', trim((string) $user->name))[0] ?? '');
+                if ($firstName && mb_strtolower($firstName) !== mb_strtolower($namePart)) {
+                    return response()->json(['user' => null, 'found' => false, 'message' => 'Nome não confere com o ID informado.']);
+                }
+            }
+        }
 
         if (!$user) {
             return response()->json(['user' => null, 'found' => false]);
@@ -192,11 +218,14 @@ class AuthController extends Controller
             return response()->json(['user' => null, 'found' => false, 'message' => 'Você não pode ser o comprador.']);
         }
 
+        $firstName = trim(explode(' ', trim((string) $user->name))[0] ?? '');
+        $displayTag = ($firstName ?: 'usuario') . '#' . $user->id;
+
         return response()->json([
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
-                'email' => $user->email,
+                'tag' => $displayTag,
             ],
             'found' => true
         ]);

@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\FileController;
 use App\Http\Controllers\Api\IntermediationController;
 use App\Http\Controllers\Api\MercadoPagoController;
+use App\Http\Controllers\Api\ServiceFormsController;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:auth-register');
@@ -21,7 +22,7 @@ Route::post('/payments/mercadopago/webhook', [MercadoPagoController::class, 'web
 // Signed file download (public but signed)
 Route::get('/files/negotiations/{id}/payment-proof', [FileController::class, 'downloadPaymentProof'])->middleware('signed')->name('files.negotiations.payment-proof');
 
-Route::middleware(['auth:api', 'api.token.expiry'])->group(function () {
+Route::middleware(['auth:api', 'api.token.expiry', 'last.seen'])->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
 
@@ -30,6 +31,9 @@ Route::middleware(['auth:api', 'api.token.expiry'])->group(function () {
 
     // Busca de usuário por email
     Route::get('/users/search', [AuthController::class, 'searchByEmail'])->middleware('throttle:user-search');
+
+    // Dynamic service forms config
+    Route::get('/service-forms/config', [ServiceFormsController::class, 'config']);
 
     // Intermediation routes
     Route::get('/intermediation', [IntermediationController::class, 'index']);

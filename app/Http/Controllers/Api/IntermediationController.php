@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Negotiation;
+use App\Models\NegotiationField;
 use App\Models\Payment;
 use App\Support\AuditLogger;
 use App\Services\Payments\MercadoPagoService;
@@ -23,6 +24,26 @@ class IntermediationController extends Controller
     private const GAME_ACCOUNT_CATEGORY = 'Conta de jogo';
     private const CURRENCY_CATEGORY = 'Moedas / Gold / Créditos';
     private const KEY_DLC_CATEGORY = 'Chave de jogo / DLC';
+
+    // Service taxonomy categories (category implies service_id)
+    private const SERVICE_BOOST_RANK_CATEGORY = 'Boost de Rank';
+    private const SERVICE_CARRY_PVE_CATEGORY = 'Carry de Conteúdo (PvE)';
+    private const SERVICE_LEVELING_CATEGORY = 'Leveling';
+    private const SERVICE_CURRENCY_CATEGORY = 'Venda de Moeda';
+    private const SERVICE_COLLECTIBLES_CATEGORY = 'Conquistas / Colecionáveis';
+    private const SERVICE_SEASONAL_CATEGORY = 'Serviço de Temporada';
+    private const SERVICE_CUSTOM_CATEGORY = 'Serviço Personalizado';
+
+    private const SERVICE_TAXONOMY_CATEGORY_TO_ID = [
+        self::SERVICE_BOOST_RANK_CATEGORY => 'boost_rank',
+        self::SERVICE_CARRY_PVE_CATEGORY => 'carry_pve',
+        self::SERVICE_LEVELING_CATEGORY => 'leveling',
+        self::SERVICE_CURRENCY_CATEGORY => 'currency',
+        self::SERVICE_COLLECTIBLES_CATEGORY => 'collectibles',
+        self::SERVICE_SEASONAL_CATEGORY => 'seasonal',
+        self::SERVICE_CUSTOM_CATEGORY => 'custom',
+    ];
+
     private const SERVICE_CATEGORY = 'Serviço (boosting / rank / leveling)';
     private const SERVICE_EXCHANGE_CATEGORY = 'Troca de serviço';
 
@@ -51,9 +72,40 @@ class IntermediationController extends Controller
             self::GAME_ACCOUNT_CATEGORY,
             self::CURRENCY_CATEGORY,
             self::KEY_DLC_CATEGORY,
+            self::SERVICE_BOOST_RANK_CATEGORY,
+            self::SERVICE_CARRY_PVE_CATEGORY,
+            self::SERVICE_LEVELING_CATEGORY,
+            self::SERVICE_CURRENCY_CATEGORY,
+            self::SERVICE_COLLECTIBLES_CATEGORY,
+            self::SERVICE_SEASONAL_CATEGORY,
+            self::SERVICE_CUSTOM_CATEGORY,
             self::SERVICE_CATEGORY,
             self::SERVICE_EXCHANGE_CATEGORY,
         ], true);
+    }
+
+    private function serviceIdFromCategory(?string $category): ?string
+    {
+        $category = trim((string) $category);
+        return self::SERVICE_TAXONOMY_CATEGORY_TO_ID[$category] ?? null;
+    }
+
+    /**
+     * Service forms category = category drives a dynamic service form.
+     * Includes the new taxonomy categories and the legacy service category.
+     */
+    private function isServiceFormsCategory(?string $category): bool
+    {
+        $category = trim((string) $category);
+        return $this->serviceIdFromCategory($category) !== null || $category === self::SERVICE_CATEGORY;
+    }
+
+    /**
+     * Categories that require seller schedule options (start dates + time ranges).
+     */
+    private function isServiceScheduleCategory(?string $category): bool
+    {
+        return $this->isServiceFormsCategory($category);
     }
 
     private function isCurrencyCategory(?string $category): bool
@@ -67,7 +119,7 @@ class IntermediationController extends Controller
         return number_format($number, $decimals, ',', '.');
     }
 
-    private function normalizeTimeOptions(mixed $value): array
+    private function normalizeTimeOptions(mixed $value, int $max = 5): array
     {
         if ($value === null || $value === '') {
             return [];
@@ -94,8 +146,101 @@ class IntermediationController extends Controller
         }
 
         $options = array_values(array_unique($options));
-        if (count($options) > 5) {
-            $options = array_slice($options, 0, 5);
+        $max = max(1, (int) $max);
+        if (count($options) > $max) {
+            $options = array_slice($options, 0, $max);
+        }
+
+        return $options;
+    }
+
+    private function normalizeDateOptions(mixed $value, int $max = 3): array
+    {
+        if ($value === null || $value === '') {
+            return [];
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                $value = $decoded;
+            }
+        }
+
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $options = [];
+        foreach ($value as $item) {
+            $text = trim((string) $item);
+            if ($text === '') {
+                continue;
+            }
+            // Expect YYYY-MM-DD
+            if (! preg_match('/^\d{4}-\d{2}-\d{2}$/', $text)) {
+                continue;
+            }
+            $options[] = $text;
+        }
+
+        $options = array_values(array_unique($options));
+        if (count($options) > $max) {
+            $options = array_slice($options, 0, $max);
+        }
+
+        return $options;
+    }
+
+    private function normalizeTimeRangeOptions(mixed $value, int $max = 5): array
+    {
+        if ($value === null || $value === '') {
+            return [];
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                $value = $decoded;
+            }
+        }
+
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $options = [];
+        foreach ($value as $item) {
+            $text = trim((string) $item);
+            if ($text === '') {
+                continue;
+            }
+
+            // Expect HH:MM-HH:MM
+            if (! preg_match('/^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/', $text, $m)) {
+                continue;
+            }
+
+            $h1 = (int) $m[1];
+            $min1 = (int) $m[2];
+            $h2 = (int) $m[3];
+            $min2 = (int) $m[4];
+            if ($h1 < 0 || $h1 > 23 || $h2 < 0 || $h2 > 23 || $min1 < 0 || $min1 > 59 || $min2 < 0 || $min2 > 59) {
+                continue;
+            }
+
+            $start = $h1 * 60 + $min1;
+            $end = $h2 * 60 + $min2;
+            if ($end <= $start) {
+                continue;
+            }
+
+            $options[] = sprintf('%02d:%02d-%02d:%02d', $h1, $min1, $h2, $min2);
+        }
+
+        $options = array_values(array_unique($options));
+        if (count($options) > $max) {
+            $options = array_slice($options, 0, $max);
         }
 
         return $options;
@@ -257,6 +402,17 @@ class IntermediationController extends Controller
     {
         $user = $request->user();
 
+        $serviceConfig = config('service_forms', []);
+        $serviceLabelById = [];
+        foreach (($serviceConfig['services'] ?? []) as $svc) {
+            if (is_array($svc) && isset($svc['id'], $svc['label'])) {
+                $serviceLabelById[(string) $svc['id']] = (string) $svc['label'];
+            }
+        }
+        $gameLabelById = is_array($serviceConfig['games'] ?? null) ? $serviceConfig['games'] : [];
+        $serviceGames = is_array($serviceConfig['serviceGames'] ?? null) ? $serviceConfig['serviceGames'] : [];
+        $formFields = is_array($serviceConfig['formFields'] ?? null) ? $serviceConfig['formFields'] : [];
+
         // Normalize terms_accepted para aceitar vários formatos
         $termsAccepted = $request->input('terms_accepted');
         if (is_string($termsAccepted)) {
@@ -265,10 +421,13 @@ class IntermediationController extends Controller
         $request->merge(['terms_accepted' => $termsAccepted ? 'yes' : '']);
 
         $validator = Validator::make($request->all(), [
-            'title' => ['required', 'string', 'max:255'],
+            'title' => ['nullable', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:2000'],
             'price' => ['required', 'numeric', 'min:50', 'max:100000'],
             'category' => ['required', 'string', 'max:100'],
+            'service_id' => ['nullable', 'string', 'max:80'],
+            'game_id' => ['nullable', 'string', 'max:80'],
+            'service_fields' => ['nullable'],
             'delivery_days' => ['nullable', 'integer', 'min:1', 'max:25'],
             'game_title' => ['nullable', 'string', 'max:120'],
             'item_name' => ['nullable', 'string', 'max:160'],
@@ -278,9 +437,13 @@ class IntermediationController extends Controller
             'digital_quantity' => ['nullable', 'integer', 'min:1'],
             'digital_platform_server' => ['nullable', 'string', 'max:120'],
             'digital_delivery_method' => ['nullable', 'string', 'in:trade,mail,gift'],
-            'gold_seller_time_options' => ['nullable', 'array', 'max:5'],
+            'gold_seller_time_options' => ['nullable', 'array', 'max:3'],
             'gold_seller_time_options.*' => ['string', 'max:120'],
             'gold_seller_delivery_method' => ['nullable', 'string', 'in:trade,mail,gift'],
+            'service_seller_start_date_options' => ['nullable', 'array', 'max:3'],
+            'service_seller_start_date_options.*' => ['date_format:Y-m-d'],
+            'service_seller_time_range_options' => ['nullable', 'array', 'max:3'],
+            'service_seller_time_range_options.*' => ['string', 'max:120'],
             'battle_pass_game' => ['nullable', 'string', 'max:100'],
             'battle_pass_platform' => ['nullable', 'string', 'max:60'],
             'battle_pass_type' => ['nullable', 'string', 'max:120'],
@@ -293,6 +456,7 @@ class IntermediationController extends Controller
             'game_account_seller_notes' => ['nullable', 'string', 'max:1000'],
             'seller_fee_deduct_from_payout' => ['nullable'],
             'buyer_email' => ['nullable', 'email', 'exists:users,email'],
+            'buyer_id' => ['nullable', 'integer', 'exists:users,id'],
             'photos' => ['nullable', 'array', 'max:8'],
             'photos.*' => ['file', 'image', 'max:5120'], // 5MB max per photo
             'terms_accepted' => ['required', 'accepted'],
@@ -306,9 +470,16 @@ class IntermediationController extends Controller
             $isBattlePass = $category === 'Passe de batalha / Assinatura'
                 || $request->hasAny(['battle_pass_game', 'battle_pass_platform', 'battle_pass_type', 'battle_pass_duration_days']);
 
-            $isCurrency = $category === 'Moedas / Gold / Créditos';
-            $isService = $category === 'Serviço (boosting / rank / leveling)';
-            $isServiceExchange = $category === 'Troca de serviço';
+            $isCurrency = $category === self::CURRENCY_CATEGORY;
+            $isService = $this->isServiceFormsCategory($category);
+            $isServiceExchange = $category === self::SERVICE_EXCHANGE_CATEGORY;
+
+            // Title: optional only for service forms categories (auto-generated from service/game)
+            if (! $isService) {
+                if (! trim((string) $request->input('title'))) {
+                    $validator->errors()->add('title', 'Informe o título do produto.');
+                }
+            }
             $isSkin = $category === 'Skins / Roupas / Cosméticos';
             $isItem = $category === 'Itens / Equipamentos (in-game)';
             $isOthers = $category === 'Outros (jogos)';
@@ -342,10 +513,20 @@ class IntermediationController extends Controller
                 }
             }
 
-            if ($isService) {
+            if ($this->isServiceScheduleCategory($category)) {
                 $days = $request->input('delivery_days');
                 if (! is_numeric($days) || (int) $days < 1 || (int) $days > 25) {
                     $validator->errors()->add('delivery_days', 'Selecione um prazo de entrega de 1 a 25 dias.');
+                }
+
+                $dateOptions = $this->normalizeDateOptions($request->input('service_seller_start_date_options'), 3);
+                if (! $dateOptions) {
+                    $validator->errors()->add('service_seller_start_date_options', 'Informe até 3 opções de data de início (mín. 1).');
+                }
+
+                $timeRanges = $this->normalizeTimeRangeOptions($request->input('service_seller_time_range_options'), 3);
+                if (! $timeRanges) {
+                    $validator->errors()->add('service_seller_time_range_options', 'Informe pelo menos 1 intervalo de horário (início/fim), máx 3.');
                 }
             }
 
@@ -400,9 +581,9 @@ class IntermediationController extends Controller
 
                 $goldTimes = $request->input('gold_seller_time_options');
                 if (! is_array($goldTimes) || count($goldTimes) < 1) {
-                    $validator->errors()->add('gold_seller_time_options', 'Informe pelo menos 1 horário disponível (máx 5).');
-                } elseif (count($goldTimes) > 5) {
-                    $validator->errors()->add('gold_seller_time_options', 'Máximo de 5 horários.');
+                    $validator->errors()->add('gold_seller_time_options', 'Informe pelo menos 1 horário disponível (máx 3).');
+                } elseif (count($goldTimes) > 3) {
+                    $validator->errors()->add('gold_seller_time_options', 'Máximo de 3 horários.');
                 } else {
                     foreach ($goldTimes as $idx => $item) {
                         if (trim((string) $item) === '') {
@@ -456,6 +637,60 @@ class IntermediationController extends Controller
         $data = $validator->validate();
 
         $category = trim((string) ($data['category'] ?? ''));
+        $isServiceFormsCategory = $this->isServiceFormsCategory($category);
+        $derivedServiceId = $this->serviceIdFromCategory($category);
+
+        $serviceId = $isServiceFormsCategory ? trim((string) ($data['service_id'] ?? '')) : '';
+        $gameId = $isServiceFormsCategory ? trim((string) ($data['game_id'] ?? '')) : '';
+
+        if ($isServiceFormsCategory) {
+            // Category implies service_id for the new taxonomy categories.
+            if ($derivedServiceId !== null) {
+                if ($serviceId === '') {
+                    $serviceId = $derivedServiceId;
+                    $data['service_id'] = $serviceId;
+                } elseif ($serviceId !== $derivedServiceId) {
+                    return response()->json(['message' => 'Serviço inválido para a categoria selecionada.'], 422);
+                }
+            }
+
+            if ($serviceId === '' || ! array_key_exists($serviceId, $serviceLabelById)) {
+                return response()->json(['message' => 'Selecione um serviço válido.'], 422);
+            }
+
+            $allowedGames = $serviceGames[$serviceId] ?? [];
+            if (! is_array($allowedGames)) {
+                $allowedGames = [];
+            }
+
+            if ($gameId === '' || ! in_array($gameId, $allowedGames, true)) {
+                return response()->json(['message' => 'Selecione um jogo válido para este serviço.'], 422);
+            }
+
+            $serviceLabel = $serviceLabelById[$serviceId] ?? $serviceId;
+
+            $rawFieldsForTitle = $request->input('service_fields');
+            if (is_string($rawFieldsForTitle)) {
+                $decoded = json_decode($rawFieldsForTitle, true);
+                if (is_array($decoded)) {
+                    $rawFieldsForTitle = $decoded;
+                }
+            }
+
+            $gameLabel = $gameLabelById[$gameId] ?? $gameId;
+            if ($gameId === 'other') {
+                $typed = is_array($rawFieldsForTitle)
+                    ? trim((string) ($rawFieldsForTitle['game_other_name'] ?? ''))
+                    : '';
+                if ($typed === '') {
+                    return response()->json(['message' => 'Informe o nome do jogo (Outro).'], 422);
+                }
+                $gameLabel = $typed;
+            }
+
+            $data['title'] = trim($serviceLabel.' — '.$gameLabel);
+        }
+
         $isGameAccount = $this->isGameAccountCategory($category);
         $isPhysical = $this->isPhysicalCategory($category);
         $isSkin = $category === 'Skins / Roupas / Cosméticos';
@@ -475,7 +710,12 @@ class IntermediationController extends Controller
         // Para "Conta de jogo", os dados sensíveis (login/senha) serão informados somente após o pagamento confirmado.
 
         $buyerId = null;
-        if (! empty($data['buyer_email'])) {
+        if (! empty($data['buyer_id'])) {
+            $candidate = \App\Models\User::find((int) $data['buyer_id']);
+            if ($candidate && $candidate->id !== $user->id) {
+                $buyerId = $candidate->id;
+            }
+        } elseif (! empty($data['buyer_email'])) {
             $buyer = \App\Models\User::where('email', $data['buyer_email'])->first();
             if ($buyer && $buyer->id !== $user->id) {
                 $buyerId = $buyer->id;
@@ -501,7 +741,7 @@ class IntermediationController extends Controller
         $goldSellerAvailabilityText = null;
         $goldSellerSubmittedAt = null;
         if ($this->isCurrencyCategory($category)) {
-            $goldSellerTimeOptions = $this->normalizeTimeOptions($data['gold_seller_time_options'] ?? []);
+            $goldSellerTimeOptions = $this->normalizeTimeOptions($data['gold_seller_time_options'] ?? [], 3);
             $goldSellerDeliveryMethod = array_key_exists('gold_seller_delivery_method', $data)
                 ? (string) $data['gold_seller_delivery_method']
                 : null;
@@ -512,13 +752,22 @@ class IntermediationController extends Controller
             }
         }
 
-        $negotiation = Negotiation::create([
+        $serviceSellerStartDateOptions = null;
+        $serviceSellerTimeRangeOptions = null;
+        if ($this->isServiceScheduleCategory($category)) {
+            $serviceSellerStartDateOptions = $this->normalizeDateOptions($data['service_seller_start_date_options'] ?? [], 3);
+            $serviceSellerTimeRangeOptions = $this->normalizeTimeRangeOptions($data['service_seller_time_range_options'] ?? [], 3);
+        }
+
+        $payload = [
             'seller_id' => $user->id,
             'buyer_id' => $buyerId,
             'title' => $data['title'],
             'description' => $description,
             'price' => $data['price'],
             'category' => $data['category'],
+            'service_id' => $isServiceFormsCategory ? $serviceId : null,
+            'game_id' => $isServiceFormsCategory ? $gameId : null,
             'delivery_days' => $data['delivery_days'] ?? null,
             'game_title' => $data['game_title'] ?? null,
             'item_name' => $data['item_name'] ?? null,
@@ -548,7 +797,61 @@ class IntermediationController extends Controller
             'seller_fee_deduct_from_payout' => $deduct,
             'product_photos' => !empty($photosPaths) ? $photosPaths : null,
             'status' => 'pending_acceptance',
-        ]);
+        ];
+
+        if ($this->isServiceScheduleCategory($category)) {
+            $payload['service_seller_start_date_options'] = $serviceSellerStartDateOptions;
+            $payload['service_seller_time_range_options'] = $serviceSellerTimeRangeOptions;
+        }
+
+        $negotiation = Negotiation::create($payload);
+
+        if ($isServiceFormsCategory) {
+            $rawFields = $request->input('service_fields');
+            if (is_string($rawFields)) {
+                $decoded = json_decode($rawFields, true);
+                if (is_array($decoded)) {
+                    $rawFields = $decoded;
+                }
+            }
+
+            $serviceFieldDefs = [];
+            $defs = $formFields[$serviceId][$gameId] ?? [];
+            if (is_array($defs)) {
+                foreach ($defs as $def) {
+                    if (! is_array($def) || ! isset($def['id'])) continue;
+                    $serviceFieldDefs[(string) $def['id']] = $def;
+                }
+            }
+
+            if (is_array($rawFields) && $serviceFieldDefs) {
+                foreach ($rawFields as $fieldId => $fieldValue) {
+                    $fieldId = trim((string) $fieldId);
+                    if ($fieldId === '' || ! array_key_exists($fieldId, $serviceFieldDefs)) {
+                        continue;
+                    }
+
+                    if (is_array($fieldValue) || is_object($fieldValue)) {
+                        continue;
+                    }
+
+                    $value = trim((string) $fieldValue);
+                    if ($value === '') {
+                        continue;
+                    }
+
+                    // Keep it generic, but avoid gigantic payloads.
+                    if (strlen($value) > 2000) {
+                        $value = substr($value, 0, 2000);
+                    }
+
+                    NegotiationField::updateOrCreate(
+                        ['negotiation_id' => $negotiation->id, 'field_id' => $fieldId],
+                        ['field_value' => $value]
+                    );
+                }
+            }
+        }
 
         $negotiation->load(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state']);
 
@@ -929,14 +1232,14 @@ class IntermediationController extends Controller
                     'gold_buyer_character_name' => ['required', 'string', 'max:120'],
                     'gold_buyer_server' => ['required', 'string', 'max:120'],
                     'gold_buyer_faction' => ['required', 'string', 'max:60'],
-                    'gold_buyer_time_options' => ['required', 'array', 'min:1', 'max:5'],
+                    'gold_buyer_time_options' => ['required', 'array', 'min:1', 'max:3'],
                     'gold_buyer_time_options.*' => ['string', 'max:120'],
                     'gold_buyer_notes' => ['nullable', 'string', 'max:2000'],
                 ])->validate();
 
-                $timeOptions = $this->normalizeTimeOptions($buyerData['gold_buyer_time_options'] ?? []);
+                $timeOptions = $this->normalizeTimeOptions($buyerData['gold_buyer_time_options'] ?? [], 3);
                 if (! $timeOptions) {
-                    return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 5).'], 422);
+                    return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 3).'], 422);
                 }
 
                 $goldBuyerUpdates = [
@@ -950,6 +1253,33 @@ class IntermediationController extends Controller
                 ];
             }
 
+            $serviceBuyerUpdates = [];
+            if ($this->isServiceScheduleCategory($negotiation->category)) {
+                $buyerData = Validator::make($request->all(), [
+                    'service_buyer_selected_start_date' => ['required', 'date_format:Y-m-d'],
+                    'service_buyer_selected_time_range' => ['required', 'string', 'max:120'],
+                ])->validate();
+
+                $selectedDate = trim((string) $buyerData['service_buyer_selected_start_date']);
+                $selectedRange = trim((string) $buyerData['service_buyer_selected_time_range']);
+
+                $allowedDates = $this->normalizeDateOptions($negotiation->service_seller_start_date_options, 3);
+                if (! in_array($selectedDate, $allowedDates, true)) {
+                    return response()->json(['message' => 'Selecione uma data de início válida.'], 422);
+                }
+
+                $allowedRanges = $this->normalizeTimeRangeOptions($negotiation->service_seller_time_range_options, 5);
+                if (! in_array($selectedRange, $allowedRanges, true)) {
+                    return response()->json(['message' => 'Selecione um intervalo de horário válido.'], 422);
+                }
+
+                $serviceBuyerUpdates = [
+                    'service_buyer_selected_start_date' => $selectedDate,
+                    'service_buyer_selected_time_range' => $selectedRange,
+                    'service_schedule_confirmed_at' => now(),
+                ];
+            }
+
             $becameBuyer = false;
             if (! $negotiation->buyer_id) {
                 $becameBuyer = true;
@@ -957,7 +1287,7 @@ class IntermediationController extends Controller
                     'buyer_id' => $user->id,
                     'status' => 'awaiting_admin_approval',
                     'accepted_at' => now(),
-                ], $goldBuyerUpdates));
+                ], $goldBuyerUpdates, $serviceBuyerUpdates));
 
                 AuditLogger::log($request, 'negotiation.accepted_by_buyer', $negotiation, [
                     'became_buyer' => true,
@@ -970,7 +1300,7 @@ class IntermediationController extends Controller
                 $negotiation->update(array_merge([
                     'status' => 'awaiting_admin_approval',
                     'accepted_at' => now(),
-                ], $goldBuyerUpdates));
+                ], $goldBuyerUpdates, $serviceBuyerUpdates));
 
                 AuditLogger::log($request, 'negotiation.accepted_by_buyer', $negotiation, [
                     'became_buyer' => $becameBuyer,
@@ -1448,14 +1778,14 @@ class IntermediationController extends Controller
             'gold_buyer_character_name' => ['required', 'string', 'max:120'],
             'gold_buyer_server' => ['required', 'string', 'max:120'],
             'gold_buyer_faction' => ['required', 'string', 'max:60'],
-            'gold_buyer_time_options' => ['required', 'array', 'min:1', 'max:5'],
+            'gold_buyer_time_options' => ['required', 'array', 'min:1', 'max:3'],
             'gold_buyer_time_options.*' => ['string', 'max:120'],
             'gold_buyer_notes' => ['nullable', 'string', 'max:2000'],
         ])->validate();
 
-        $timeOptions = $this->normalizeTimeOptions($data['gold_buyer_time_options'] ?? []);
+        $timeOptions = $this->normalizeTimeOptions($data['gold_buyer_time_options'] ?? [], 3);
         if (! $timeOptions) {
-            return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 5).'], 422);
+            return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 3).'], 422);
         }
 
         return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user, $data, $timeOptions) {
@@ -1492,14 +1822,14 @@ class IntermediationController extends Controller
     {
         $user = $request->user();
         $data = Validator::make($request->all(), [
-            'gold_seller_time_options' => ['required', 'array', 'min:1', 'max:5'],
+            'gold_seller_time_options' => ['required', 'array', 'min:1', 'max:3'],
             'gold_seller_time_options.*' => ['string', 'max:120'],
             'gold_seller_delivery_method' => ['required', 'string', 'in:trade,mail,gift'],
         ])->validate();
 
-        $timeOptions = $this->normalizeTimeOptions($data['gold_seller_time_options'] ?? []);
+        $timeOptions = $this->normalizeTimeOptions($data['gold_seller_time_options'] ?? [], 3);
         if (! $timeOptions) {
-            return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 5).'], 422);
+            return response()->json(['message' => 'Informe pelo menos 1 horário disponível (máx 3).'], 422);
         }
 
         return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($user, $data, $timeOptions) {
@@ -1558,7 +1888,7 @@ class IntermediationController extends Controller
                 return response()->json(['message' => 'O vendedor ainda não informou horário/método de entrega.'], 422);
             }
 
-            $sellerOptions = $this->normalizeTimeOptions($negotiation->gold_seller_time_options);
+            $sellerOptions = $this->normalizeTimeOptions($negotiation->gold_seller_time_options, 3);
             if ($sellerOptions && ! in_array($selected, $sellerOptions, true)) {
                 return response()->json(['message' => 'Selecione um horário enviado pelo vendedor.'], 422);
             }
@@ -2046,7 +2376,6 @@ class IntermediationController extends Controller
                 );
             }
         }
-
         $checklist = $negotiation->intermediary_checklist;
         if (is_string($checklist) && $checklist !== '') {
             $decoded = json_decode($checklist, true);
@@ -2153,13 +2482,13 @@ class IntermediationController extends Controller
                     'character_name' => $negotiation->gold_buyer_character_name,
                     'server' => $negotiation->gold_buyer_server,
                     'faction' => $negotiation->gold_buyer_faction,
-                    'time_options' => $this->normalizeTimeOptions($negotiation->gold_buyer_time_options),
+                    'time_options' => $this->normalizeTimeOptions($negotiation->gold_buyer_time_options, 3),
                     'availability' => $negotiation->gold_buyer_availability,
                     'notes' => $negotiation->gold_buyer_notes,
                     'submitted_at' => $this->toIso8601StringOrNull($negotiation->gold_buyer_info_submitted_at),
                 ],
                 'seller' => [
-                    'time_options' => $this->normalizeTimeOptions($negotiation->gold_seller_time_options),
+                    'time_options' => $this->normalizeTimeOptions($negotiation->gold_seller_time_options, 3),
                     'availability' => $negotiation->gold_seller_availability,
                     'delivery_method' => $negotiation->gold_seller_delivery_method,
                     'submitted_at' => $this->toIso8601StringOrNull($negotiation->gold_seller_info_submitted_at),
@@ -2195,11 +2524,123 @@ class IntermediationController extends Controller
             $paymentsData = [];
         }
 
+        $serviceData = null;
+        try {
+            $serviceId = trim((string) ($negotiation->service_id ?? ''));
+            $gameId = trim((string) ($negotiation->game_id ?? ''));
+
+            if ($serviceId !== '' && $gameId !== '') {
+                $cfg = (array) config('service_forms', []);
+                $services = $cfg['services'] ?? [];
+                $games = $cfg['games'] ?? [];
+                $formFields = $cfg['formFields'] ?? [];
+
+                $serviceLabel = $serviceId;
+                if (is_array($services)) {
+                    foreach ($services as $s) {
+                        if (is_array($s) && ($s['id'] ?? null) === $serviceId) {
+                            $serviceLabel = (string) ($s['label'] ?? $serviceLabel);
+                            break;
+                        }
+                    }
+                }
+
+                $gameLabel = is_array($games) ? (string) ($games[$gameId] ?? $gameId) : $gameId;
+                if ($gameId === 'other') {
+                    $typed = '';
+                    try {
+                        $fieldsForGame = $negotiation->relationLoaded('fields')
+                            ? $negotiation->fields
+                            : $negotiation->fields()->get();
+                        foreach ($fieldsForGame as $f) {
+                            if ((string) ($f->field_id ?? '') === 'game_other_name') {
+                                $typed = trim((string) ($f->field_value ?? ''));
+                                break;
+                            }
+                        }
+                    } catch (\Throwable $e) {
+                        $typed = '';
+                    }
+                    if ($typed !== '') {
+                        $gameLabel = $typed;
+                    }
+                }
+
+                $labelMap = [];
+                if (is_array($formFields)
+                    && isset($formFields[$serviceId])
+                    && is_array($formFields[$serviceId])
+                    && isset($formFields[$serviceId][$gameId])
+                    && is_array($formFields[$serviceId][$gameId])
+                ) {
+                    foreach ($formFields[$serviceId][$gameId] as $def) {
+                        if (! is_array($def)) {
+                            continue;
+                        }
+                        $fid = trim((string) ($def['id'] ?? ''));
+                        if ($fid === '') {
+                            continue;
+                        }
+                        $labelMap[$fid] = (string) ($def['label'] ?? $fid);
+                    }
+                }
+
+                $fields = null;
+                try {
+                    $fields = $negotiation->relationLoaded('fields')
+                        ? $negotiation->fields
+                        : $negotiation->fields()->get();
+                } catch (\Throwable $e) {
+                    $fields = collect();
+                }
+
+                $fieldsOut = [];
+                foreach ($fields as $f) {
+                    $fid = trim((string) ($f->field_id ?? ''));
+                    $val = trim((string) ($f->field_value ?? ''));
+                    if ($fid === '' || $val === '') {
+                        continue;
+                    }
+                    $fieldsOut[] = [
+                        'field_id' => $fid,
+                        'label' => $labelMap[$fid] ?? $fid,
+                        'value' => $val,
+                    ];
+                }
+
+                $serviceData = [
+                    'service_id' => $serviceId,
+                    'service_label' => $serviceLabel,
+                    'game_id' => $gameId,
+                    'game_label' => $gameLabel,
+                    'fields' => $fieldsOut,
+                ];
+            }
+        } catch (\Throwable $exception) {
+            $serviceData = null;
+        }
+
+        $serviceDelivery = null;
+        if ($this->isServiceScheduleCategory($negotiation->category)) {
+            $serviceDelivery = [
+                'seller' => [
+                    'start_date_options' => $this->normalizeDateOptions($negotiation->service_seller_start_date_options, 3),
+                    'time_range_options' => $this->normalizeTimeRangeOptions($negotiation->service_seller_time_range_options, 5),
+                ],
+                'buyer_selected_start_date' => $negotiation->service_buyer_selected_start_date
+                    ? $negotiation->service_buyer_selected_start_date->format('Y-m-d')
+                    : null,
+                'buyer_selected_time_range' => $negotiation->service_buyer_selected_time_range,
+                'schedule_confirmed_at' => $this->toIso8601StringOrNull($negotiation->service_schedule_confirmed_at),
+            ];
+        }
+
         return [
             'id' => $negotiation->id,
             'title' => $title,
             'description' => $description,
             'category' => $negotiation->category,
+            'service' => $serviceData,
             'delivery_days' => $negotiation->delivery_days,
             'game_title' => $negotiation->game_title,
             'item_name' => $negotiation->item_name,
@@ -2240,11 +2681,12 @@ class IntermediationController extends Controller
                 'seller_info_viewed_by_buyer_at' => $digitalDeliveryInfoViewedByBuyerAt,
             ] : null,
             'gold_delivery' => $goldDelivery,
+            'service_delivery' => $serviceDelivery,
             'seller' => $negotiation->seller ? [
                 'id' => $negotiation->seller->id,
                 'name' => $negotiation->seller->name,
-                'email' => $negotiation->seller->email,
                 'phone' => $negotiation->seller->phone,
+                'last_seen_at' => $this->toIso8601StringOrNull($negotiation->seller->last_seen_at),
                 'address_zipcode' => $negotiation->seller->address_zipcode,
                 'address_street' => $negotiation->seller->address_street,
                 'address_number' => $negotiation->seller->address_number,
@@ -2256,8 +2698,8 @@ class IntermediationController extends Controller
             'buyer' => $negotiation->buyer ? [
                 'id' => $negotiation->buyer->id,
                 'name' => $negotiation->buyer->name,
-                'email' => $negotiation->buyer->email,
                 'phone' => $negotiation->buyer->phone,
+                'last_seen_at' => $this->toIso8601StringOrNull($negotiation->buyer->last_seen_at),
                 'address_zipcode' => $negotiation->buyer->address_zipcode,
                 'address_street' => $negotiation->buyer->address_street,
                 'address_number' => $negotiation->buyer->address_number,

@@ -129,7 +129,7 @@
     </style>
 </head>
 <body class="bg-gray-50 font-sans text-gray-800 antialiased">
-    @include('partials.interactive-bg')
+    {{-- Fundo animado removido por performance (scroll/jank em desktop) --}}
     <div style="position:relative; z-index:1;">
         <noscript>Habilite o JavaScript para utilizar o sistema de intermediação.</noscript>
         <div id="app"></div>

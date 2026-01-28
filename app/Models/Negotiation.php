@@ -84,12 +84,19 @@ class Negotiation extends Model
         'title',
         'description',
         'category',
+        'service_id',
+        'game_id',
         'digital_quantity',
         'digital_game',
         'digital_currency_type',
         'digital_platform_server',
         'digital_delivery_method',
         'delivery_days',
+        'service_seller_start_date_options',
+        'service_seller_time_range_options',
+        'service_buyer_selected_start_date',
+        'service_buyer_selected_time_range',
+        'service_schedule_confirmed_at',
         'game_title',
         'item_name',
         'item_general_info',
@@ -173,6 +180,10 @@ class Negotiation extends Model
             'price' => 'decimal:2',
             'digital_quantity' => 'integer',
             'delivery_days' => 'integer',
+            'service_seller_start_date_options' => 'array',
+            'service_seller_time_range_options' => 'array',
+            'service_buyer_selected_start_date' => 'date',
+            'service_schedule_confirmed_at' => 'datetime',
             'battle_pass_duration_days' => 'integer',
             'game_account_has_ban' => 'boolean',
             'product_photos' => 'array',
@@ -227,6 +238,11 @@ class Negotiation extends Model
     public function payments(): HasMany
     {
         return $this->hasMany(Payment::class, 'negotiation_id');
+    }
+
+    public function fields(): HasMany
+    {
+        return $this->hasMany(NegotiationField::class, 'negotiation_id');
     }
 
     public function setGameAccountSellerInfoAttribute(mixed $value): void

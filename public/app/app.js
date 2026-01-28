@@ -140,10 +140,16 @@
       digitalQuantity: '',
       digitalPlatformServer: '',
       digitalDeliveryMethod: '',
+      serviceId: '',
+      gameId: '',
+      serviceFields: {},
       description: '',
       price: '',
-      buyerEmail: ''
+      buyerTag: ''
     },
+
+    serviceFormsConfig: null,
+    serviceFormsLoading: false,
     // Estado para relatório do intermediador
     inspectionReport: {
       photos: [],
@@ -183,7 +189,13 @@
     'Conta de jogo',
     'Moedas / Gold / Créditos',
     'Chave de jogo / DLC',
-    'Serviço (boosting / rank / leveling)',
+    'Boost de Rank',
+    'Carry de Conteúdo (PvE)',
+    'Leveling',
+    'Venda de Moeda',
+    'Conquistas / Colecionáveis',
+    'Serviço de Temporada',
+    'Serviço Personalizado',
     'Troca de serviço',
     'Notebook',
     'Smartphone',
@@ -196,7 +208,13 @@
     'Conta de jogo',
     'Moedas / Gold / Créditos',
     'Chave de jogo / DLC',
-    'Serviço (boosting / rank / leveling)',
+    'Boost de Rank',
+    'Carry de Conteúdo (PvE)',
+    'Leveling',
+    'Venda de Moeda',
+    'Conquistas / Colecionáveis',
+    'Serviço de Temporada',
+    'Serviço Personalizado',
     'Troca de serviço'
   ];
 
@@ -211,11 +229,43 @@
   const CATEGORY_GAME_ACCOUNT = 'Conta de jogo';
   const CATEGORY_CURRENCY = 'Moedas / Gold / Créditos';
   const CATEGORY_KEY_DLC = 'Chave de jogo / DLC';
+  // Service categories (new taxonomy)
+  const CATEGORY_BOOST_RANK = 'Boost de Rank';
+  const CATEGORY_CARRY_PVE = 'Carry de Conteúdo (PvE)';
+  const CATEGORY_LEVELING = 'Leveling';
+  const CATEGORY_SERVICE_CURRENCY = 'Venda de Moeda';
+  const CATEGORY_COLLECTIBLES = 'Conquistas / Colecionáveis';
+  const CATEGORY_SEASONAL = 'Serviço de Temporada';
+  const CATEGORY_CUSTOM_SERVICE = 'Serviço Personalizado';
+
+  // Back-compat (older category label)
   const CATEGORY_SERVICE = 'Serviço (boosting / rank / leveling)';
   const CATEGORY_SERVICE_EXCHANGE = 'Troca de serviço';
   const CATEGORY_SKIN = 'Skins / Roupas / Cosméticos';
   const CATEGORY_ITEM = 'Itens / Equipamentos (in-game)';
   const CATEGORY_OTHERS = 'Outros (jogos)';
+
+  const SERVICE_CATEGORY_LABEL_TO_ID = {
+    [CATEGORY_BOOST_RANK]: 'boost_rank',
+    [CATEGORY_CARRY_PVE]: 'carry_pve',
+    [CATEGORY_LEVELING]: 'leveling',
+    [CATEGORY_SERVICE_CURRENCY]: 'currency',
+    [CATEGORY_COLLECTIBLES]: 'collectibles',
+    [CATEGORY_SEASONAL]: 'seasonal',
+    [CATEGORY_CUSTOM_SERVICE]: 'custom',
+  };
+
+  function isServiceTaxonomyCategory(category) {
+    const c = String(category || '').trim();
+    return Boolean(SERVICE_CATEGORY_LABEL_TO_ID[c]);
+  }
+
+  function isServiceProductFlowCategory(category) {
+    const c = String(category || '').trim();
+    // Service product flow = category implies service_id + game + dynamic fields.
+    // "Troca de serviço" is a separate category (no dynamic service form).
+    return isServiceTaxonomyCategory(c) || c === CATEGORY_SERVICE;
+  }
 
   const DIGITAL_DELIVERY_DEADLINE_BUSINESS_DAYS = 3;
   const DIGITAL_KEY_DELIVERY_MAX_DAYS = 15;
@@ -228,7 +278,74 @@
       .replace(/(^|[\s\-\/])([A-Za-zÀ-ÖØ-öø-ÿ])/g, (_, sep, ch) => `${sep}${String(ch).toLocaleUpperCase('pt-BR')}`);
   }
 
-  function normalizeTimeOptions(raw) {
+  function capitalizeFirstPtBr(value) {
+    const s = String(value || '').trim();
+    if (!s) return '';
+    const first = s[0].toLocaleUpperCase('pt-BR');
+    return `${first}${s.slice(1)}`;
+  }
+
+  function capitalizeFirstPtBrLive(value) {
+    const s = String(value ?? '');
+    if (!s) return '';
+    const firstNonSpace = s.search(/\S/);
+    if (firstNonSpace < 0) return s;
+    const c = s[firstNonSpace];
+    return `${s.slice(0, firstNonSpace)}${c.toLocaleUpperCase('pt-BR')}${s.slice(firstNonSpace + 1)}`;
+  }
+
+  function formatPhoneDd9(value) {
+    const digits = String(value || '').replace(/\D/g, '').slice(0, 11);
+    const ddd = digits.slice(0, 2);
+    const p1 = digits.slice(2, 7);
+    const p2 = digits.slice(7, 11);
+    if (!digits) return '';
+    if (digits.length <= 2) return ddd;
+    if (digits.length <= 7) return `${ddd}-${digits.slice(2)}`;
+    return `${ddd}-${p1}${p2 ? `-${p2}` : ''}`;
+  }
+
+  function normalizePhoneDd9(value) {
+    const digits = String(value || '').replace(/\D/g, '').slice(0, 11);
+    if (digits.length !== 11) return '';
+    return formatPhoneDd9(digits);
+  }
+
+  function extractLineValue(text, keyLabel) {
+    const raw = String(text || '');
+    const key = String(keyLabel || '').trim();
+    if (!raw || !key) return '';
+    const lines = raw.split(/\r?\n/g);
+    const line = lines.find((l) => String(l || '').trim().toLowerCase().startsWith(key.toLowerCase()));
+    if (!line) return '';
+    const idx = line.indexOf(':');
+    if (idx < 0) return '';
+    return String(line.slice(idx + 1) || '').trim();
+  }
+
+  function parseIsoToMs(value) {
+    const s = String(value || '').trim();
+    if (!s) return 0;
+    // Laravel can return ISO8601 or "YYYY-MM-DD HH:MM:SS".
+    // Normalize the latter to an ISO-like string for consistent parsing.
+    const normalized = s.includes('T') ? s : s.replace(' ', 'T');
+    const ms = Date.parse(normalized);
+    return Number.isFinite(ms) ? ms : 0;
+  }
+
+  function getOnlineStatus(lastSeenAtIso, thresholdMinutes = 5) {
+    const ms = parseIsoToMs(lastSeenAtIso);
+    if (!ms) return { label: 'Indisponível', className: 'bg-gray-500' };
+    const ageMs = Date.now() - ms;
+    // Allow small client/server clock skew.
+    const skewMs = 2 * 60 * 1000;
+    const online = ageMs >= -skewMs && ageMs <= thresholdMinutes * 60 * 1000;
+    return online
+      ? { label: 'Online', className: 'bg-success-600' }
+      : { label: 'Offline', className: 'bg-gray-600' };
+  }
+
+  function normalizeTimeOptions(raw, max = 5) {
     const text = Array.isArray(raw) ? raw.join('\n') : String(raw || '');
     const items = text
       .split(/\r?\n/)
@@ -241,25 +358,88 @@
       if (seen.has(key)) continue;
       seen.add(key);
       unique.push(item);
-      if (unique.length >= 5) break;
+      if (unique.length >= max) break;
+    }
+    return unique;
+  }
+
+  function normalizeDateOptions(raw, max = 3) {
+    const text = Array.isArray(raw) ? raw.join('\n') : String(raw || '');
+    const items = text
+      .split(/\r?\n/)
+      .map((line) => String(line || '').trim())
+      .filter(Boolean)
+      .filter((v) => /^\d{4}-\d{2}-\d{2}$/.test(v));
+    const seen = new Set();
+    const unique = [];
+    for (const item of items) {
+      if (seen.has(item)) continue;
+      seen.add(item);
+      unique.push(item);
+      if (unique.length >= max) break;
+    }
+    return unique;
+  }
+
+  function normalizeTimeRangeOptions(raw, max = 5) {
+    const text = Array.isArray(raw) ? raw.join('\n') : String(raw || '');
+    const items = text
+      .split(/\r?\n/)
+      .map((line) => String(line || '').trim())
+      .filter(Boolean);
+    const isValid = (range) => {
+      const m = /^([0-2]\d):([0-5]\d)-([0-2]\d):([0-5]\d)$/.exec(range);
+      if (!m) return false;
+      const h1 = Number(m[1]);
+      const m1 = Number(m[2]);
+      const h2 = Number(m[3]);
+      const m2 = Number(m[4]);
+      if (h1 > 23 || h2 > 23) return false;
+      const start = h1 * 60 + m1;
+      const end = h2 * 60 + m2;
+      return end > start;
+    };
+
+    const seen = new Set();
+    const unique = [];
+    for (const item of items) {
+      if (!isValid(item)) continue;
+      if (seen.has(item)) continue;
+      seen.add(item);
+      unique.push(item);
+      if (unique.length >= max) break;
     }
     return unique;
   }
 
   function isDigitalDeliveryCategory(category) {
     const c = String(category || '').trim();
-    return c === CATEGORY_GAME_ACCOUNT || c === CATEGORY_CURRENCY || c === CATEGORY_KEY_DLC || c === CATEGORY_SERVICE || c === CATEGORY_SERVICE_EXCHANGE;
+    return c === CATEGORY_GAME_ACCOUNT
+      || c === CATEGORY_CURRENCY
+      || c === CATEGORY_KEY_DLC
+      || isServiceTaxonomyCategory(c)
+      || c === CATEGORY_SERVICE
+      || c === CATEGORY_SERVICE_EXCHANGE;
+  }
+
+  function isCurrencyCategory(category) {
+    return String(category || '').trim() === CATEGORY_CURRENCY;
   }
 
   function categoryAllowsPublicDescription(category) {
     const c = String(category || '').trim();
-    return c === CATEGORY_SKIN || c === CATEGORY_ITEM || c === CATEGORY_SERVICE || c === CATEGORY_SERVICE_EXCHANGE || c === CATEGORY_OTHERS;
+    return c === CATEGORY_SKIN
+      || c === CATEGORY_ITEM
+      || isServiceTaxonomyCategory(c)
+      || c === CATEGORY_SERVICE
+      || c === CATEGORY_SERVICE_EXCHANGE
+      || c === CATEGORY_OTHERS;
   }
 
   function categoryDeliveryDaysMax(category) {
     const c = String(category || '').trim();
     if (c === CATEGORY_KEY_DLC) return DIGITAL_KEY_DELIVERY_MAX_DAYS;
-    if (c === CATEGORY_SERVICE) return DIGITAL_SERVICE_DELIVERY_MAX_DAYS;
+    if (isServiceTaxonomyCategory(c) || c === CATEGORY_SERVICE) return DIGITAL_SERVICE_DELIVERY_MAX_DAYS;
     if (c === CATEGORY_SERVICE_EXCHANGE) return DIGITAL_SERVICE_EXCHANGE_MAX_DAYS;
     return 0;
   }
@@ -279,7 +459,7 @@
 
   function categoryDeliveryDaysDefault(category) {
     const c = String(category || '').trim();
-    if (c === CATEGORY_SERVICE) return 7;
+    if (isServiceTaxonomyCategory(c) || c === CATEGORY_SERVICE) return 7;
     if (c === CATEGORY_KEY_DLC) return 3;
     if (c === CATEGORY_SERVICE_EXCHANGE) return 3;
     return '';
@@ -348,7 +528,7 @@
     if (negotiationType !== 'digital') {
       return `
         <label class="block text-sm text-gray-700 font-medium mb-2">Prazo de entrega</label>
-        <input type="text" value="Negociação física (prazo combinado)" disabled class="w-full px-4 py-3 bg-gray-200 border border-gray-300 rounded-lg text-gray-600 cursor-not-allowed">
+        <input type="text" value="A combinar com o comprador" disabled class="w-full px-4 py-3 bg-gray-200 border border-gray-300 rounded-lg text-gray-600 cursor-not-allowed">
         <span class="text-xs text-gray-500 mt-1 block"><i class="fas fa-info-circle mr-1"></i>O prazo exato pode variar conforme envio e recebimento.</span>
       `;
     }
@@ -397,6 +577,8 @@
         'digital_platform_server',
         'digital_delivery_method',
         'gold_seller_time_options',
+        'service_seller_start_date_options',
+        'service_seller_time_range_options',
         'description'
       ];
 
@@ -410,14 +592,49 @@
         }
       }
 
-      // Seller time options (up to 5) - stored as array
+      // Seller time options (up to 3) - stored as array
       try {
         const times = Array.from(form.querySelectorAll('[name="gold_seller_time_options[]"]'))
           .map((el) => (el instanceof HTMLInputElement ? String(el.value || '').trim() : ''))
           .filter(Boolean)
-          .slice(0, 5);
+          .slice(0, 3);
         if (times.length) {
           draft.gold_seller_time_options = times;
+        }
+      } catch {
+        // ignore
+      }
+
+      // Service start date options (up to 3)
+      try {
+        const dates = Array.from(form.querySelectorAll('[name="service_seller_start_date_options[]"]'))
+          .map((el) => (el instanceof HTMLInputElement ? String(el.value || '').trim() : ''))
+          .filter(Boolean)
+          .slice(0, 3);
+        if (dates.length) {
+          draft.service_seller_start_date_options = dates;
+        }
+      } catch {
+        // ignore
+      }
+
+      // Service time range options (up to 3) from paired inputs
+      try {
+        const starts = Array.from(form.querySelectorAll('[name="service_seller_time_range_start[]"]'))
+          .map((el) => (el instanceof HTMLInputElement ? String(el.value || '').trim() : ''));
+        const ends = Array.from(form.querySelectorAll('[name="service_seller_time_range_end[]"]'))
+          .map((el) => (el instanceof HTMLInputElement ? String(el.value || '').trim() : ''));
+
+        const ranges = [];
+        for (let i = 0; i < Math.max(starts.length, ends.length); i += 1) {
+          const a = starts[i] || '';
+          const b = ends[i] || '';
+          if (!a || !b) continue;
+          ranges.push(`${a}-${b}`);
+        }
+        const normalized = normalizeTimeRangeOptions(ranges, 3);
+        if (normalized.length) {
+          draft.service_seller_time_range_options = normalized;
         }
       } catch {
         // ignore
@@ -442,14 +659,18 @@
       persistCreateNegotiationDraftFromDOM(form);
 
       const structured = form.querySelector('[data-create-neg-structured]');
+      const serviceProduct = form.querySelector('[data-create-neg-service-product]');
       const description = form.querySelector('[data-create-neg-description]');
       const currency = form.querySelector('[data-create-neg-currency]');
+          const serviceSchedule = form.querySelector('[data-create-neg-service-schedule]');
       const photos = form.querySelector('[data-create-neg-photos]');
       const deadline = form.querySelector('[data-create-neg-deadline]');
       const feeGuide = form.querySelector('[data-create-fee-guide]');
 
       const selectedCategory = String(state.createNegForm?.category || '').trim();
       const showCurrencyFields = selectedCategory === CATEGORY_CURRENCY;
+      const showServiceFields = isServiceTaxonomyCategory(selectedCategory) || selectedCategory === CATEGORY_SERVICE;
+      const showServiceProductFlow = isServiceProductFlowCategory(selectedCategory);
       const showGameAccountFields = selectedCategory === CATEGORY_GAME_ACCOUNT;
       const showSkinFields = selectedCategory === CATEGORY_SKIN;
       const showItemFields = selectedCategory === CATEGORY_ITEM;
@@ -496,7 +717,186 @@
         </div>
       `).join('');
 
+      if (serviceProduct instanceof HTMLElement) {
+        if (!showServiceProductFlow) {
+          serviceProduct.innerHTML = '';
+        } else {
+          if (!state.serviceFormsConfig && !state.serviceFormsLoading) {
+            try { ensureServiceFormsConfigLoaded(); } catch { /* ignore */ }
+          }
+
+          const cfg = state.serviceFormsConfig;
+          const currentServiceId = String(draft?.serviceId || draft?.service_id || SERVICE_CATEGORY_LABEL_TO_ID[selectedCategory] || '').trim();
+          const currentGameId = String(draft?.gameId || draft?.game_id || '').trim();
+          const serviceFields = (draft?.serviceFields && typeof draft.serviceFields === 'object') ? draft.serviceFields : {};
+
+          const servicesList = Array.isArray(cfg?.services) ? cfg.services : [];
+          const gamesMap = (cfg?.games && typeof cfg.games === 'object') ? cfg.games : {};
+          const serviceGames = (cfg?.serviceGames && typeof cfg.serviceGames === 'object') ? cfg.serviceGames : {};
+          const allowedGames = Array.isArray(serviceGames?.[currentServiceId]) ? serviceGames[currentServiceId] : [];
+          const formFields = (cfg?.formFields && typeof cfg.formFields === 'object') ? cfg.formFields : {};
+          const fieldDefs = Array.isArray(formFields?.[currentServiceId]?.[currentGameId]) ? formFields[currentServiceId][currentGameId] : [];
+
+          if (state.serviceFormsLoading) {
+            serviceProduct.innerHTML = `
+              <div class="p-4 bg-white border border-gray-200 rounded-xl">
+                <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                  <i class="fas fa-list-alt text-primary-600"></i>
+                  Produto do serviço
+                </div>
+                <p class="text-sm text-gray-600 mt-2"><i class="fas fa-spinner fa-spin mr-2"></i>Carregando serviços…</p>
+              </div>
+            `;
+          } else if (!cfg) {
+            serviceProduct.innerHTML = `
+              <div class="p-4 bg-white border border-gray-200 rounded-xl">
+                <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                  <i class="fas fa-list-alt text-primary-600"></i>
+                  Produto do serviço
+                </div>
+                <p class="text-sm text-danger-600 mt-2">Não foi possível carregar a configuração de serviços.</p>
+                <button type="button" class="mt-3 px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg text-gray-700 transition" data-action="reloadServiceFormsConfig">
+                  Tentar novamente
+                </button>
+              </div>
+            `;
+          } else {
+            const gameOptionsHtml = allowedGames.map((gid) => {
+              const v = String(gid || '').trim();
+              const label = String(gamesMap?.[v] || v).trim();
+              return `<option value="${escapeAttr(v)}" ${v && v === currentGameId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+            }).join('');
+
+            const fieldHtml = fieldDefs.length ? `
+              <div class="pt-4 border-t border-gray-100 space-y-3">
+                <div class="text-sm font-semibold text-gray-900">Informações do serviço</div>
+                ${fieldDefs.map((def) => {
+                  const fieldId = String(def?.id || '').trim();
+                  const label = String(def?.label || fieldId).trim();
+                  const type = String(def?.type || 'text').trim();
+                  const rawValue = serviceFields?.[fieldId];
+                  const value = rawValue === null || rawValue === undefined ? '' : String(rawValue);
+                  const common = `data-action="updateCreateServiceField" data-field-id="${escapeAttr(fieldId)}"`;
+
+                  if (!fieldId) return '';
+
+                  if (type === 'textarea') {
+                    return `
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">${escapeHtml(label)}</label>
+                        <textarea rows="3" maxlength="2000" ${common} class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(value)}</textarea>
+                      </div>
+                    `;
+                  }
+
+                  if (type === 'select') {
+                    const options = Array.isArray(def?.options) ? def.options : [];
+                    const opts = options.map((opt) => {
+                      if (typeof opt === 'string') {
+                        const v = opt;
+                        return `<option value="${escapeAttr(v)}" ${v === value ? 'selected' : ''}>${escapeHtml(v)}</option>`;
+                      }
+                      const v = String(opt?.value ?? opt?.id ?? '').trim();
+                      const l = String(opt?.label ?? v).trim();
+                      return `<option value="${escapeAttr(v)}" ${v === value ? 'selected' : ''}>${escapeHtml(l)}</option>`;
+                    }).join('');
+
+                    return `
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">${escapeHtml(label)}</label>
+                        <select ${common} class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${value === '' ? 'selected' : ''}>Selecione</option>
+                          ${opts}
+                        </select>
+                      </div>
+                    `;
+                  }
+
+                  if (type === 'number') {
+                    return `
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">${escapeHtml(label)}</label>
+                        <input type="number" inputmode="numeric" ${common} value="${escapeAttr(value)}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                    `;
+                  }
+
+                  return `
+                    <div>
+                      <label class="block text-sm text-gray-700 font-medium mb-2">${escapeHtml(label)}</label>
+                      <input type="text" maxlength="2000" ${common} value="${escapeAttr(value)}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            ` : `
+              <div class="pt-4 border-t border-gray-100">
+                <p class="text-sm text-gray-600">Sem campos adicionais para este serviço/jogo.</p>
+              </div>
+            `;
+
+            serviceProduct.innerHTML = `
+              <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
+                <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                  <i class="fas fa-list-alt text-primary-600"></i>
+                  Produto do serviço
+                </div>
+
+                <div>
+                  <div class="text-sm text-gray-700 font-medium mb-2">Serviço selecionado</div>
+                  <div class="text-sm text-gray-900 font-semibold">${escapeHtml(selectedCategory || (servicesList.find((s) => String(s?.id || '').trim() === currentServiceId)?.label) || '—')}</div>
+                </div>
+
+                <div>
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Selecionar jogo *</label>
+                  <select name="game_id" required data-action="updateCreateGameId" ${currentServiceId ? '' : 'disabled'} class="w-full px-4 py-3 ${currentServiceId ? 'bg-gray-50 text-gray-700' : 'bg-gray-200 text-gray-600 cursor-not-allowed'} border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                    <option value="" ${currentGameId === '' ? 'selected' : ''}>${currentServiceId ? 'Selecione' : 'Selecione o serviço na etapa 1'}</option>
+                    ${gameOptionsHtml}
+                  </select>
+                  <p class="text-xs text-gray-500 mt-1">Se não estiver na lista, escolha “Outro (escrever)”.</p>
+                </div>
+
+                ${currentServiceId && currentGameId ? fieldHtml : '<p class="text-sm text-gray-600">Selecione o serviço e o jogo para ver o formulário.</p>'}
+              </div>
+            `;
+          }
+        }
+      }
+
+      // Game Account: show all games as suggestions (independent of service rules)
+      if (showGameAccountFields && !state.serviceFormsConfig && !state.serviceFormsLoading) {
+        try { ensureServiceFormsConfigLoaded(); } catch { /* ignore */ }
+      }
+
       if (structured instanceof HTMLElement) {
+        const cfgGamesMap = (state.serviceFormsConfig?.games && typeof state.serviceFormsConfig.games === 'object')
+          ? state.serviceFormsConfig.games
+          : {};
+        const gameAccountGameSuggestions = Object.entries(cfgGamesMap)
+          .filter(([gid]) => String(gid || '').trim() && !['any', 'other'].includes(String(gid || '').trim()))
+          .map(([, label]) => String(label || '').trim())
+          .filter(Boolean);
+        const fallbackGameAccountSuggestions = [
+          'World of Warcraft',
+          'Valorant',
+          'Counter-Strike 2',
+          'League of Legends',
+          'Final Fantasy XIV',
+          'Tibia',
+          'Diablo IV',
+          'Albion Online',
+        ];
+        const gameAccountGameOptionsList = (gameAccountGameSuggestions.length ? gameAccountGameSuggestions : fallbackGameAccountSuggestions);
+        const currentGameAccountGame = String(getDraft('game_account_game') || '').trim();
+        const hasCustomCurrentGame = !!(currentGameAccountGame && !gameAccountGameOptionsList.includes(currentGameAccountGame));
+        const gameAccountGameOptionsHtml = [
+          ...(hasCustomCurrentGame ? [currentGameAccountGame] : []),
+          ...gameAccountGameOptionsList,
+        ].map((name) => {
+          const selected = String(name || '').trim() === currentGameAccountGame;
+          return `<option value="${escapeAttr(name)}" ${selected ? 'selected' : ''}>${escapeHtml(name)}</option>`;
+        }).join('');
+
         structured.innerHTML = `
           ${showGameAccountFields ? `
             <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
@@ -508,11 +908,24 @@
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label class="block text-sm text-gray-700 font-medium mb-2">Jogo *</label>
-                  <input type="text" name="game_account_game" required value="${escapeAttr(getDraft('game_account_game'))}" placeholder="Ex: Valorant" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  <select name="game_account_game" required class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                    <option value="" ${currentGameAccountGame === '' ? 'selected' : ''}>Selecione</option>
+                    ${gameAccountGameOptionsHtml}
+                  </select>
                 </div>
                 <div>
                   <label class="block text-sm text-gray-700 font-medium mb-2">Plataforma *</label>
-                  <input type="text" name="game_account_platform" required value="${escapeAttr(getDraft('game_account_platform'))}" placeholder="Ex: PC, PS5, Xbox" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  <input type="text" name="game_account_platform" required list="game_account_platform_list" value="${escapeAttr(getDraft('game_account_platform'))}" placeholder="Ex: PC, PS5, Xbox, Steam, Epic Games" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  <datalist id="game_account_platform_list">
+                    <option value="PC"></option>
+                    <option value="PS4"></option>
+                    <option value="PS5"></option>
+                    <option value="Xbox"></option>
+                    <option value="Steam"></option>
+                    <option value="Epic Games"></option>
+                    <option value="Nintendo Switch"></option>
+                    <option value="Mobile"></option>
+                  </datalist>
                 </div>
               </div>
 
@@ -610,6 +1023,7 @@
 
       if (currency instanceof HTMLElement) {
         const sellerTimesDraft = getDraftArray('gold_seller_time_options');
+
         currency.innerHTML = showCurrencyFields ? `
           <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
             <div class="flex items-center gap-2 text-gray-900 font-semibold">
@@ -652,9 +1066,9 @@
             </div>
 
             <div>
-              <label class="block text-sm text-gray-700 font-medium mb-2">Horários disponíveis para entrega (até 5) *</label>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Horários disponíveis para entrega (até 3) *</label>
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                ${Array.from({ length: 5 }).map((_, idx) => `
+                ${Array.from({ length: 3 }).map((_, idx) => `
                   <input type="time" name="gold_seller_time_options[]" value="${escapeAttr(sellerTimesDraft[idx] || '')}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
                 `).join('')}
               </div>
@@ -662,6 +1076,59 @@
             </div>
           </div>
         ` : '';
+      }
+
+      if (serviceSchedule instanceof HTMLElement) {
+        const step = Math.max(1, Math.min(4, Number(state.createNegStep) || 1));
+        const serviceDateDraft = normalizeDateOptions(getDraftArray('service_seller_start_date_options'), 3);
+        const serviceRangesDraft = normalizeTimeRangeOptions(getDraftArray('service_seller_time_range_options'), 3);
+
+        // Keep scheduling on Step 3 only (so Step 2 doesn't get too long)
+        if (!showServiceFields || step !== 3) {
+          serviceSchedule.innerHTML = '';
+        } else {
+          serviceSchedule.innerHTML = `
+            <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
+              <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                <i class="fas fa-calendar-alt text-primary-600"></i>
+                Agendamento do serviço (obrigatório)
+              </div>
+
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Datas de início (até 3) *</label>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  ${Array.from({ length: 3 }).map((_, idx) => `
+                    <input type="date" name="service_seller_start_date_options[]" value="${escapeAttr(serviceDateDraft[idx] || '')}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  `).join('')}
+                </div>
+                <p class="text-xs text-gray-500 mt-1">O comprador vai escolher 1 data no convite.</p>
+              </div>
+
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Intervalos de horário (início/fim) (até 3) *</label>
+                <div class="space-y-2">
+                  ${Array.from({ length: 3 }).map((_, idx) => {
+                    const raw = String(serviceRangesDraft[idx] || '').trim();
+                    const parts = raw.includes('-') ? raw.split('-') : [];
+                    const start = parts[0] || '';
+                    const end = parts[1] || '';
+                    return `
+                      <div class="grid grid-cols-2 gap-3">
+                        <div>
+                          <input type="time" name="service_seller_time_range_start[]" value="${escapeAttr(start)}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all" placeholder="Início">
+                        </div>
+                        <div>
+                          <input type="time" name="service_seller_time_range_end[]" value="${escapeAttr(end)}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all" placeholder="Fim">
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+                <p class="text-xs text-gray-500 mt-1">Ex: 19:00–21:00. O fim deve ser maior que o início.</p>
+              </div>
+            </div>
+          `;
+        }
       }
 
       if (photos instanceof HTMLElement) {
@@ -840,6 +1307,8 @@
   let pendingNoticesLoading = false;
   let pendingNoticesLoadedAt = 0;
   let pendingNoticesLastFilter = null;
+  let presencePollingHandle = null;
+  let presenceLastRefreshAt = 0;
   let confirmationIntervalHandle = null;
   let toastTimer = null;
   let saoPauloCitiesPromise = null;
@@ -892,6 +1361,7 @@
       ]);
     } finally {
       updatePendingPolling();
+      updatePresencePolling();
     }
   }
 
@@ -1096,6 +1566,7 @@
     }
     render();
     updatePendingPolling();
+    updatePresencePolling();
   }
 
   function scheduleDeferredRender(delayMs = 160) {
@@ -1106,6 +1577,7 @@
       deferredRenderHandle = null;
       render();
       updatePendingPolling();
+      updatePresencePolling();
     }, delayMs);
   }
 
@@ -1395,10 +1867,20 @@
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   }
 
+  function getUserInviteTag(user) {
+    const id = Number(user?.id);
+    if (!Number.isFinite(id) || id <= 0) return '';
+    const firstName = getFirstName(String(user?.name || 'usuario'));
+    const cleaned = String(firstName || 'usuario').replace(/\s+/g, '').trim();
+    const normalized = cleaned ? cleaned.toLocaleLowerCase('pt-BR') : 'usuario';
+    return `${normalized}#${id}`;
+  }
+
   function renderHeader(isAuthenticated) {
     const userName = state.user?.name || 'Visitante';
     const userRole = state.user?.role || 'user';
     const roleLabel = userRole === 'admin' ? 'Administrador' : userRole === 'seller' ? 'Vendedor' : userRole === 'buyer' ? 'Comprador' : 'Usuário';
+    const myTag = isAuthenticated ? getUserInviteTag(state.user) : '';
     
     return `
       <header class="sticky top-0 z-50 bg-white shadow-md">
@@ -1445,7 +1927,16 @@
                   </div>
                   <div class="hidden md:block text-left">
                     <p class="text-sm font-medium text-gray-900">${escapeHtml(userName)}</p>
-                    <p class="text-xs text-gray-500">${roleLabel}</p>
+                    <div class="flex items-center gap-2">
+                      <p class="text-xs text-gray-500">${roleLabel}</p>
+                      ${myTag ? `
+                        <span class="text-xs text-gray-400">•</span>
+                        <button type="button" class="text-xs text-primary-700 hover:text-primary-800 font-semibold inline-flex items-center gap-1" data-action="copyMyTag" title="Copiar seu usuário">
+                          <span class="font-mono">${escapeHtml(myTag)}</span>
+                          <i class="fas fa-copy text-[11px]"></i>
+                        </button>
+                      ` : ''}
+                    </div>
                   </div>
                 </div>
                 <button class="px-4 py-2 bg-gray-100 hover:bg-danger-50 text-gray-700 hover:text-danger-600 rounded-lg text-sm font-medium transition-all duration-200" data-action="logout">
@@ -2149,6 +2640,7 @@
     const showGameAccountFields = selectedCategory === CATEGORY_GAME_ACCOUNT;
     const showSkinFields = selectedCategory === CATEGORY_SKIN;
     const showItemFields = selectedCategory === CATEGORY_ITEM;
+    const showServiceProductFlow = isServiceProductFlowCategory(selectedCategory);
     const negotiationType = getCreateNegotiationType();
     const isDigital = negotiationType === 'digital';
     const categoryOptions = negotiationType === 'digital'
@@ -2310,6 +2802,7 @@
                 ${negotiationType ? '' : '<p class="text-xs text-gray-500 mt-1"><i class="fas fa-info-circle mr-1"></i>Escolha o tipo para liberar as categorias.</p>'}
               </div>
 
+
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label class="block text-sm text-gray-700 font-medium mb-2">Valor (R$) *</label>
@@ -2332,10 +2825,18 @@
 
             <!-- STEP 2: Detalhes -->
             <section class="space-y-5 ${step === 2 ? '' : 'hidden'}" data-create-step="2">
-              <div>
-                <label class="block text-sm text-gray-700 font-medium mb-2">Título do produto *</label>
-                <input type="text" name="title" required maxlength="255" placeholder="Ex: Conta nível 80 com 3 skins" data-focus-key="create-neg-title" data-action="updateNegFormField" data-field="title" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
-              </div>
+              ${showServiceProductFlow ? `
+                <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-700">
+                  Para serviços, o título é gerado automaticamente pelo serviço + jogo.
+                </div>
+              ` : `
+                <div>
+                  <label class="block text-sm text-gray-700 font-medium mb-2">Título do produto *</label>
+                  <input type="text" name="title" required maxlength="255" placeholder="Ex: Conta nível 80 com 3 skins" data-focus-key="create-neg-title" data-action="updateNegFormField" data-field="title" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                </div>
+              `}
+
+              <div data-create-neg-service-product></div>
 
               <div data-create-neg-structured>
                 
@@ -2361,11 +2862,13 @@
 
             <!-- STEP 3: Comprador -->
             <section class="space-y-5 ${step === 3 ? '' : 'hidden'}" data-create-step="3">
+              <div data-create-neg-service-schedule></div>
+
               <div class="space-y-2">
-                <label class="block text-sm text-gray-700 font-medium">E-mail do comprador *</label>
-                <p class="text-xs text-gray-500">Digite o e-mail completo do comprador e clique em <strong>Buscar</strong> para confirmar o cadastro.</p>
+                <label class="block text-sm text-gray-700 font-medium">Usuário do comprador *</label>
+                <p class="text-xs text-gray-500">Digite no formato <strong>nome#id</strong> (ex: <strong>henrique#15</strong>) e clique em <strong>Buscar</strong> para confirmar o cadastro.</p>
                 <div class="flex flex-col sm:flex-row gap-2">
-                  <input type="email" name="buyer_email" required placeholder="comprador@email.com" class="flex-1 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all" data-action="updateNegFormField" data-field="buyerEmail" data-focus-key="create-neg-buyer-email">
+                  <input type="text" name="buyer_tag" required placeholder="henrique#15" class="flex-1 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all" data-action="updateNegFormField" data-field="buyerTag" data-focus-key="create-neg-buyer-tag">
                   <button type="button" class="w-full sm:w-auto px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-gray-700 transition" data-action="searchBuyer">
                     ${buyerSearching ? '<i class="fas fa-spinner fa-spin"></i>' : '<i class="fas fa-search"></i>'}
                   </button>
@@ -2376,7 +2879,7 @@
                 </div>
                 ${buyerFound === false ? `
                   <div class="p-3 bg-danger-50 border border-danger-200 rounded-lg text-danger-700 text-sm">
-                    <i class="fas fa-exclamation-circle mr-2"></i>Comprador não encontrado. Verifique o e-mail ou peça para se cadastrar.
+                    <i class="fas fa-exclamation-circle mr-2"></i>Comprador não encontrado. Verifique a tag (nome#id) ou peça para se cadastrar.
                   </div>
                 ` : ''}
                 ${buyerFound ? `
@@ -2384,7 +2887,6 @@
                     <i class="fas fa-check-circle text-lg"></i>
                     <div>
                       <strong>${escapeHtml(buyerFound.name)}</strong>
-                      <span class="block text-xs text-success-600">${escapeHtml(buyerFound.email)}</span>
                     </div>
                   </div>
                 ` : ''}
@@ -2861,6 +3363,12 @@
     const status = negotiation.status || '—';
 
     const isCurrencyCategory = String(negotiation?.category || '').trim() === CATEGORY_CURRENCY;
+    const isServiceCategory = (() => {
+      const c = String(negotiation?.category || '').trim();
+      return isServiceTaxonomyCategory(c) || c === CATEGORY_SERVICE;
+    })();
+    const isServiceExchangeCategory = String(negotiation?.category || '').trim() === CATEGORY_SERVICE_EXCHANGE;
+    const serviceInfo = negotiation?.service || null;
     const goldDelivery = negotiation?.gold_delivery || null;
     const goldSellerTimes = Array.isArray(goldDelivery?.seller?.time_options) ? goldDelivery.seller.time_options : [];
     const goldBuyerTimes = Array.isArray(goldDelivery?.buyer?.time_options) ? goldDelivery.buyer.time_options : [];
@@ -2872,6 +3380,23 @@
     const goldBuyerServer = String(goldDelivery?.buyer?.server || '').trim();
     const goldBuyerFaction = String(goldDelivery?.buyer?.faction || '').trim();
     const goldBuyerNotes = String(goldDelivery?.buyer?.notes || '').trim();
+
+    const serviceDelivery = negotiation?.service_delivery || null;
+    const serviceSellerStartDates = Array.isArray(serviceDelivery?.seller?.start_date_options) ? serviceDelivery.seller.start_date_options : [];
+    const serviceSellerTimeRanges = Array.isArray(serviceDelivery?.seller?.time_range_options) ? serviceDelivery.seller.time_range_options : [];
+    const serviceSelectedStartDate = String(serviceDelivery?.buyer_selected_start_date || '').trim();
+    const serviceSelectedTimeRange = String(serviceDelivery?.buyer_selected_time_range || '').trim();
+    const serviceScheduleConfirmedAt = String(serviceDelivery?.schedule_confirmed_at || '').trim();
+
+    const serviceEstimatedEndDate = (() => {
+      const days = Number(negotiation?.delivery_days || 0);
+      if (!serviceSelectedStartDate || !days || days < 1) return '';
+      const start = new Date(`${serviceSelectedStartDate}T00:00:00`);
+      if (Number.isNaN(start.getTime())) return '';
+      const end = new Date(start);
+      end.setDate(end.getDate() + days);
+      return end.toISOString();
+    })();
 
     const productPhotos = Array.isArray(negotiation?.product_photos || negotiation?.photos)
       ? (negotiation.product_photos || negotiation.photos)
@@ -2920,7 +3445,6 @@
           <div>
             <button class="text-primary-600 hover:text-primary-700 font-medium transition mb-2 flex items-center gap-2" data-action="navigate" data-page="dashboard"><i class="fas fa-arrow-left"></i> Voltar</button>
             <h1 class="text-3xl font-bold text-gray-900">Negociação #${negotiation.id}</h1>
-            <p class="text-gray-500">${escapeHtml(productTitle)}</p>
           </div>
           <div class="flex items-center gap-2">
             <button
@@ -2941,16 +3465,22 @@
           ${isCurrencyCategory ? `
             <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
               <div class="flex items-start justify-between gap-3 mb-4">
-                <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2"><i class="fas fa-receipt text-primary-500"></i> Resumo</h2>
-                ${hasIntermediaryReportData ? `
-                  <button
-                    type="button"
-                    class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white"
-                    data-action="openIntermediaryReport"
-                  >
-                    Relatório do intermediador
-                  </button>
-                ` : ''}
+                <div class="min-w-0">
+                  <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2"><i class="fas fa-receipt text-primary-500"></i> Resumo</h2>
+                  <div class="mt-1 text-sm text-gray-600 font-medium">${escapeHtml(productTitle)}</div>
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                  ${productImageButton}
+                  ${hasIntermediaryReportData ? `
+                    <button
+                      type="button"
+                      class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white"
+                      data-action="openIntermediaryReport"
+                    >
+                      Relatório do intermediador
+                    </button>
+                  ` : ''}
+                </div>
               </div>
 
               <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -3000,6 +3530,10 @@
                   <div>
                     <dt class="text-gray-500">Horário escolhido</dt>
                     <dd class="text-gray-700">${escapeHtml(goldSelectedTime || '—')}</dd>
+                  </div>
+                  <div>
+                    <dt class="text-gray-500">Agendamento confirmado</dt>
+                    <dd class="text-gray-700">${escapeHtml(goldScheduleConfirmedAt ? formatDateTime(goldScheduleConfirmedAt) : '—')}</dd>
                   </div>
                   <div>
                     <dt class="text-gray-500">Horários do vendedor</dt>
@@ -3114,16 +3648,16 @@
                       ${showForm ? `
                         <form class="p-4 rounded-xl border border-gray-200 bg-gray-50 space-y-3" data-action="submitSellerGoldSchedule" data-id="${negotiation.id}">
                           <div>
-                            <div class="text-sm text-gray-700 font-medium mb-2">Seus horários disponíveis (até 5) *</div>
+                            <div class="text-sm text-gray-700 font-medium mb-2">Seus horários disponíveis (até 3) *</div>
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                              ${Array.from({ length: 5 }).map(() => `
+                              ${Array.from({ length: 3 }).map(() => `
                                 <input type="time" name="gold_seller_time_options[]" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all">
                               `).join('')}
                             </div>
                             <p class="text-xs text-gray-500 mt-1">Preencha pelo menos 1 horário.</p>
                           </div>
-
-                          <div>
+            <div>
+              <div class="text-sm text-gray-700 font-medium mb-2">Escolha 1 horário do vendedor (ou sugira outro nos seus horários) *</div>
                             <label class="block text-sm text-gray-700 font-medium mb-2">Método de entrega *</label>
                             <select name="gold_seller_delivery_method" required class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all">
                               <option value="trade" ${safeMethod === 'trade' ? 'selected' : ''}>Trade (troca/encontro no jogo)</option>
@@ -3180,24 +3714,26 @@
                   <p class="text-gray-500">${escapeHtml(description)}</p>
                 </section>
               ` : ''}
-
-              <div class="mt-6 flex justify-end">
-                ${productImageButton}
-              </div>
             </article>
           ` : `
             <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
               <div class="flex items-start justify-between gap-3 mb-4">
-                <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2"><i class="fas fa-receipt text-primary-500"></i> Resumo</h2>
-                ${hasIntermediaryReportData ? `
-                  <button
-                    type="button"
-                    class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white"
-                    data-action="openIntermediaryReport"
-                  >
-                    Relatório do intermediador
-                  </button>
-                ` : ''}
+                <div class="min-w-0">
+                  <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2"><i class="fas fa-receipt text-primary-500"></i> Resumo</h2>
+                  <div class="mt-1 text-sm text-gray-600 font-medium">${escapeHtml(productTitle)}</div>
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                  ${productImageButton}
+                  ${hasIntermediaryReportData ? `
+                    <button
+                      type="button"
+                      class="px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gradient-to-r from-primary-600 to-secondary-500 hover:from-primary-700 hover:to-secondary-600 text-white"
+                      data-action="openIntermediaryReport"
+                    >
+                      Relatório do intermediador
+                    </button>
+                  ` : ''}
+                </div>
               </div>
 
               <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -3219,31 +3755,96 @@
                 </div>
               </dl>
 
+              ${serviceInfo && (isServiceCategory || isServiceExchangeCategory) ? `
+                <section class="mt-6 pt-4 border-t border-gray-100">
+                  <h3 class="text-sm font-medium text-gray-600 mb-2">Produto do serviço</h3>
+                  <div class="text-sm text-gray-800 font-semibold mb-3">${escapeHtml(String(serviceInfo?.service_label || 'Serviço'))} — ${escapeHtml(String(serviceInfo?.game_label || 'Jogo'))}</div>
+                  ${Array.isArray(serviceInfo?.fields) && serviceInfo.fields.length ? `
+                    <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      ${serviceInfo.fields.map((f) => `
+                        <div>
+                          <dt class="text-gray-500">${escapeHtml(String(f?.label || f?.field_id || 'Campo'))}</dt>
+                          <dd class="text-gray-700">${escapeHtml(String(f?.value || '—'))}</dd>
+                        </div>
+                      `).join('')}
+                    </dl>
+                  ` : `
+                    <p class="text-sm text-gray-500">Sem informações adicionais.</p>
+                  `}
+                </section>
+              ` : ''}
+
+              ${isServiceCategory ? `
+                <section class="mt-6 pt-4 border-t border-gray-100">
+                  <h3 class="text-sm font-medium text-gray-600 mb-2">Agendamento do serviço</h3>
+                  <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <dt class="text-gray-500">Data escolhida</dt>
+                      <dd class="text-gray-700">${escapeHtml(serviceSelectedStartDate ? formatDate(serviceSelectedStartDate) : '—')}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-gray-500">Horário (início/fim)</dt>
+                      <dd class="text-gray-700">${escapeHtml(serviceSelectedTimeRange || '—')}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-gray-500">Datas sugeridas</dt>
+                      <dd class="text-gray-700">${escapeHtml(serviceSellerStartDates.length ? serviceSellerStartDates.map((d) => formatShortDate(d)).join(' | ') : '—')}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-gray-500">Horários sugeridos</dt>
+                      <dd class="text-gray-700">${escapeHtml(serviceSellerTimeRanges.length ? serviceSellerTimeRanges.join(' | ') : '—')}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-gray-500">Prazo estimado de fim</dt>
+                      <dd class="text-gray-700">${escapeHtml(serviceEstimatedEndDate ? formatDate(serviceEstimatedEndDate) : '—')}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-gray-500">Agendamento confirmado</dt>
+                      <dd class="text-gray-700">${escapeHtml(serviceScheduleConfirmedAt ? formatDateTime(serviceScheduleConfirmedAt) : '—')}</dd>
+                    </div>
+                  </dl>
+                </section>
+              ` : ''}
+
               ${description ? `
                 <section class="mt-6 pt-4 border-t border-gray-100">
                   <h3 class="text-sm font-medium text-gray-600 mb-2">Descrição enviada pelo vendedor</h3>
                   <p class="text-gray-500">${escapeHtml(description)}</p>
-                  <div class="mt-4 flex justify-end">
-                    ${productImageButton}
-                  </div>
                 </section>
-              ` : `
-                <div class="mt-6 flex justify-end">
-                  ${productImageButton}
-                </div>
-              `}
+              ` : ''}
             </article>
           `}
 
           <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
-            <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-users text-secondary-500"></i> Participantes</h2>
+            <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center justify-between gap-2">
+              <span class="inline-flex items-center gap-2"><i class="fas fa-users text-secondary-500"></i> Participantes</span>
+              ${(() => {
+                const total = 3;
+                const rated = [negotiation?.seller_rating, negotiation?.buyer_rating, negotiation?.intermediary_rating]
+                  .filter((v) => {
+                    const n = Number(v);
+                    return Number.isFinite(n) && n >= 1 && n <= 10;
+                  }).length;
+                return `<span class="px-2 py-0.5 bg-gray-100 text-gray-700 text-xs rounded-full font-semibold">Avaliados: ${rated}/${total}</span>`;
+              })()}
+            </h2>
             <div class="grid grid-cols-1 gap-4">
               ${renderParticipantDropdown({
                 badgeText: 'Vendedor',
                 badgeClass: 'bg-warning-500',
                 isSelf: isSellerRole,
+                statusBadgeText: (() => {
+                  const base = getOnlineStatus(seller?.last_seen_at);
+                  const category = String(negotiation?.category || '').trim();
+                  if (category !== CATEGORY_GAME_ACCOUNT) return base.label;
+                  const sellerInfo = negotiation?.game_account?.seller_info;
+                  const markedOnlineAt = extractLineValue(sellerInfo, 'Online agora');
+                  const extra = markedOnlineAt ? 'Disponível p/ confirmar' : '';
+                  return extra ? `${base.label} • ${extra}` : base.label;
+                })(),
+                statusBadgeClass: (() => getOnlineStatus(seller?.last_seen_at).className)(),
                 name: seller.name,
-                email: seller.email,
+                showEmail: false,
                 phone: seller.phone,
                 ratingLabel: 'Avaliação do vendedor',
                 ratingValue: negotiation.seller_rating,
@@ -3253,8 +3854,18 @@
                 badgeText: 'Comprador',
                 badgeClass: 'bg-secondary-500',
                 isSelf: isBuyerRole,
+                statusBadgeText: (() => {
+                  const base = getOnlineStatus(buyer?.last_seen_at);
+                  const category = String(negotiation?.category || '').trim();
+                  if (category !== CATEGORY_GAME_ACCOUNT) return base.label;
+                  const changeRequest = negotiation?.game_account?.buyer_change_request;
+                  const at = extractLineValue(changeRequest, 'Disponível para confirmar e-mail agora') || extractLineValue(changeRequest, 'Disponível agora');
+                  const extra = at ? 'Disponível p/ confirmar' : '';
+                  return extra ? `${base.label} • ${extra}` : base.label;
+                })(),
+                statusBadgeClass: (() => getOnlineStatus(buyer?.last_seen_at).className)(),
                 name: buyer.name,
-                email: buyer.email,
+                showEmail: false,
                 phone: buyer.phone,
                 ratingLabel: 'Avaliação do comprador',
                 ratingValue: negotiation.buyer_rating,
@@ -3266,6 +3877,7 @@
                 isSelf: false,
                 name: 'IntermediaçãoPro',
                 email: 'contato@intermediacaopro.com',
+                showEmail: true,
                 phone: '(11) 99999-9999',
                 ratingLabel: 'Avaliação da intermediadora',
                 ratingValue: negotiation.intermediary_rating,
@@ -3327,16 +3939,8 @@
   function renderRatingInline(label, value) {
     const rating10 = Number(value);
     const has = Number.isFinite(rating10) && rating10 >= 1 && rating10 <= 10;
-    if (!has) {
-      return `
-        <div class="mt-3">
-          <div class="text-xs text-gray-500">${escapeHtml(label)}</div>
-          <div class="text-sm text-gray-700 font-medium">—</div>
-        </div>
-      `;
-    }
-
-    const stars = Math.max(1, Math.min(5, Math.round(rating10 / 2)));
+    // Regra solicitada: começa em 0 estrelas e vai subindo conforme recebe nota.
+    const stars = has ? Math.max(1, Math.min(5, Math.round(rating10 / 2))) : 0;
     const starsHtml = Array.from({ length: 5 }).map((_, i) => {
       const filled = i < stars;
       return `<i class="fas fa-star ${filled ? 'text-warning-400' : 'text-gray-300'}"></i>`;
@@ -3347,18 +3951,41 @@
         <div class="text-xs text-gray-500">${escapeHtml(label)}</div>
         <div class="flex items-center gap-2">
           <div class="flex items-center gap-1">${starsHtml}</div>
-          <div class="text-xs text-gray-600">${escapeHtml(String(rating10))}/10</div>
+          <div class="text-xs text-gray-600">${escapeHtml(String(stars))}/5</div>
         </div>
       </div>
     `;
+  }
+
+  function renderStarsInline(value) {
+    const rating10 = Number(value);
+    const has = Number.isFinite(rating10) && rating10 >= 1 && rating10 <= 10;
+    if (!has) {
+      return `<span class="text-xs text-gray-600">Sem avaliação</span>`;
+    }
+
+    const stars = Math.max(1, Math.min(5, Math.round(rating10 / 2)));
+    const starsHtml = Array.from({ length: 5 }).map((_, i) => {
+      const filled = i < stars;
+      return `<i class="fas fa-star ${filled ? 'text-warning-400' : 'text-gray-300'}"></i>`;
+    }).join('');
+    return `<span class="inline-flex items-center gap-1">${starsHtml}</span>`;
+  }
+
+  function renderOnlineBadge(lastSeenAtIso) {
+    const s = getOnlineStatus(lastSeenAtIso);
+    return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold text-white ${s.className}"><i class="fas fa-circle text-[9px]"></i>${escapeHtml(s.label)}</span>`;
   }
 
   function renderParticipantDropdown({
     badgeText,
     badgeClass,
     isSelf,
+    statusBadgeText,
+    statusBadgeClass,
     name,
     email,
+    showEmail,
     phone,
     ratingLabel,
     ratingValue,
@@ -3367,7 +3994,7 @@
   }) {
     const safeBadgeText = badgeText ? String(badgeText) : '';
     const displayName = name ? String(name) : '—';
-    const displayEmail = email ? String(email) : '—';
+    const displayEmail = email ? String(email) : '';
     const displayPhone = formatPhone(phone);
     const addressHtml = renderAddressDetails(addressEntity, emptyAddressMessage || 'Endereço não informado.');
 
@@ -3376,20 +4003,23 @@
         <header class="flex items-center gap-2 mb-2">
           <span class="px-2 py-0.5 ${badgeClass || 'bg-gray-700'} text-white text-xs rounded-full font-medium">${escapeHtml(safeBadgeText)}</span>
           ${isSelf ? '<span class="px-2 py-0.5 bg-gray-900 text-white text-xs rounded-full font-medium">Você</span>' : ''}
+          ${statusBadgeText ? `<span class="px-2 py-0.5 ${statusBadgeClass || 'bg-success-600'} text-white text-xs rounded-full font-medium">${escapeHtml(String(statusBadgeText))}</span>` : ''}
         </header>
         <strong class="block text-gray-800">${escapeHtml(displayName)}</strong>
+        ${renderRatingInline(ratingLabel, ratingValue)}
         <details class="mt-3">
           <summary class="cursor-pointer text-sm text-primary-600 hover:text-primary-700 font-medium select-none">Detalhes</summary>
           <div class="mt-3 space-y-2">
-            <div>
-              <div class="text-xs text-gray-500">E-mail</div>
-              <div class="text-sm text-gray-700 break-all">${escapeHtml(displayEmail)}</div>
-            </div>
+            ${showEmail ? `
+              <div>
+                <div class="text-xs text-gray-500">E-mail</div>
+                <div class="text-sm text-gray-700 break-all">${escapeHtml(displayEmail || '—')}</div>
+              </div>
+            ` : ''}
             <div>
               <div class="text-xs text-gray-500">Telefone</div>
               <div class="text-sm text-gray-700">${escapeHtml(displayPhone)}</div>
             </div>
-            ${renderRatingInline(ratingLabel, ratingValue)}
             ${addressHtml}
           </div>
         </details>
@@ -3442,8 +4072,13 @@
 
     const category = String(neg?.category || '').trim();
     const isCurrency = category === CATEGORY_CURRENCY;
+    const isService = isServiceTaxonomyCategory(category) || category === CATEGORY_SERVICE;
     const gold = neg?.gold_delivery || null;
     const sellerTimeOptions = Array.isArray(gold?.seller?.time_options) ? gold.seller.time_options : [];
+
+    const service = neg?.service_delivery || null;
+    const serviceStartDates = Array.isArray(service?.seller?.start_date_options) ? service.seller.start_date_options : [];
+    const serviceTimeRanges = Array.isArray(service?.seller?.time_range_options) ? service.seller.time_range_options : [];
     const hasDesc = Boolean(neg?.description && String(neg.description).trim());
     const methodLabel = (m) => {
       const v = String(m || '').trim();
@@ -3467,10 +4102,12 @@
           </h3>
           <p class="text-sm text-gray-600 mb-2">${isCurrency
             ? 'Para moedas/gold, após você aceitar e pagar, vocês devem confirmar um horário para realizar a troca dentro do jogo.'
+            : (isService
+              ? 'Para serviços, você escolhe a data de início e o intervalo de horário sugeridos pelo vendedor.'
             : (isDigitalDeliveryCategory(neg?.category)
               ? `O vendedor deve concluir a entrega digital em até <strong>${deadlineDays} ${deadlineDays === 1 ? 'dia' : 'dias'}</strong> após você aceitar.`
               : 'O vendedor deve postar o produto após você aceitar.'
-            )
+            ))
           }</p>
           <p class="text-sm text-gray-600">Após o aceite, você receberá as instruções de pagamento.</p>
         </div>
@@ -3524,7 +4161,7 @@
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   ${sellerTimeOptions.map((opt) => `
                     <label class="flex items-center gap-2 p-3 rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 cursor-pointer">
-                      <input type="radio" name="gold_buyer_selected_time" value="${escapeAttr(opt)}" required>
+                      <input type="radio" name="gold_buyer_selected_time" value="${escapeAttr(opt)}">
                       <span class="text-sm text-gray-800 font-medium">${escapeHtml(opt)}</span>
                     </label>
                   `).join('')}
@@ -3550,9 +4187,9 @@
             </div>
 
             <div>
-              <label class="block text-sm text-gray-700 font-medium mb-2">Seus horários disponíveis no dia (até 5) *</label>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Seus horários disponíveis no dia (até 3) *</label>
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                ${Array.from({ length: 5 }).map(() => `
+                ${Array.from({ length: 3 }).map(() => `
                   <input type="time" name="gold_buyer_time_options[]" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
                 `).join('')}
               </div>
@@ -3565,7 +4202,68 @@
             </div>
 
             <div class="flex flex-wrap gap-3">
-              <button type="submit" class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2" ${sellerTimeOptions.length ? '' : 'disabled'}>
+              <button type="submit" class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2">
+                <i class="fas fa-check"></i> Aceitar e participar
+              </button>
+              <button type="button" class="px-5 py-2.5 bg-danger-100 hover:bg-danger-200 text-danger-700 rounded-lg font-medium transition flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
+                <i class="fas fa-times"></i> Recusar
+              </button>
+            </div>
+          </form>
+        ` : ''}
+
+        ${isService ? `
+          <form class="p-4 rounded-xl border border-success-200 bg-white mb-4 space-y-4" data-action="acceptNegotiation" data-id="${neg.id}">
+            <div class="flex items-center gap-2 text-gray-900 font-semibold">
+              <i class="fas fa-calendar-check text-success-600"></i>
+              Agendamento do serviço
+            </div>
+
+            <div>
+              <div class="text-sm text-gray-700 font-medium mb-2">Escolha 1 data de início *</div>
+              ${serviceStartDates.length ? `
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  ${serviceStartDates.map((opt) => `
+                    <label class="flex items-center gap-2 p-3 rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 cursor-pointer">
+                      <input type="radio" name="service_buyer_selected_start_date" value="${escapeAttr(opt)}" required>
+                      <span class="text-sm text-gray-800 font-medium">${escapeHtml(formatDate(opt))}</span>
+                    </label>
+                  `).join('')}
+                </div>
+              ` : `
+                <div class="text-sm text-gray-600">O vendedor ainda não informou datas.</div>
+              `}
+            </div>
+
+            <div>
+              <div class="text-sm text-gray-700 font-medium mb-2">Escolha 1 intervalo de horário (início/fim) *</div>
+              ${serviceTimeRanges.length ? `
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  ${serviceTimeRanges.map((opt) => `
+                    <label class="flex items-center gap-2 p-3 rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 cursor-pointer">
+                      <input type="radio" name="service_buyer_selected_time_range" value="${escapeAttr(opt)}" required>
+                      <span class="text-sm text-gray-800 font-medium">${escapeHtml(opt)}</span>
+                    </label>
+                  `).join('')}
+                </div>
+              ` : `
+                <div class="text-sm text-gray-600">O vendedor ainda não informou horários.</div>
+              `}
+            </div>
+
+            <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-700">
+              <div class="font-semibold mb-1">Prazo do serviço</div>
+              <div>Prazo combinado: <strong>${escapeHtml(String(neg?.delivery_days || deadlineDays))} dia(s)</strong>. A data estimada de fim é calculada após a data de início escolhida.</div>
+            </div>
+
+            <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-700">
+              <div class="font-semibold mb-1">Contato</div>
+              <div>Comprador: <strong>${escapeHtml(formatPhone(neg?.buyer?.phone || '') || '—')}</strong></div>
+              <div>Vendedor: <strong>${escapeHtml(formatPhone(neg?.seller?.phone || '') || '—')}</strong></div>
+            </div>
+
+            <div class="flex flex-wrap gap-3">
+              <button type="submit" class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2" ${(serviceStartDates.length && serviceTimeRanges.length) ? '' : 'disabled'}>
                 <i class="fas fa-check"></i> Aceitar e participar
               </button>
               <button type="button" class="px-5 py-2.5 bg-danger-100 hover:bg-danger-200 text-danger-700 rounded-lg font-medium transition flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
@@ -3575,7 +4273,7 @@
           </form>
         ` : ''}
         
-        ${isCurrency ? '' : `
+        ${(isCurrency || isService) ? '' : `
           <div class="flex flex-wrap gap-3">
             <button class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2" data-action="acceptNegotiation" data-id="${neg.id}">
               <i class="fas fa-check"></i> Aceitar e participar
@@ -3750,7 +4448,7 @@
     return `
       <article class="bg-white rounded-2xl p-6 shadow-card border border-gray-100">
         <h2 class="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2"><i class="fas fa-user-edit text-secondary-600"></i> Dados para alteração da conta</h2>
-        <p class="text-sm text-gray-600 mb-4">Pagamento confirmado. Agora informe os dados necessários para a intermediadora finalizar a troca (ex.: e-mail novo, 2FA, dados de recuperação, plataforma e observações).</p>
+        <p class="text-sm text-gray-600 mb-4">Pagamento confirmado. Informe os dados para a intermediadora finalizar a troca. Você receberá uma <strong>senha aleatória</strong> e deverá alterar depois.</p>
 
         ${hasRequest ? `
           <div class="p-4 bg-gray-50 rounded-xl border border-gray-100">
@@ -3759,9 +4457,41 @@
           </div>
         ` : `
           <form data-action="submitGameAccountChangeRequest" data-id="${neg.id}" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label class="flex flex-col gap-2">
+                <span class="text-sm text-gray-700 font-medium">E-mail (novo) *</span>
+                <input name="buyer_new_email" type="email" required placeholder="novo@email.com" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all" />
+              </label>
+              <label class="flex flex-col gap-2">
+                <span class="text-sm text-gray-700 font-medium">Contato direto (WhatsApp) *</span>
+                <input name="buyer_contact_phone" type="tel" required placeholder="19-99999-9999" inputmode="numeric" autocomplete="tel" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all" />
+              </label>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label class="flex flex-col gap-2">
+                <span class="text-sm text-gray-700 font-medium">Disponível pelos próximos</span>
+                <select name="buyer_availability_minutes" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all">
+                  <option value="">Selecione</option>
+                  <option value="10">10 minutos</option>
+                  <option value="20">20 minutos</option>
+                  <option value="30">30 minutos</option>
+                </select>
+              </label>
+
+              <div class="flex flex-col gap-2">
+                <span class="text-sm text-gray-700 font-medium">Estou disponível para confirmar e-mail agora</span>
+                <input type="hidden" name="buyer_availability_now" value="" />
+                <button type="button" class="px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-800 font-semibold transition" data-action="setBuyerAvailabilityNow">
+                  Marcar disponibilidade agora
+                </button>
+                <p class="text-xs text-gray-500" data-availability-preview>Não marcado.</p>
+              </div>
+            </div>
+
             <label class="flex flex-col gap-2">
-              <span class="text-sm text-gray-700 font-medium">Dados necessários *</span>
-              <textarea name="game_account_buyer_change_request" rows="5" minlength="10" maxlength="5000" required placeholder="Ex: Novo e-mail: ...\nCódigo 2FA (se necessário): ...\nPlataforma: ...\nObservações: ..." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all resize-none"></textarea>
+              <span class="text-sm text-gray-700 font-medium">Observações (opcional)</span>
+              <textarea name="buyer_notes" rows="4" maxlength="2000" placeholder="Ex: posso confirmar código na hora, melhor horário, observações..." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500 transition-all resize-none"></textarea>
             </label>
             <button type="submit" class="px-4 py-2 bg-gradient-to-r from-secondary-500 to-secondary-600 hover:from-secondary-600 hover:to-secondary-700 rounded-lg text-white font-semibold transition shadow-sm">
               <i class="fas fa-paper-plane mr-2"></i>Enviar dados
@@ -3820,14 +4550,66 @@
           </div>
         ` : `
           <form data-action="submitGameAccountSellerInfo" data-id="${neg.id}" class="space-y-4">
-            <label class="flex flex-col gap-2">
-              <span class="text-sm text-gray-700 font-medium">Dados da conta *</span>
-              <textarea name="game_account_seller_info" rows="5" minlength="10" maxlength="5000" required placeholder="Ex: Jogo: ...\nPlataforma: ...\nLogin: ...\nSenha: ...\nEmail vinculado: ...\nSenha do email: ...\nObservações: ..." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-warning-500 focus:border-warning-500 transition-all resize-none"></textarea>
-            </label>
+            <div class="p-4 bg-gray-50 border border-gray-100 rounded-xl text-sm text-gray-700">
+              <div class="font-semibold">Taxa da intermediação</div>
+              <div class="mt-1">
+                ${neg?.seller_fee_deduct_from_payout
+                  ? 'Modo selecionado: <strong>descontar do repasse</strong> (não exige Pix do vendedor).'
+                  : 'Modo selecionado: <strong>Pix do vendedor</strong> (se aplicável no fluxo).'}
+              </div>
+              <input type="hidden" name="seller_fee_deduct_from_payout" value="${neg?.seller_fee_deduct_from_payout ? '1' : '0'}" />
+            </div>
 
-            <label class="flex items-start gap-3 p-4 bg-gray-50 border border-gray-100 rounded-xl cursor-pointer">
-              <input type="checkbox" name="seller_fee_deduct_from_payout" value="1" class="w-5 h-5 mt-0.5 rounded border-gray-300 text-warning-600 focus:ring-warning-500">
-              <span class="text-sm text-gray-700">Descontar a taxa da intermediação do valor do envio/repasse (opcional).</span>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label class="flex flex-col gap-2">
+                <span class="text-sm text-gray-700 font-medium">Login *</span>
+                <input name="seller_account_login" type="text" required class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-warning-500 focus:border-warning-500 transition-all" />
+              </label>
+              <label class="flex flex-col gap-2">
+                <span class="text-sm text-gray-700 font-medium">Senha *</span>
+                <input name="seller_account_password" type="password" required autocomplete="new-password" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-warning-500 focus:border-warning-500 transition-all" />
+              </label>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label class="flex flex-col gap-2">
+                <span class="text-sm text-gray-700 font-medium">E-mail vinculado (se houver)</span>
+                <input name="seller_account_email" type="email" autocomplete="email" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-warning-500 focus:border-warning-500 transition-all" />
+              </label>
+              <label class="flex flex-col gap-2">
+                <span class="text-sm text-gray-700 font-medium">Senha do e-mail (se houver)</span>
+                <input name="seller_email_password" type="password" autocomplete="new-password" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-warning-500 focus:border-warning-500 transition-all" />
+              </label>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label class="flex flex-col gap-2">
+                <span class="text-sm text-gray-700 font-medium">Dupla autenticação (2FA)</span>
+                <select name="seller_2fa_removed" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-warning-500 focus:border-warning-500 transition-all">
+                  <option value="">Selecione</option>
+                  <option value="removed">Removi / desativei</option>
+                  <option value="not_removed">Não removi</option>
+                  <option value="unknown">Não sei</option>
+                </select>
+              </label>
+              <label class="flex flex-col gap-2">
+                <span class="text-sm text-gray-700 font-medium">Contato direto (WhatsApp) *</span>
+                <input name="seller_contact_phone" type="tel" required placeholder="19-99999-9999" inputmode="numeric" autocomplete="tel" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-warning-500 focus:border-warning-500 transition-all" />
+              </label>
+            </div>
+
+            <div class="flex flex-col gap-2">
+              <span class="text-sm text-gray-700 font-medium">Estou online para confirmar códigos</span>
+              <input type="hidden" name="seller_online_now" value="" />
+              <button type="button" class="px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-800 font-semibold transition" data-action="setSellerOnlineNow">
+                Marcar como online agora
+              </button>
+              <p class="text-xs text-gray-500" data-seller-online-preview>Não marcado.</p>
+            </div>
+
+            <label class="flex flex-col gap-2">
+              <span class="text-sm text-gray-700 font-medium">Observações (opcional)</span>
+              <textarea name="seller_notes" rows="4" maxlength="2000" placeholder="Ex: observações..." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-warning-500 focus:border-warning-500 transition-all resize-none"></textarea>
             </label>
 
             <button type="submit" class="px-4 py-2 bg-gradient-to-r from-warning-500 to-orange-500 hover:from-warning-600 hover:to-orange-600 rounded-lg text-white font-semibold transition shadow-sm">
@@ -4055,7 +4837,18 @@
         buyer_fee: 'Taxa do comprador',
         seller_fee: 'Taxa do vendedor'
       }[payment.type] || 'Pagamento');
-      const status = payment.confirmed_at ? `Confirmado em ${formatDate(payment.confirmed_at)}` : 'Pendente';
+      // Alguns payloads marcam a confirmação no nível da negociação, mas não replicam
+      // para cada linha em `payments`. Evita mostrar "Pendente" quando já foi confirmado.
+      const confirmedFallback = (() => {
+        const type = String(payment?.type || '').trim();
+        if (type === 'buyer_fee') return neg?.buyer_fee_paid_at || null;
+        if (type === 'seller_fee') return neg?.seller_fee_paid_at || null;
+        if (type === 'release' || type === 'product') return neg?.product_paid_at || neg?.paid_at || null;
+        return null;
+      })();
+
+      const confirmedAt = payment.confirmed_at || confirmedFallback;
+      const status = confirmedAt ? `Confirmado em ${formatDate(confirmedAt)}` : 'Pendente';
       return `
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-4 py-2 border-b border-slate-700 last:border-b-0">
           <span class="text-white">${escapeHtml(label)}</span>
@@ -4076,6 +4869,8 @@
 
   function renderAdminActionsSection(neg) {
     if (!isAdmin()) return '';
+    const category = String(neg?.category || '').trim();
+    const currencyCategory = category === CATEGORY_CURRENCY;
     const awaitingAdmin = neg.status === 'awaiting_admin_approval';
     const atIntermediary = neg.status === 'at_intermediary';
     const waitingPayment = neg.status === 'waiting_payment';
@@ -4083,11 +4878,11 @@
     const showInspectionForm = atIntermediary && Boolean(neg.inspection_saved_at) && !neg.intermediary_approval_confirmed_at;
     const showFinalize = neg.status === 'delivered';
     const showMarkReceived = neg.status === 'shipped' && !neg.intermediary_received_status;
-    const showDigitalDelivery = neg.status === 'waiting_digital_delivery' && isDigitalDeliveryCategory(neg?.category) && !isCurrencyCategory(neg?.category);
+    const showDigitalDelivery = neg.status === 'waiting_digital_delivery' && isDigitalDeliveryCategory(category) && !currencyCategory;
 
     const goldBuyerReceivedAt = neg?.gold_delivery?.buyer_received_confirmed_at;
     const goldSellerSentAt = neg?.gold_delivery?.seller_sent_confirmed_at;
-    const showUrgentSellerPayout = isCurrencyCategory(neg?.category) && Boolean(goldBuyerReceivedAt) && Boolean(goldSellerSentAt);
+    const showUrgentSellerPayout = currencyCategory && Boolean(goldBuyerReceivedAt) && Boolean(goldSellerSentAt);
 
     const sections = [];
 
@@ -4705,9 +5500,7 @@
       const canApprove = neg.status === 'awaiting_admin_approval';
       const productTitle = neg.product_title || neg.product_name || neg.title || 'Produto';
       const buyerName = neg.buyer?.name || '—';
-      const buyerEmail = neg.buyer?.email || '';
       const sellerName = neg.seller?.name || '—';
-      const sellerEmail = neg.seller?.email || '';
       return `
       <div class="grid grid-cols-7 gap-4 px-6 py-4 border-t border-gray-100 items-center hover:bg-primary-50 transition">
         <span class="text-gray-500 font-medium">#${neg.id}</span>
@@ -4717,11 +5510,9 @@
         </span>
         <span class="min-w-0">
           <div class="truncate text-gray-600">${escapeHtml(buyerName)}</div>
-          ${buyerEmail ? `<div class="text-xs text-gray-400 break-all">${escapeHtml(buyerEmail)}</div>` : ''}
         </span>
         <span class="min-w-0">
           <div class="truncate text-gray-600">${escapeHtml(sellerName)}</div>
-          ${sellerEmail ? `<div class="text-xs text-gray-400 break-all">${escapeHtml(sellerEmail)}</div>` : ''}
         </span>
         <span>${renderStatusBadge(neg.status)}</span>
         <span class="text-gray-500 text-sm">${formatDateTime(neg.updated_at)}</span>
@@ -4770,9 +5561,7 @@
       const canApprove = neg?.status === 'awaiting_admin_approval';
       const productTitle = neg?.product_title || neg?.product_name || neg?.title || 'Produto';
       const buyerName = neg?.buyer?.name || '—';
-      const buyerEmail = neg?.buyer?.email || '';
       const sellerName = neg?.seller?.name || '—';
-      const sellerEmail = neg?.seller?.email || '';
       const updated = neg?.updated_at ? formatDateTime(neg.updated_at) : '—';
 
       return `
@@ -4797,12 +5586,10 @@
               <div class="p-3 rounded-xl bg-white border border-gray-100">
                 <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Comprador</div>
                 <div class="text-sm font-semibold text-gray-900">${escapeHtml(buyerName)}</div>
-                ${buyerEmail ? `<div class="text-xs text-gray-500 break-all">${escapeHtml(buyerEmail)}</div>` : ''}
               </div>
               <div class="p-3 rounded-xl bg-white border border-gray-100">
                 <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendedor</div>
                 <div class="text-sm font-semibold text-gray-900">${escapeHtml(sellerName)}</div>
-                ${sellerEmail ? `<div class="text-xs text-gray-500 break-all">${escapeHtml(sellerEmail)}</div>` : ''}
               </div>
             </div>
 
@@ -4959,9 +5746,7 @@
 
   function renderPendingNoticeCard(neg) {
     const buyer = neg?.buyer?.name || '—';
-    const buyerEmail = neg?.buyer?.email || '';
     const seller = neg?.seller?.name || '—';
-    const sellerEmail = neg?.seller?.email || '';
     const product = neg?.product_title || neg?.product_name || neg?.title || 'Produto';
     return `
       <article class="bg-gradient-to-r from-primary-50 to-secondary-50 rounded-xl p-4 border border-primary-200 hover:shadow-card transition-all duration-200">
@@ -4972,8 +5757,8 @@
         <div class="space-y-2 mb-4">
           <strong class="block text-gray-800">${escapeHtml(product)} <span class="text-xs text-gray-400 font-semibold">(#${neg.id})</span></strong>
           <div class="flex flex-wrap gap-4 text-sm text-gray-500">
-            <span><i class="fas fa-shopping-cart mr-1"></i> ${escapeHtml(buyer)}${buyerEmail ? ` <span class=\"text-xs text-gray-400 break-all\">(${escapeHtml(buyerEmail)})</span>` : ''}</span>
-            <span><i class="fas fa-store mr-1"></i> ${escapeHtml(seller)}${sellerEmail ? ` <span class=\"text-xs text-gray-400 break-all\">(${escapeHtml(sellerEmail)})</span>` : ''}</span>
+            <span><i class="fas fa-shopping-cart mr-1"></i> ${escapeHtml(buyer)}</span>
+            <span><i class="fas fa-store mr-1"></i> ${escapeHtml(seller)}</span>
           </div>
           <div>Status: ${renderStatusBadge(neg.status)}</div>
         </div>
@@ -4990,7 +5775,7 @@
   function renderTimelineModal() {
     const timeline = Array.isArray(state.timelineData) ? state.timelineData : [];
     return `
-      <div class="fixed inset-0 z-50 p-4">
+      <div class="fixed inset-0 z-50 p-4 flex items-center justify-center">
         <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" data-action="closeTimeline"></div>
         <div class="relative bg-white rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-card-xl overflow-hidden animate-slide-up" data-action="noop">
           <div class="h-1 bg-gradient-to-r from-secondary-500 to-primary-500"></div>
@@ -5530,6 +6315,27 @@
   function handleInput(event) {
     const target = event.target;
     if (!(target instanceof Element)) return;
+
+    // Input masks / normalization (always run, even without data-action)
+    if (target instanceof HTMLInputElement) {
+      const name = String(target.name || '');
+      if (name === 'buyer_contact_phone' || name === 'seller_contact_phone') {
+        const next = formatPhoneDd9(target.value);
+        if (target.value !== next) target.value = next;
+      }
+      if (name === 'game_account_game' || name === 'game_account_platform' || name === 'game_account_level' || name === 'game_account_rank') {
+        const next = capitalizeFirstPtBrLive(target.value);
+        if (target.value !== next) {
+          const start = typeof target.selectionStart === 'number' ? target.selectionStart : null;
+          const end = typeof target.selectionEnd === 'number' ? target.selectionEnd : null;
+          target.value = next;
+          if (start != null && end != null) {
+            try { target.setSelectionRange(start, end); } catch { /* ignore */ }
+          }
+        }
+      }
+    }
+
     const actionName = target.dataset.action;
     if (!actionName) return;
     const handler = actions[actionName];
@@ -5642,6 +6448,28 @@
     }
 
     return data;
+  }
+
+  async function ensureServiceFormsConfigLoaded({ force = false } = {}) {
+    if (state.serviceFormsLoading) return;
+    if (!force && state.serviceFormsConfig) return;
+    if (!state.token) return;
+
+    try {
+      state.serviceFormsLoading = true;
+      const resp = await apiCall('/service-forms/config', { method: 'GET' });
+      const cfg = resp?.data || resp;
+      state.serviceFormsConfig = cfg && typeof cfg === 'object' ? cfg : null;
+    } catch (e) {
+      console.warn('Falha ao carregar service-forms config:', e);
+      state.serviceFormsConfig = null;
+    } finally {
+      state.serviceFormsLoading = false;
+      // If create modal is open, refresh dynamic UI.
+      if (state.showCreateNegotiationModal) {
+        try { updateCreateNegotiationModalDynamicUI(); } catch { /* ignore */ }
+      }
+    }
   }
 
   async function loadNegotiations({ force = false, silent = false } = {}) {
@@ -5801,6 +6629,57 @@
       clearInterval(pendingPollingHandle);
       pendingPollingHandle = null;
     }
+  }
+
+  function startPresencePolling() {
+    if (presencePollingHandle) return;
+    const run = async () => {
+      if (!state.token) return;
+
+      // Evita re-render enquanto modais sensíveis estiverem abertos.
+      if (state.showPendingModal || state.showCreateNegotiationModal) return;
+
+      // Force re-render so online/offline flips as time passes.
+      setState({ presenceTick: Date.now() });
+
+      // Refresh last_seen_at periodically.
+      const now = Date.now();
+      if (now - presenceLastRefreshAt < 60000) return;
+
+      presenceLastRefreshAt = now;
+      try {
+        await loadNegotiations({ force: true, silent: true });
+      } catch {
+        // ignore
+      }
+
+      try {
+        if (state.currentPage === 'negotiation-detail' && state.currentNegotiation?.id) {
+          await loadNegotiation(state.currentNegotiation.id, { silent: true });
+        }
+      } catch {
+        // ignore
+      }
+    };
+    presencePollingHandle = setInterval(() => {
+      run().catch(() => null);
+    }, 30000);
+    run().catch(() => null);
+  }
+
+  function stopPresencePolling() {
+    if (presencePollingHandle) {
+      clearInterval(presencePollingHandle);
+      presencePollingHandle = null;
+    }
+  }
+
+  function updatePresencePolling() {
+    if (!state.token) {
+      stopPresencePolling();
+      return;
+    }
+    startPresencePolling();
   }
 
   function updatePendingPolling() {
@@ -6190,20 +7069,12 @@
     const buyerName = (item?.buyer && typeof item.buyer === 'object')
       ? (item.buyer.name ?? item.buyer.full_name ?? '')
       : (typeof item?.buyer === 'string' ? item.buyer : '');
-    const buyerEmail = (item?.buyer && typeof item.buyer === 'object')
-      ? (item.buyer.email ?? '')
-      : '';
     const sellerName = (item?.seller && typeof item.seller === 'object')
       ? (item.seller.name ?? item.seller.full_name ?? '')
       : (typeof item?.seller === 'string' ? item.seller : '');
-    const sellerEmail = (item?.seller && typeof item.seller === 'object')
-      ? (item.seller.email ?? '')
-      : '';
 
     const flatBuyerName = item?.buyer_name ?? item?.buyerName ?? item?.buyer_full_name ?? '';
-    const flatBuyerEmail = item?.buyer_email ?? item?.buyerEmail ?? '';
     const flatSellerName = item?.seller_name ?? item?.sellerName ?? item?.seller_full_name ?? '';
-    const flatSellerEmail = item?.seller_email ?? item?.sellerEmail ?? '';
 
     const participantFields = [];
     const participants = Array.isArray(item?.participants) ? item.participants : [];
@@ -6216,7 +7087,6 @@
       if (typeof p === 'object') {
         if (p.name) participantFields.push(p.name);
         if (p.full_name) participantFields.push(p.full_name);
-        if (p.email) participantFields.push(p.email);
       }
     }
 
@@ -6225,13 +7095,9 @@
       item?.product_name,
       item?.title,
       buyerName,
-      buyerEmail,
       sellerName,
-      sellerEmail,
       flatBuyerName,
-      flatBuyerEmail,
       flatSellerName,
-      flatSellerEmail,
       item?.id ? `#${item.id}` : '',
       ...participantFields
     ].map((value) => normalizeSearchText(value));
@@ -6264,9 +7130,7 @@
       productTitle,
       productName,
       buyerName,
-      buyerEmail,
       sellerName,
-      sellerEmail,
       idField
     ] = getNegotiationSearchFields(item);
 
@@ -6275,8 +7139,6 @@
       { text: sellerName, weight: 6 },
       { text: productTitle, weight: 5 },
       { text: productName, weight: 4 },
-      { text: buyerEmail, weight: 3 },
-      { text: sellerEmail, weight: 3 },
       { text: idField, weight: 7 }
     ];
 
@@ -6327,6 +7189,7 @@
     localStorage.removeItem(STORAGE_KEYS.token);
     localStorage.removeItem(STORAGE_KEYS.user);
     stopPendingPolling();
+    stopPresencePolling();
     if (confirmationIntervalHandle) {
       clearInterval(confirmationIntervalHandle);
       confirmationIntervalHandle = null;
@@ -6705,6 +7568,32 @@
     logout() {
       logout();
     },
+    async copyMyTag() {
+      const tag = getUserInviteTag(state.user);
+      if (!tag) {
+        notify({ type: 'error', message: 'Não foi possível obter seu usuário.' });
+        return;
+      }
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(tag);
+        } else {
+          const el = document.createElement('textarea');
+          el.value = tag;
+          el.setAttribute('readonly', '');
+          el.style.position = 'fixed';
+          el.style.top = '-1000px';
+          el.style.left = '-1000px';
+          document.body.appendChild(el);
+          el.select();
+          document.execCommand('copy');
+          document.body.removeChild(el);
+        }
+        notify({ type: 'success', message: `Copiado: ${tag}` });
+      } catch {
+        notify({ type: 'error', message: `Copie manualmente: ${tag}` });
+      }
+    },
     async login({ values }) {
       if (!values.email || !values.password) {
         handleError(new Error('Informe e-mail e senha.'));
@@ -6938,6 +7827,9 @@
           buyerSearching: false, 
           productPhotos: [], 
           photoError: null,
+          serviceId: '',
+          gameId: '',
+          serviceFields: {},
           title: '',
           category: '',
           negotiationType: '',
@@ -6950,7 +7842,7 @@
           digitalDeliveryMethod: '',
           description: '',
           price: '',
-          buyerEmail: ''
+          buyerTag: ''
         }
       });
     },
@@ -6975,6 +7867,9 @@
           buyerSearching: false, 
           productPhotos: [], 
           photoError: null,
+          serviceId: '',
+          gameId: '',
+          serviceFields: {},
           title: '',
           category: '',
           negotiationType: '',
@@ -6987,7 +7882,7 @@
           digitalDeliveryMethod: '',
           description: '',
           price: '',
-          buyerEmail: ''
+          buyerTag: ''
         }
       });
     },
@@ -7060,6 +7955,14 @@
             return;
           }
 
+          if (isServiceTaxonomyCategory(category) || category === CATEGORY_SERVICE) {
+            const serviceId = String(state.createNegForm?.serviceId || state.createNegForm?.service_id || '').trim();
+            if (!serviceId) {
+              notify({ type: 'error', message: 'Selecione o serviço antes de continuar.' });
+              return;
+            }
+          }
+
           const allowed = type === 'digital' ? DIGITAL_PRODUCT_CATEGORIES : (type === 'physical' ? PHYSICAL_PRODUCT_CATEGORIES : []);
           if (allowed.length && !allowed.includes(category)) {
             notify({ type: 'error', message: 'Categoria inválida para o tipo selecionado.' });
@@ -7095,9 +7998,47 @@
 
       // Step 3 validation: buyer found
       if (step === 3) {
+        const category = String(state.createNegForm?.category || '').trim();
+        const isService = isServiceTaxonomyCategory(category) || category === CATEGORY_SERVICE;
+        if (isService) {
+          try {
+            const form = document.querySelector('form[data-action="createNegotiation"]');
+            if (form instanceof HTMLFormElement) {
+              persistCreateNegotiationDraftFromDOM(form);
+            }
+          } catch {
+            // ignore
+          }
+
+          const dates = normalizeDateOptions(state.createNegForm?.service_seller_start_date_options ?? state.createNegForm?.serviceSellerStartDateOptions ?? [], 3);
+          if (!dates.length) {
+            notify({ type: 'error', message: 'Informe pelo menos 1 data de início (até 3).' });
+            return;
+          }
+
+          const ranges = normalizeTimeRangeOptions(state.createNegForm?.service_seller_time_range_options ?? state.createNegForm?.serviceSellerTimeRangeOptions ?? [], 3);
+          if (!ranges.length) {
+            notify({ type: 'error', message: 'Informe pelo menos 1 intervalo de horário (início/fim).' });
+            return;
+          }
+        }
+
         if (!state.createNegForm?.buyerFound) {
           notify({ type: 'error', message: 'Busque e confirme o comprador antes de continuar.' });
           return;
+        }
+      }
+
+      // Step 2 validation: service form must have a game selected
+      if (step === 2) {
+        const category = String(state.createNegForm?.category || '').trim();
+        const isService = isServiceTaxonomyCategory(category) || category === CATEGORY_SERVICE;
+        if (isService) {
+          const gameId = String(state.createNegForm?.gameId || state.createNegForm?.game_id || '').trim();
+          if (!gameId) {
+            notify({ type: 'error', message: 'Selecione o jogo do serviço antes de continuar.' });
+            return;
+          }
         }
       }
 
@@ -7125,7 +8066,7 @@
       let value = element.value ?? '';
       const currentForm = state.createNegForm || {};
       const nextForm = { ...currentForm, [field]: value };
-      if (field === 'buyerEmail') {
+      if (field === 'buyerTag') {
         nextForm.buyerFound = null;
       }
 
@@ -7196,9 +8137,10 @@
           nextForm.category = '';
         }
 
-        // Clear photos when leaving physical type.
+        // Clear photos only if the *new* type/category combination does not allow photos.
         const hadPhotos = Array.isArray(currentForm.productPhotos) && currentForm.productPhotos.length > 0;
-        if (hadPhotos && nextType !== 'physical') {
+        const currentCategory = String(currentForm.category || '').trim();
+        if (hadPhotos && !categoryAllowsImages(currentCategory, nextType)) {
           const currentPhotos = Array.isArray(currentForm.productPhotos) ? currentForm.productPhotos : [];
           currentPhotos.forEach((p) => {
             if (p?.preview) {
@@ -7218,6 +8160,26 @@
         const prevCategory = String(currentForm.category || '').trim();
         const nextCategory = String(value || '').trim();
         const currentType = String(currentForm.negotiationType || getCreateNegotiationType() || '').trim();
+
+        // Service taxonomy: category implies service_id; reset game and dynamic fields when switching.
+        const prevWasServiceTax = isServiceTaxonomyCategory(prevCategory);
+        const nextIsServiceTax = isServiceTaxonomyCategory(nextCategory);
+        if (nextIsServiceTax) {
+          const sid = SERVICE_CATEGORY_LABEL_TO_ID[nextCategory] || '';
+          nextForm.serviceId = sid;
+          nextForm.service_id = sid;
+          if (!prevWasServiceTax || prevCategory !== nextCategory) {
+            nextForm.gameId = '';
+            nextForm.game_id = '';
+            nextForm.serviceFields = {};
+          }
+        } else if (prevWasServiceTax) {
+          nextForm.serviceId = '';
+          nextForm.service_id = '';
+          nextForm.gameId = '';
+          nextForm.game_id = '';
+          nextForm.serviceFields = {};
+        }
 
         // Reset delivery days when switching between categories with different max days.
         const prevMax = categoryDeliveryDaysMax(prevCategory);
@@ -7258,15 +8220,61 @@
 
       state.createNegForm = nextForm;
     },
+
+    reloadServiceFormsConfig() {
+      try {
+        ensureServiceFormsConfigLoaded({ force: true });
+      } catch {
+        // ignore
+      }
+    },
+
+    updateCreateServiceId({ element }) {
+      const serviceId = element && typeof element.value !== 'undefined' ? String(element.value ?? '') : '';
+      state.createNegForm = {
+        ...(state.createNegForm || {}),
+        serviceId: String(serviceId || '').trim(),
+        service_id: String(serviceId || '').trim(),
+        gameId: '',
+        game_id: '',
+        serviceFields: {},
+      };
+      updateCreateNegotiationModalDynamicUI();
+    },
+
+    updateCreateGameId({ element }) {
+      const gameId = element && typeof element.value !== 'undefined' ? String(element.value ?? '') : '';
+      state.createNegForm = {
+        ...(state.createNegForm || {}),
+        gameId: String(gameId || '').trim(),
+        game_id: String(gameId || '').trim(),
+        serviceFields: (state.createNegForm?.serviceFields && typeof state.createNegForm.serviceFields === 'object') ? state.createNegForm.serviceFields : {},
+      };
+      updateCreateNegotiationModalDynamicUI();
+    },
+
+    updateCreateServiceField({ element, dataset }) {
+      const fieldId = String(dataset?.fieldId || dataset?.field_id || '').trim();
+      if (!fieldId) return;
+      const value = element && typeof element.value !== 'undefined' ? String(element.value ?? '') : '';
+      const current = (state.createNegForm?.serviceFields && typeof state.createNegForm.serviceFields === 'object') ? state.createNegForm.serviceFields : {};
+      state.createNegForm = {
+        ...(state.createNegForm || {}),
+        serviceFields: {
+          ...current,
+          [fieldId]: value,
+        }
+      };
+    },
     async searchBuyer({ element }) {
-      const email = state.createNegForm.buyerEmail?.trim() || '';
-      if (!email || !email.includes('@')) {
-        notify({ type: 'error', message: 'Informe um e-mail válido.' });
+      const raw = String(state.createNegForm.buyerTag || '').trim();
+      if (!raw) {
+        notify({ type: 'error', message: 'Informe o usuário no formato nome#id (ex: henrique#15).' });
         return;
       }
       setState({ createNegForm: { ...state.createNegForm, buyerSearching: true, buyerFound: null } });
       try {
-        const response = await apiCall(`/users/search?email=${encodeURIComponent(email)}`, { method: 'GET' });
+        const response = await apiCall(`/users/search?tag=${encodeURIComponent(raw)}`, { method: 'GET' });
         const user = response?.user || response?.data;
         if (user && user.id) {
           setState({ createNegForm: { ...state.createNegForm, buyerSearching: false, buyerFound: user } });
@@ -7344,10 +8352,6 @@
       }
 
       // Validações
-      if (!values.title?.trim()) {
-        notify({ type: 'error', message: 'Informe o título do produto.' });
-        return;
-      }
       if (!values.category) {
         notify({ type: 'error', message: 'Selecione uma categoria.' });
         return;
@@ -7358,8 +8362,9 @@
       const minImages = categoryMinImages(category);
       const maxImages = categoryMaxImages(category);
       const isCurrency = category === CATEGORY_CURRENCY;
-      const isService = category === CATEGORY_SERVICE;
+      const isService = isServiceTaxonomyCategory(category) || category === CATEGORY_SERVICE;
       const isServiceExchange = category === CATEGORY_SERVICE_EXCHANGE;
+      const isServiceProductFlow = isService;
       const isGameAccount = category === CATEGORY_GAME_ACCOUNT;
       const isKeyDlc = category === CATEGORY_KEY_DLC;
       const isSkin = category === CATEGORY_SKIN;
@@ -7369,6 +8374,24 @@
       const needsDescription = negotiationType === 'physical' || isSkin || isGameAccount;
       const allowsPhotos = categoryAllowsImages(category, negotiationType);
       const maxAllowedPhotos = categoryMaxAllowedImages(category, negotiationType) || 8;
+
+      if (!isServiceProductFlow) {
+        if (!values.title?.trim()) {
+          notify({ type: 'error', message: 'Informe o título do produto.' });
+          return;
+        }
+      } else {
+        const serviceId = String(values.service_id || state.createNegForm?.serviceId || state.createNegForm?.service_id || '').trim();
+        const gameId = String(values.game_id || state.createNegForm?.gameId || state.createNegForm?.game_id || '').trim();
+        if (!serviceId) {
+          notify({ type: 'error', message: 'Selecione o serviço.' });
+          return;
+        }
+        if (!gameId) {
+          notify({ type: 'error', message: 'Selecione o jogo.' });
+          return;
+        }
+      }
 
       const parsePtBrToIntUnits = (raw) => {
         const digits = String(raw || '').replace(/\D/g, '');
@@ -7402,9 +8425,9 @@
         }
 
         const sellerTimesRaw = values['gold_seller_time_options[]'] ?? values.gold_seller_time_options;
-        const sellerTimes = normalizeTimeOptions(sellerTimesRaw);
+        const sellerTimes = normalizeTimeOptions(sellerTimesRaw, 3);
         if (!sellerTimes.length) {
-          notify({ type: 'error', message: 'Informe pelo menos 1 horário de entrega (até 5).' });
+          notify({ type: 'error', message: 'Informe pelo menos 1 horário de entrega (até 3).' });
           return;
         }
       }
@@ -7421,6 +8444,30 @@
         const days = parseInt(values.delivery_days || '', 10);
         if (!days || days < 1 || days > DIGITAL_SERVICE_DELIVERY_MAX_DAYS) {
           notify({ type: 'error', message: `Selecione um prazo de entrega de 1 a ${DIGITAL_SERVICE_DELIVERY_MAX_DAYS} dias.` });
+          return;
+        }
+
+        const rawDates = values['service_seller_start_date_options[]'] ?? values.service_seller_start_date_options;
+        const dates = normalizeDateOptions(rawDates, 3);
+        if (!dates.length) {
+          notify({ type: 'error', message: 'Informe pelo menos 1 data de início (até 3).' });
+          return;
+        }
+
+        const startsRaw = values['service_seller_time_range_start[]'] ?? values.service_seller_time_range_start;
+        const endsRaw = values['service_seller_time_range_end[]'] ?? values.service_seller_time_range_end;
+        const starts = Array.isArray(startsRaw) ? startsRaw : (startsRaw ? [startsRaw] : []);
+        const ends = Array.isArray(endsRaw) ? endsRaw : (endsRaw ? [endsRaw] : []);
+        const ranges = [];
+        for (let i = 0; i < Math.max(starts.length, ends.length); i += 1) {
+          const a = String(starts[i] || '').trim();
+          const b = String(ends[i] || '').trim();
+          if (!a || !b) continue;
+          ranges.push(`${a}-${b}`);
+        }
+        const normalizedRanges = normalizeTimeRangeOptions(ranges, 3);
+        if (!normalizedRanges.length) {
+          notify({ type: 'error', message: 'Informe pelo menos 1 intervalo de horário (início/fim), máx 3.' });
           return;
         }
       }
@@ -7534,11 +8581,13 @@
       await withLoader(async () => {
         // Criar FormData para enviar com fotos
         const formData = new FormData();
-        formData.append('title', values.title.trim());
+        if (!isServiceProductFlow) {
+          formData.append('title', values.title.trim());
+        }
         formData.append('category', category);
         if (needsDescription && values.description?.trim()) formData.append('description', values.description.trim());
         formData.append('price', price);
-        formData.append('buyer_email', state.createNegForm.buyerFound.email);
+        formData.append('buyer_id', String(state.createNegForm.buyerFound.id));
         formData.append('terms_accepted', '1');
 
         // Seller fee preference: deduct from payout vs pay separately via Pix
@@ -7555,8 +8604,40 @@
           // Campos específicos do fluxo de gold/moedas (backend espera gold_*).
           formData.append('gold_seller_delivery_method', values.digital_delivery_method);
           const sellerTimesRaw = values['gold_seller_time_options[]'] ?? values.gold_seller_time_options;
-          const sellerTimes = normalizeTimeOptions(sellerTimesRaw);
+          const sellerTimes = normalizeTimeOptions(sellerTimesRaw, 3);
           sellerTimes.forEach((t) => formData.append('gold_seller_time_options[]', t));
+        }
+
+        if (isServiceProductFlow) {
+          const serviceId = String(values.service_id || state.createNegForm?.serviceId || state.createNegForm?.service_id || '').trim();
+          const gameId = String(values.game_id || state.createNegForm?.gameId || state.createNegForm?.game_id || '').trim();
+          if (serviceId) formData.append('service_id', serviceId);
+          if (gameId) formData.append('game_id', gameId);
+
+          const fields = (state.createNegForm?.serviceFields && typeof state.createNegForm.serviceFields === 'object')
+            ? state.createNegForm.serviceFields
+            : {};
+          formData.append('service_fields', JSON.stringify(fields));
+        }
+
+        if (isService) {
+          const rawDates = values['service_seller_start_date_options[]'] ?? values.service_seller_start_date_options;
+          const dates = normalizeDateOptions(rawDates, 3);
+          dates.forEach((d) => formData.append('service_seller_start_date_options[]', d));
+
+          const startsRaw = values['service_seller_time_range_start[]'] ?? values.service_seller_time_range_start;
+          const endsRaw = values['service_seller_time_range_end[]'] ?? values.service_seller_time_range_end;
+          const starts = Array.isArray(startsRaw) ? startsRaw : (startsRaw ? [startsRaw] : []);
+          const ends = Array.isArray(endsRaw) ? endsRaw : (endsRaw ? [endsRaw] : []);
+          const ranges = [];
+          for (let i = 0; i < Math.max(starts.length, ends.length); i += 1) {
+            const a = String(starts[i] || '').trim();
+            const b = String(ends[i] || '').trim();
+            if (!a || !b) continue;
+            ranges.push(`${a}-${b}`);
+          }
+          const normalizedRanges = normalizeTimeRangeOptions(ranges, 3);
+          normalizedRanges.forEach((r) => formData.append('service_seller_time_range_options[]', r));
         }
 
         if (isKeyDlc || isService || isServiceExchange) {
@@ -7573,13 +8654,13 @@
         }
 
         if (isGameAccount) {
-          formData.append('game_account_game', values.game_account_game.trim());
-          formData.append('game_account_platform', values.game_account_platform.trim());
-          formData.append('game_account_level', values.game_account_level.trim());
-          formData.append('game_account_rank', values.game_account_rank.trim());
+          formData.append('game_account_game', capitalizeFirstPtBr(values.game_account_game));
+          formData.append('game_account_platform', capitalizeFirstPtBr(values.game_account_platform));
+          formData.append('game_account_level', capitalizeFirstPtBr(values.game_account_level));
+          formData.append('game_account_rank', capitalizeFirstPtBr(values.game_account_rank));
           formData.append('game_account_has_ban', String(values.game_account_has_ban));
           if (values.game_account_seller_notes?.trim()) {
-            formData.append('game_account_seller_notes', values.game_account_seller_notes.trim());
+            formData.append('game_account_seller_notes', capitalizeFirstPtBr(values.game_account_seller_notes));
           }
         }
         
@@ -7629,7 +8710,7 @@
             digitalDeliveryMethod: '',
             description: '',
             price: '',
-            buyerEmail: ''
+            buyerTag: ''
           }
         });
         await loadNegotiations({ force: true });
@@ -7639,9 +8720,35 @@
     async submitGameAccountChangeRequest({ values, dataset }) {
       const id = Number(dataset?.id);
       if (!id) return;
-      const requestText = String(values.game_account_buyer_change_request || '').trim();
+
+      const manualText = String(values.game_account_buyer_change_request || '').trim();
+      const buyerNewEmail = String(values.buyer_new_email || '').trim();
+      const buyerContactPhone = normalizePhoneDd9(values.buyer_contact_phone);
+      const buyerAvailabilityMinutes = String(values.buyer_availability_minutes || '').trim();
+      const buyerAvailabilityNow = String(values.buyer_availability_now || '').trim();
+      const buyerNotes = String(values.buyer_notes || '').trim();
+
+      if (!buyerContactPhone) {
+        notify({ type: 'error', message: 'Informe o contato direto no formato 19-99999-9999.' });
+        return;
+      }
+
+      const requestText = manualText || (() => {
+        const lines = [];
+        if (buyerNewEmail) lines.push(`Novo e-mail: ${buyerNewEmail}`);
+        lines.push('Senha: o sistema deve gerar uma senha aleatória e o comprador vai alterar no primeiro acesso.');
+        if (buyerContactPhone) lines.push(`Contato direto (WhatsApp): ${buyerContactPhone}`);
+        if (buyerAvailabilityNow) {
+          lines.push(`Disponível para confirmar e-mail agora: ${buyerAvailabilityNow}${buyerAvailabilityMinutes ? ` (próximos ${buyerAvailabilityMinutes} min)` : ''}`);
+        } else if (buyerAvailabilityMinutes) {
+          lines.push(`Disponibilidade (próximos): ${buyerAvailabilityMinutes} min`);
+        }
+        if (buyerNotes) lines.push(`Observações: ${buyerNotes}`);
+        return lines.join('\n');
+      })();
+
       if (requestText.length < 10) {
-        notify({ type: 'error', message: 'Detalhe melhor os dados (mínimo 10 caracteres).' });
+        notify({ type: 'error', message: 'Preencha os dados (mínimo 10 caracteres).' });
         return;
       }
 
@@ -7659,13 +8766,47 @@
     async submitGameAccountSellerInfo({ values, dataset }) {
       const id = Number(dataset?.id);
       if (!id) return;
-      const sellerInfo = String(values.game_account_seller_info || '').trim();
-      if (sellerInfo.length < 10) {
-        notify({ type: 'error', message: 'Detalhe melhor os dados (mínimo 10 caracteres).' });
+
+      const manualText = String(values.game_account_seller_info || '').trim();
+      const login = String(values.seller_account_login || '').trim();
+      const password = String(values.seller_account_password || '').trim();
+      const email = String(values.seller_account_email || '').trim();
+      const emailPassword = String(values.seller_email_password || '').trim();
+      const twoFa = String(values.seller_2fa_removed || '').trim();
+      const contactPhone = normalizePhoneDd9(values.seller_contact_phone);
+      const onlineNow = String(values.seller_online_now || '').trim();
+      const notes = String(values.seller_notes || '').trim();
+
+      if (!contactPhone) {
+        notify({ type: 'error', message: 'Informe o contato direto no formato 19-99999-9999.' });
         return;
       }
 
-      const deduct = Boolean(values.seller_fee_deduct_from_payout && values.seller_fee_deduct_from_payout !== '0' && values.seller_fee_deduct_from_payout !== 'false');
+      const sellerInfo = manualText || (() => {
+        const lines = [];
+        if (login) lines.push(`Login: ${login}`);
+        if (password) lines.push(`Senha: ${password}`);
+        if (email) lines.push(`E-mail vinculado: ${email}`);
+        if (emailPassword) lines.push(`Senha do e-mail: ${emailPassword}`);
+        if (twoFa) {
+          const label = ({ removed: 'Removida/desativada', not_removed: 'Não removida', unknown: 'Não sei' }[twoFa] || twoFa);
+          lines.push(`2FA: ${label}`);
+        }
+        if (contactPhone) lines.push(`Contato direto (WhatsApp): ${contactPhone}`);
+        if (onlineNow) lines.push(`Online agora: ${onlineNow}`);
+        if (notes) lines.push(`Observações: ${notes}`);
+        return lines.join('\n');
+      })();
+
+      if (sellerInfo.length < 10) {
+        notify({ type: 'error', message: 'Preencha os dados (mínimo 10 caracteres).' });
+        return;
+      }
+
+      const deductFromForm = values.seller_fee_deduct_from_payout;
+      const deduct = (deductFromForm === undefined || deductFromForm === null || deductFromForm === '')
+        ? Boolean(state.currentNegotiation?.seller_fee_deduct_from_payout)
+        : Boolean(deductFromForm && deductFromForm !== '0' && deductFromForm !== 'false');
 
       await withLoader(async () => {
         await apiCall(`/intermediation/${id}/game-account/seller-info`, {
@@ -7676,6 +8817,28 @@
         await loadNegotiation(id);
         await loadNegotiations({ force: true });
       }, 'Enviando dados...');
+    },
+
+    setBuyerAvailabilityNow({ element }) {
+      const form = element?.closest?.('form');
+      if (!form) return;
+      const input = form.querySelector('input[name="buyer_availability_now"]');
+      const preview = form.querySelector('[data-availability-preview]');
+      const now = new Date();
+      const text = now.toLocaleString('pt-BR');
+      if (input) input.value = text;
+      if (preview) preview.textContent = `Marcado: ${text}`;
+    },
+
+    setSellerOnlineNow({ element }) {
+      const form = element?.closest?.('form');
+      if (!form) return;
+      const input = form.querySelector('input[name="seller_online_now"]');
+      const preview = form.querySelector('[data-seller-online-preview]');
+      const now = new Date();
+      const text = now.toLocaleString('pt-BR');
+      if (input) input.value = text;
+      if (preview) preview.textContent = `Marcado: ${text}`;
     },
 
     async submitDigitalDeliveryInfo({ values, dataset }) {
@@ -7796,49 +8959,75 @@
 
       const hasValues = values && typeof values === 'object';
 
+      const resolveNegotiation = async () => {
+        if (state.currentNegotiation && Number(state.currentNegotiation.id) === id) {
+          return state.currentNegotiation;
+        }
+        const data = await apiCall(`/intermediation/${id}`);
+        return data?.data || data;
+      };
+
       const normalizeTimes = (raw) => {
         const asArray = Array.isArray(raw) ? raw : raw ? [raw] : [];
         return asArray
           .map((v) => String(v || '').trim())
           .filter(Boolean)
-          .slice(0, 5);
+          .slice(0, 3);
       };
 
+      let category = '';
+      try {
+        const neg = await resolveNegotiation();
+        category = String(neg?.category || '').trim();
+      } catch (error) {
+        console.warn('Falha ao carregar negociação antes do aceite:', error);
+      }
+
+      const isCurrencyCategory = category === CATEGORY_CURRENCY;
+      const isServiceCategory = isServiceTaxonomyCategory(category) || category === CATEGORY_SERVICE;
+
       if (!hasValues) {
-        // If the user clicked "accept" from a list/card (no form), currency negotiations
-        // require buyer info + schedule selection. Redirect to the detail page with the form.
-        try {
-          const data = await apiCall(`/intermediation/${id}`);
-          const neg = data?.data || data;
-          const isCurrency = String(neg?.category || '').trim() === CATEGORY_CURRENCY;
-          if (isCurrency) {
-            openNegotiationDetail(id);
-            notify({ type: 'error', message: 'Para aceitar, preencha os dados (personagem/servidor/facção) e selecione um horário no detalhe da negociação.' });
-            return;
-          }
-        } catch (error) {
-          // If we cannot load details, fall back to the old confirm + attempt.
-          console.warn('Falha ao carregar negociação antes do aceite:', error);
+        // If the user clicked "accept" from a list/card (no form), some categories
+        // require extra inputs in the detail page.
+        if (isCurrencyCategory) {
+          openNegotiationDetail(id);
+          notify({ type: 'error', message: 'Para aceitar, preencha os dados (personagem/servidor/facção) e selecione um horário no detalhe da negociação.' });
+          return;
+        }
+        if (isServiceCategory) {
+          openNegotiationDetail(id);
+          notify({ type: 'error', message: 'Para aceitar, selecione a data de início e o intervalo de horário no detalhe da negociação.' });
+          return;
         }
 
         if (!confirm('Confirma que deseja aceitar esta negociação?')) return;
       }
 
-      const buyerTimes = hasValues
+      const buyerTimes = (hasValues && isCurrencyCategory)
         ? normalizeTimes(values['gold_buyer_time_options[]'] ?? values.gold_buyer_time_options)
         : [];
 
-      const payload = hasValues
-        ? {
+      const payload = (() => {
+        if (!hasValues) return {};
+        if (isCurrencyCategory) {
+          return {
             gold_buyer_character_name: toTitleCasePtBr(String(values.gold_buyer_character_name || '').trim()),
             gold_buyer_server: toTitleCasePtBr(String(values.gold_buyer_server || '').trim()),
             gold_buyer_faction: toTitleCasePtBr(String(values.gold_buyer_faction || '').trim()),
             gold_buyer_notes: String(values.gold_buyer_notes || '').trim() || null,
             gold_buyer_time_options: buyerTimes,
-          }
-        : {};
+          };
+        }
+        if (isServiceCategory) {
+          return {
+            service_buyer_selected_start_date: String(values.service_buyer_selected_start_date || '').trim(),
+            service_buyer_selected_time_range: String(values.service_buyer_selected_time_range || '').trim(),
+          };
+        }
+        return {};
+      })();
 
-      if (hasValues) {
+      if (hasValues && isCurrencyCategory) {
         if (!payload.gold_buyer_character_name) {
           notify({ type: 'error', message: 'Informe o nome do personagem.' });
           return;
@@ -7852,21 +9041,32 @@
           return;
         }
         if (!payload.gold_buyer_time_options?.length) {
-          notify({ type: 'error', message: 'Informe pelo menos 1 horário disponível (máx 5).' });
+          notify({ type: 'error', message: 'Informe pelo menos 1 horário disponível (máx 3).' });
           return;
         }
       }
 
-      const selectedSellerTime = hasValues ? String(values.gold_buyer_selected_time || '').trim() : '';
-      if (hasValues && !selectedSellerTime) {
-        notify({ type: 'error', message: 'Escolha 1 horário do vendedor.' });
-        return;
+      const selectedSellerTime = (hasValues && isCurrencyCategory)
+        ? String(values.gold_buyer_selected_time || '').trim()
+        : '';
+
+      // If the buyer didn't select a seller time, treat as a suggestion via buyer time options/notes.
+
+      if (hasValues && isServiceCategory) {
+        if (!payload.service_buyer_selected_start_date) {
+          notify({ type: 'error', message: 'Escolha 1 data de início.' });
+          return;
+        }
+        if (!payload.service_buyer_selected_time_range) {
+          notify({ type: 'error', message: 'Escolha 1 intervalo de horário.' });
+          return;
+        }
       }
 
       await withLoader(async () => {
         await apiCall(`/intermediation/${id}/approve`, { method: 'POST', body: payload });
 
-        if (hasValues && selectedSellerTime) {
+        if (hasValues && isCurrencyCategory && selectedSellerTime) {
           await apiCall(`/intermediation/${id}/gold/confirm-schedule`, {
             method: 'POST',
             body: { gold_buyer_selected_time: selectedSellerTime }
@@ -7896,7 +9096,7 @@
         return asArray
           .map((v) => String(v || '').trim())
           .filter(Boolean)
-          .slice(0, 5);
+          .slice(0, 3);
       };
 
       const rawTimes = values?.['gold_seller_time_options[]'] ?? values?.gold_seller_time_options;
@@ -7904,7 +9104,7 @@
       const method = String(values?.gold_seller_delivery_method || '').trim();
 
       if (!times.length) {
-        notify({ type: 'error', message: 'Informe pelo menos 1 horário (até 5).' });
+        notify({ type: 'error', message: 'Informe pelo menos 1 horário (até 3).' });
         return;
       }
       if (!['trade', 'mail', 'gift'].includes(method)) {
