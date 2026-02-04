@@ -43,6 +43,14 @@ Route::middleware(['auth:api', 'api.token.expiry', 'last.seen'])->group(function
     Route::get('/intermediation/admin/pending/count', [IntermediationController::class, 'adminPendingCount'])->middleware('role:admin');
     Route::post('/intermediation/admin/pending/opened', [IntermediationController::class, 'adminPendingOpened'])->middleware('role:admin');
     Route::delete('/intermediation/admin/{id}', [IntermediationController::class, 'adminDestroy'])->middleware('role:admin');
+
+    // Intermediator routes
+    Route::get('/intermediation/intermediator/available', [IntermediationController::class, 'intermediatorAvailable'])->middleware('role:admin,intermediator');
+    Route::get('/intermediation/intermediator/mine', [IntermediationController::class, 'intermediatorMine'])->middleware('role:admin,intermediator');
+    Route::get('/intermediation/intermediator/all', [IntermediationController::class, 'intermediatorAll'])->middleware('role:admin,intermediator');
+    Route::post('/intermediation/{id}/intermediator/assign', [IntermediationController::class, 'intermediatorAssign'])->middleware('role:admin,intermediator');
+    Route::post('/intermediation/{id}/intermediator/unassign', [IntermediationController::class, 'intermediatorUnassign'])->middleware('role:admin,intermediator');
+
     Route::get('/intermediation/{id}', [IntermediationController::class, 'show']);
     Route::post('/intermediation/{id}/admin-approve', [IntermediationController::class, 'adminApprove'])->middleware('role:admin');
     Route::post('/intermediation/{id}/admin-reject', [IntermediationController::class, 'adminReject'])->middleware('role:admin');
@@ -71,13 +79,13 @@ Route::middleware(['auth:api', 'api.token.expiry', 'last.seen'])->group(function
     Route::post('/intermediation/{id}/payments/release/confirm', [IntermediationController::class, 'confirmReleasePayment'])->middleware('role:admin');
     Route::post('/intermediation/{id}/tracking', [IntermediationController::class, 'tracking']);
     Route::post('/intermediation/{id}/tracking/buyer', [IntermediationController::class, 'trackingBuyer']);
-    Route::post('/intermediation/{id}/inspection-report', [IntermediationController::class, 'saveInspectionReport'])->middleware('role:admin,inspector');
-    Route::post('/intermediation/{id}/logs', [IntermediationController::class, 'addLog'])->middleware('role:admin,inspector');
+    Route::post('/intermediation/{id}/inspection-report', [IntermediationController::class, 'saveInspectionReport'])->middleware('role:admin,inspector,intermediator');
+    Route::post('/intermediation/{id}/logs', [IntermediationController::class, 'addLog'])->middleware('role:admin,inspector,intermediator');
     Route::get('/intermediation/{id}/timeline', [IntermediationController::class, 'timeline']);
     Route::post('/intermediation/{id}/purge-images', [IntermediationController::class, 'purgeImages'])->middleware('role:admin');
 
     // Admin routes
-    Route::get('/admin/users', [AdminController::class, 'users'])->middleware('role:admin');
-    Route::post('/admin/users', [AdminController::class, 'storeUser'])->middleware('role:admin');
-    Route::delete('/admin/users/{id}', [AdminController::class, 'destroyUser'])->middleware('role:admin');
+    Route::get('/admin/users', [AdminController::class, 'users'])->middleware('role:admin,intermediator_principal');
+    Route::post('/admin/users', [AdminController::class, 'storeUser'])->middleware('role:admin,intermediator_principal');
+    Route::delete('/admin/users/{id}', [AdminController::class, 'destroyUser'])->middleware('role:admin,intermediator_principal');
 });

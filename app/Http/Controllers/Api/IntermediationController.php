@@ -25,6 +25,10 @@ class IntermediationController extends Controller
     private const CURRENCY_CATEGORY = 'Moedas / Gold / Créditos';
     private const KEY_DLC_CATEGORY = 'Chave de jogo / DLC';
 
+    // Back-compat (older category label)
+    private const LEGACY_SERVICE_CATEGORY = 'Serviço (boosting / rank / leveling)';
+    private const SERVICE_EXCHANGE_CATEGORY = 'Troca de serviço';
+
     // Service taxonomy categories (category implies service_id)
     private const SERVICE_BOOST_RANK_CATEGORY = 'Boost de Rank';
     private const SERVICE_CARRY_PVE_CATEGORY = 'Carry de Conteúdo (PvE)';
@@ -44,79 +48,53 @@ class IntermediationController extends Controller
         self::SERVICE_CUSTOM_CATEGORY => 'custom',
     ];
 
-    private const SERVICE_CATEGORY = 'Serviço (boosting / rank / leveling)';
-    private const SERVICE_EXCHANGE_CATEGORY = 'Troca de serviço';
-
-    private const PHYSICAL_NOTEBOOK_CATEGORY = 'Notebook';
-    private const PHYSICAL_SMARTPHONE_CATEGORY = 'Smartphone';
-    private const PHYSICAL_CELLPHONE_CATEGORY = 'Celular';
-    private const PHYSICAL_SMALL_PRODUCT_CATEGORY = 'Produto físico (pequeno)';
-    private const PHYSICAL_OTHERS_CATEGORY = 'Outros (produtos físicos)';
-
-    private function isPhysicalCategory(?string $category): bool
+    private function normalizeDateOptions(mixed $value, int $max = 5): array
     {
-        $category = trim((string) $category);
-        return in_array($category, [
-            self::PHYSICAL_NOTEBOOK_CATEGORY,
-            self::PHYSICAL_SMARTPHONE_CATEGORY,
-            self::PHYSICAL_CELLPHONE_CATEGORY,
-            self::PHYSICAL_SMALL_PRODUCT_CATEGORY,
-            self::PHYSICAL_OTHERS_CATEGORY,
-        ], true);
-    }
+        if ($value === null || $value === '') {
+            return [];
+        }
 
-    private function isDigitalDeliveryCategory(?string $category): bool
-    {
-        $category = trim((string) $category);
-        return in_array($category, [
-            self::GAME_ACCOUNT_CATEGORY,
-            self::CURRENCY_CATEGORY,
-            self::KEY_DLC_CATEGORY,
-            self::SERVICE_BOOST_RANK_CATEGORY,
-            self::SERVICE_CARRY_PVE_CATEGORY,
-            self::SERVICE_LEVELING_CATEGORY,
-            self::SERVICE_CURRENCY_CATEGORY,
-            self::SERVICE_COLLECTIBLES_CATEGORY,
-            self::SERVICE_SEASONAL_CATEGORY,
-            self::SERVICE_CUSTOM_CATEGORY,
-            self::SERVICE_CATEGORY,
-            self::SERVICE_EXCHANGE_CATEGORY,
-        ], true);
-    }
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                $value = $decoded;
+            } else {
+                // Support newline-separated dates
+                $value = preg_split('/\r?\n/', $value) ?: [];
+            }
+        }
 
-    private function serviceIdFromCategory(?string $category): ?string
-    {
-        $category = trim((string) $category);
-        return self::SERVICE_TAXONOMY_CATEGORY_TO_ID[$category] ?? null;
-    }
+        if (! is_array($value)) {
+            return [];
+        }
 
-    /**
-     * Service forms category = category drives a dynamic service form.
-     * Includes the new taxonomy categories and the legacy service category.
-     */
-    private function isServiceFormsCategory(?string $category): bool
-    {
-        $category = trim((string) $category);
-        return $this->serviceIdFromCategory($category) !== null || $category === self::SERVICE_CATEGORY;
-    }
+        $options = [];
+        foreach ($value as $item) {
+            $text = trim((string) $item);
+            if ($text === '') {
+                continue;
+            }
 
-    /**
-     * Categories that require seller schedule options (start dates + time ranges).
-     */
-    private function isServiceScheduleCategory(?string $category): bool
-    {
-        return $this->isServiceFormsCategory($category);
-    }
+            if (! preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $text, $m)) {
+                continue;
+            }
 
-    private function isCurrencyCategory(?string $category): bool
-    {
-        return trim((string) $category) === self::CURRENCY_CATEGORY;
-    }
+            $y = (int) $m[1];
+            $mo = (int) $m[2];
+            $d = (int) $m[3];
+            if (! checkdate($mo, $d, $y)) {
+                continue;
+            }
 
-    private function formatPtBrNumber(mixed $value, int $decimals = 2): string
-    {
-        $number = is_numeric($value) ? (float) $value : 0.0;
-        return number_format($number, $decimals, ',', '.');
+            $options[] = sprintf('%04d-%02d-%02d', $y, $mo, $d);
+        }
+
+        $options = array_values(array_unique($options));
+        if (count($options) > $max) {
+            $options = array_slice($options, 0, $max);
+        }
+
+        return $options;
     }
 
     private function normalizeTimeOptions(mixed $value, int $max = 5): array
@@ -129,6 +107,9 @@ class IntermediationController extends Controller
             $decoded = json_decode($value, true);
             if (is_array($decoded)) {
                 $value = $decoded;
+            } else {
+                // Support newline-separated times
+                $value = preg_split('/\r?\n/', $value) ?: [];
             }
         }
 
@@ -142,46 +123,19 @@ class IntermediationController extends Controller
             if ($text === '') {
                 continue;
             }
-            $options[] = $text;
-        }
 
-        $options = array_values(array_unique($options));
-        $max = max(1, (int) $max);
-        if (count($options) > $max) {
-            $options = array_slice($options, 0, $max);
-        }
-
-        return $options;
-    }
-
-    private function normalizeDateOptions(mixed $value, int $max = 3): array
-    {
-        if ($value === null || $value === '') {
-            return [];
-        }
-
-        if (is_string($value)) {
-            $decoded = json_decode($value, true);
-            if (is_array($decoded)) {
-                $value = $decoded;
-            }
-        }
-
-        if (! is_array($value)) {
-            return [];
-        }
-
-        $options = [];
-        foreach ($value as $item) {
-            $text = trim((string) $item);
-            if ($text === '') {
+            // Expect HH:MM
+            if (! preg_match('/^(\d{2}):(\d{2})$/', $text, $m)) {
                 continue;
             }
-            // Expect YYYY-MM-DD
-            if (! preg_match('/^\d{4}-\d{2}-\d{2}$/', $text)) {
+
+            $h = (int) $m[1];
+            $min = (int) $m[2];
+            if ($h < 0 || $h > 23 || $min < 0 || $min > 59) {
                 continue;
             }
-            $options[] = $text;
+
+            $options[] = sprintf('%02d:%02d', $h, $min);
         }
 
         $options = array_values(array_unique($options));
@@ -306,6 +260,65 @@ class IntermediationController extends Controller
         return trim((string) $category) === self::GAME_ACCOUNT_CATEGORY;
     }
 
+    private function isDigitalDeliveryCategory(?string $category): bool
+    {
+        $category = trim((string) $category);
+        return in_array($category, [self::GAME_ACCOUNT_CATEGORY, self::CURRENCY_CATEGORY, self::KEY_DLC_CATEGORY], true);
+    }
+
+    private function isCurrencyCategory(?string $category): bool
+    {
+        return trim((string) $category) === self::CURRENCY_CATEGORY;
+    }
+
+    private function formatPtBrNumber(mixed $value, int $decimals = 2): string
+    {
+        $num = is_numeric($value) ? (float) $value : 0.0;
+        $decimals = max(0, min(8, (int) $decimals));
+
+        return number_format($num, $decimals, ',', '.');
+    }
+
+    private function isPhysicalCategory(?string $category): bool
+    {
+        $category = trim((string) $category);
+
+        return in_array($category, [
+            'Notebook',
+            'Smartphone',
+            'Celular',
+            'Produto físico (pequeno)',
+            'Outros (produtos físicos)',
+        ], true);
+    }
+
+    private function serviceIdFromCategory(?string $category): ?string
+    {
+        $category = trim((string) $category);
+        if ($category === '') {
+            return null;
+        }
+
+        return self::SERVICE_TAXONOMY_CATEGORY_TO_ID[$category] ?? null;
+    }
+
+    private function isServiceFormsCategory(?string $category): bool
+    {
+        $category = trim((string) $category);
+        if ($category === '') {
+            return false;
+        }
+
+        return $this->serviceIdFromCategory($category) !== null
+            || $category === self::LEGACY_SERVICE_CATEGORY;
+    }
+
+    private function isServiceScheduleCategory(?string $category): bool
+    {
+        // Service flow categories (taxonomy + legacy) require seller schedule options.
+        return $this->isServiceFormsCategory($category);
+    }
+
     private function toIso8601StringOrNull(mixed $value): ?string
     {
         if ($value === null || $value === '') {
@@ -359,6 +372,7 @@ class IntermediationController extends Controller
             'payments',
             'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
             'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'intermediator:id,name',
         ])
             ->find($id);
 
@@ -366,8 +380,16 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
         }
 
-        // Allow participant or admin
-        if (! $negotiation->isParticipant($user) && $user->role !== 'admin') {
+        $isAdmin = $user && $user->role === 'admin';
+        $isIntermediator = $user && $user->role === 'intermediator';
+        $isAssignedIntermediator = $isIntermediator && (int) $negotiation->intermediator_id === (int) $user->id;
+        $isAvailableForIntermediator = $isIntermediator
+            && $negotiation->intermediator_id === null
+            && in_array((string) $negotiation->status, ['waiting_shipment', 'shipped', 'at_intermediary', 'approved', 'pending_receipt'], true);
+        $isIntermediatorObserver = $isIntermediator && ! $isAssignedIntermediator;
+
+        // Allow participant, admin, or intermediator (assigned/available/observer view).
+        if (! $negotiation->isParticipant($user) && ! $isAdmin && ! $isIntermediator) {
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
@@ -392,7 +414,10 @@ class IntermediationController extends Controller
             // ignore audit failures
         }
 
-        return response()->json(['data' => $this->transform($negotiation, $user)]);
+        return response()->json(['data' => $this->transform($negotiation, $user, [
+            'include_photos' => $isAssignedIntermediator,
+            'intermediator_observer' => $isIntermediatorObserver,
+        ])]);
     }
 
     /**
@@ -448,11 +473,34 @@ class IntermediationController extends Controller
             'battle_pass_platform' => ['nullable', 'string', 'max:60'],
             'battle_pass_type' => ['nullable', 'string', 'max:120'],
             'battle_pass_duration_days' => ['nullable', 'integer', 'min:1', 'max:3650'],
+            'game_account_type' => ['nullable', 'string', 'max:120'],
             'game_account_game' => ['nullable', 'string', 'max:100'],
-            'game_account_platform' => ['nullable', 'string', 'max:60'],
+            'game_account_platform' => ['nullable', 'string', 'max:40'],
+            'game_account_game_other' => ['nullable', 'string', 'max:120'],
             'game_account_level' => ['nullable', 'string', 'max:60'],
-            'game_account_rank' => ['nullable', 'string', 'max:60'],
-            'game_account_has_ban' => ['nullable'],
+
+            // Segurança (Camada 2)
+            'game_account_first_owner' => ['nullable', 'string', 'max:10'],
+            'game_account_has_original_email' => ['nullable', 'string', 'max:10'],
+            'game_account_linked_providers' => ['nullable', 'array', 'max:8'],
+            'game_account_linked_providers.*' => ['string', 'max:60'],
+            'game_account_can_change_credentials' => ['nullable', 'string', 'max:20'],
+            'game_account_punishment_history' => ['nullable', 'string', 'max:40'],
+
+            // Provas e entrega
+            'delivery_items' => ['nullable', 'array', 'max:6'],
+            'delivery_items.*' => ['string', 'max:200'],
+            'proof_images' => ['nullable', 'array', 'max:8'],
+            'proof_images.*' => ['file', 'image', 'max:5120'],
+            'what_will_be_delivered' => ['nullable', 'string', 'max:200'],
+
+            // Itens exclusivos (Camada 4)
+            'exclusive_items' => ['nullable', 'string', 'max:20000'],
+            'exclusive_item_images' => ['nullable', 'array', 'max:40'],
+            'exclusive_item_images.*' => ['file', 'image', 'max:5120'],
+
+            // Campos dinâmicos serão agrupados em game_account_extras
+            'game_account_extras' => ['nullable', 'array'],
             'game_account_seller_notes' => ['nullable', 'string', 'max:1000'],
             'seller_fee_deduct_from_payout' => ['nullable'],
             'buyer_email' => ['nullable', 'email', 'exists:users,email'],
@@ -485,8 +533,8 @@ class IntermediationController extends Controller
             $isOthers = $category === 'Outros (jogos)';
             $isKeyDlc = $category === 'Chave de jogo / DLC';
 
-            // Descrição: obrigatória para físicos, Skins e Conta.
-            $needsDescription = $isPhysical || $isSkin || $isGameAccount;
+            // Descrição: obrigatória para físicos e Skins.
+            $needsDescription = $isPhysical || $isSkin;
             if ($needsDescription && ! trim((string) $request->input('description'))) {
                 $validator->errors()->add('description', 'Informe a descrição.');
             }
@@ -545,8 +593,8 @@ class IntermediationController extends Controller
 
             if ($isGameAccount) {
                 $count = $request->hasFile('photos') ? count($request->file('photos')) : 0;
-                if ($count < 3) {
-                    $validator->errors()->add('photos', 'Adicione no mínimo 3 imagens da conta.');
+                if ($count < 1) {
+                    $validator->errors()->add('photos', 'Adicione no mínimo 1 imagem da conta.');
                 }
             }
 
@@ -615,26 +663,86 @@ class IntermediationController extends Controller
             }
 
             if ($isGameAccount) {
-                if (! trim((string) $request->input('game_account_game'))) {
-                    $validator->errors()->add('game_account_game', 'Informe o jogo da conta.');
+                $gameType = trim((string) $request->input('game_account_type'));
+                if ($gameType === '') {
+                    $validator->errors()->add('game_account_type', 'Selecione o tipo do jogo.');
                 }
-                if (! trim((string) $request->input('game_account_platform'))) {
-                    $validator->errors()->add('game_account_platform', 'Informe a plataforma da conta.');
+
+                $platform = trim((string) $request->input('game_account_platform'));
+                if ($platform === '') {
+                    $validator->errors()->add('game_account_platform', 'Selecione a plataforma.');
                 }
-                if (! trim((string) $request->input('game_account_level'))) {
-                    $validator->errors()->add('game_account_level', 'Informe o nível da conta.');
+
+                $gameName = trim((string) $request->input('game_account_game'));
+                if ($gameName === '') {
+                    $validator->errors()->add('game_account_game', 'Informe o nome do jogo.');
                 }
-                if (! trim((string) $request->input('game_account_rank'))) {
-                    $validator->errors()->add('game_account_rank', 'Informe o rank da conta.');
+
+                $firstOwner = $request->input('game_account_first_owner');
+                if (! in_array((string) $firstOwner, ['0', '1'], true) && ! in_array($firstOwner, [0, 1, true, false], true)) {
+                    $validator->errors()->add('game_account_first_owner', 'Informe se você é o primeiro dono da conta.');
                 }
-                $hasBan = $request->input('game_account_has_ban');
-                if (! in_array((string) $hasBan, ['0', '1'], true) && ! in_array($hasBan, [0, 1, true, false], true)) {
-                    $validator->errors()->add('game_account_has_ban', 'Informe se a conta possui ban.');
+
+                $hasOriginalEmail = $request->input('game_account_has_original_email');
+                if (! in_array((string) $hasOriginalEmail, ['0', '1'], true) && ! in_array($hasOriginalEmail, [0, 1, true, false], true)) {
+                    $validator->errors()->add('game_account_has_original_email', 'Informe se possui acesso ao e-mail original.');
+                }
+
+                $linkedProviders = $request->input('game_account_linked_providers');
+                if (! is_array($linkedProviders) || count($linkedProviders) < 1) {
+                    $validator->errors()->add('game_account_linked_providers', 'Informe as vinculações da conta (ou marque “Nenhuma”).');
+                } else {
+                    $normalized = array_values(array_filter(array_map('strval', $linkedProviders)));
+                    if (in_array('none', $normalized, true) && count($normalized) > 1) {
+                        $validator->errors()->add('game_account_linked_providers', 'Selecione apenas “Nenhuma” ou as vinculações existentes.');
+                    }
+                }
+
+                $canChange = trim((string) $request->input('game_account_can_change_credentials'));
+                if (! in_array($canChange, ['yes', 'no', 'partial'], true)) {
+                    $validator->errors()->add('game_account_can_change_credentials', 'Informe se pode alterar e-mail e senha.');
+                }
+
+                if (trim((string) $request->input('game_account_punishment_history')) === '') {
+                    $validator->errors()->add('game_account_punishment_history', 'Informe o histórico de punições.');
+                }
+
+                $deliver = trim((string) $request->input('what_will_be_delivered'));
+                if ($deliver === '') {
+                    $validator->errors()->add('what_will_be_delivered', 'Informe o que será entregue ao comprador.');
+                }
+
+                // Ranking obrigatório para tipos competitivos
+                if (in_array($gameType, ['fps', 'moba', 'battle_royale', 'mobile', 'esporte'], true)) {
+                    if (trim((string) $request->input('ga_rank_current_tier')) === '') {
+                        $validator->errors()->add('ga_rank_current_tier', 'Informe o tier atual (ranking).');
+                    }
+                }
+
+                // Itens exclusivos: se marcado como sim, exige metadados e imagens
+                $hasExclusive = (string) $request->input('ga_has_exclusive_items');
+                if (! in_array($hasExclusive, ['0', '1'], true)) {
+                    $validator->errors()->add('ga_has_exclusive_items', 'Informe se a conta possui itens exclusivos.');
+                }
+                if ($hasExclusive === '1') {
+                    $raw = (string) $request->input('exclusive_items');
+                    $items = json_decode($raw, true);
+                    if (! is_array($items) || count($items) < 1) {
+                        $validator->errors()->add('exclusive_items', 'Adicione pelo menos 1 item exclusivo.');
+                    }
+
+                    $files = $request->file('exclusive_item_images') ?? [];
+                    if (! is_array($files) || count($files) < 1) {
+                        $validator->errors()->add('exclusive_item_images', 'Envie as imagens dos itens exclusivos.');
+                    }
                 }
             }
         });
 
         $data = $validator->validate();
+
+        // Normalize platform (string trimmed)
+        $data['game_account_platform'] = isset($data['game_account_platform']) ? trim((string) $data['game_account_platform']) : null;
 
         $category = trim((string) ($data['category'] ?? ''));
         $isServiceFormsCategory = $this->isServiceFormsCategory($category);
@@ -730,6 +838,84 @@ class IntermediationController extends Controller
                 $photosPaths[] = $path;
             }
         }
+        // Support alternative field name from frontend: proof_images
+        if ($allowsPhotos && $request->hasFile('proof_images')) {
+            foreach ($request->file('proof_images') as $photo) {
+                $path = $photo->store('negotiations/photos', 'public');
+                $photosPaths[] = $path;
+            }
+        }
+
+        // Game account extras (universal): capture dynamic ga_*/ts_* fields + exclusive items
+        if ($isGameAccount) {
+            $dynamic = [];
+            foreach ($request->all() as $key => $value) {
+                if (! is_string($key) || $key === '') {
+                    continue;
+                }
+                if (strpos($key, 'ga_') !== 0 && strpos($key, 'ts_') !== 0) {
+                    continue;
+                }
+                // Skip file inputs (handled elsewhere)
+                if ($value instanceof \Illuminate\Http\UploadedFile) {
+                    continue;
+                }
+                if (is_array($value)) {
+                    $hasFile = false;
+                    foreach ($value as $v) {
+                        if ($v instanceof \Illuminate\Http\UploadedFile) {
+                            $hasFile = true;
+                            break;
+                        }
+                    }
+                    if ($hasFile) {
+                        continue;
+                    }
+                }
+                $dynamic[$key] = $value;
+            }
+
+            // Exclusive items: metadata JSON + image uploads
+            $exclusiveItemsWithImages = null;
+            $rawExclusive = (string) $request->input('exclusive_items');
+            if ($rawExclusive !== '') {
+                $decoded = json_decode($rawExclusive, true);
+                if (is_array($decoded)) {
+                    $files = $request->file('exclusive_item_images') ?? [];
+                    $stored = [];
+                    if (is_array($files)) {
+                        foreach ($files as $idx => $file) {
+                            if (! $file instanceof \Illuminate\Http\UploadedFile) {
+                                continue;
+                            }
+                            $stored[(string) $idx] = $file->store('negotiations/exclusive-items', 'public');
+                        }
+                    }
+
+                    $items = [];
+                    foreach ($decoded as $idx => $it) {
+                        if (! is_array($it)) {
+                            continue;
+                        }
+                        $image = $stored[(string) $idx] ?? null;
+                        $items[] = [
+                            'type' => isset($it['type']) ? (string) $it['type'] : '',
+                            'name' => isset($it['name']) ? (string) $it['name'] : '',
+                            'rarity' => isset($it['rarity']) ? (string) $it['rarity'] : '',
+                            'description' => isset($it['description']) ? (string) $it['description'] : '',
+                            'image' => $image,
+                        ];
+                    }
+                    $exclusiveItemsWithImages = $items;
+                }
+            }
+
+            if ($exclusiveItemsWithImages !== null) {
+                $dynamic['exclusive_items'] = $exclusiveItemsWithImages;
+            }
+
+            $data['game_account_extras'] = $dynamic;
+        }
 
         $description = isset($data['description']) ? trim((string) $data['description']) : null;
         if ($description === '') {
@@ -785,19 +971,65 @@ class IntermediationController extends Controller
             'battle_pass_platform' => $data['battle_pass_platform'] ?? null,
             'battle_pass_type' => $data['battle_pass_type'] ?? null,
             'battle_pass_duration_days' => $data['battle_pass_duration_days'] ?? null,
+            'game_account_type' => $data['game_account_type'] ?? null,
             'game_account_game' => $data['game_account_game'] ?? null,
             'game_account_platform' => $data['game_account_platform'] ?? null,
-            'game_account_level' => $data['game_account_level'] ?? null,
-            'game_account_rank' => $data['game_account_rank'] ?? null,
+            'game_account_game_other' => $data['game_account_game_other'] ?? null,
+
+            // Segurança
+            'game_account_first_owner' => $data['game_account_first_owner'] ?? null,
+            'game_account_has_original_email' => $data['game_account_has_original_email'] ?? null,
+            'game_account_linked_providers' => $data['game_account_linked_providers'] ?? null,
+            'game_account_can_change_credentials' => $data['game_account_can_change_credentials'] ?? null,
+            'game_account_punishment_history' => $data['game_account_punishment_history'] ?? null,
+
+            // Delivery / proofs
+            'game_account_delivery_items' => $data['delivery_items'] ?? null,
+            'game_account_delivery_description' => $data['what_will_be_delivered'] ?? null,
+
+            // Dynamic data (per-type)
+            'game_account_extras' => $request->input('_game_account_dynamic') ?? ($data['game_account_extras'] ?? null),
             'game_account_has_ban' => array_key_exists('game_account_has_ban', $data)
                 ? filter_var($data['game_account_has_ban'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE)
                 : null,
+            'game_account_first_owner' => array_key_exists('game_account_first_owner', $data)
+                ? filter_var($data['game_account_first_owner'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE)
+                : null,
+            'game_account_has_original_email' => array_key_exists('game_account_has_original_email', $data)
+                ? filter_var($data['game_account_has_original_email'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE)
+                : null,
+            'game_account_linked_providers' => $data['game_account_linked_providers'] ?? null,
+            'game_account_region' => $data['game_account_region'] ?? null,
+            'game_account_extras' => $data['game_account_extras'] ?? null,
             // Observações privadas do vendedor (não sensíveis)
             'game_account_seller_notes' => $data['game_account_seller_notes'] ?? null,
             'seller_fee_deduct_from_payout' => $deduct,
             'product_photos' => !empty($photosPaths) ? $photosPaths : null,
             'status' => 'pending_acceptance',
         ];
+
+        $optionalColumns = [
+            'service_id',
+            'game_id',
+            'game_account_first_owner',
+            'game_account_has_original_email',
+            'game_account_linked_providers',
+            'game_account_region',
+            'game_account_extras',
+            'game_account_type',
+            'game_account_platform',
+            'game_account_game_other',
+            'game_account_can_change_credentials',
+            'game_account_punishment_history',
+            'game_account_delivery_items',
+            'game_account_delivery_description',
+        ];
+
+        foreach ($optionalColumns as $column) {
+            if (! Schema::hasColumn('negotiations', $column)) {
+                unset($payload[$column]);
+            }
+        }
 
         if ($this->isServiceScheduleCategory($category)) {
             $payload['service_seller_start_date_options'] = $serviceSellerStartDateOptions;
@@ -1056,6 +1288,146 @@ class IntermediationController extends Controller
     public function adminPendingOpened(Request $request): JsonResponse
     {
         return response()->json(['success' => true]);
+    }
+
+    /**
+     * Intermediator: list available negotiations (not yet assigned to any intermediator).
+     */
+    public function intermediatorAvailable(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!in_array($user->role, ['intermediator', 'admin'], true)) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        // Concluded/closed statuses are not available for new assignment.
+        $unavailableStatuses = ['delivered', 'rejected_by_admin', 'cancelled', 'expired'];
+
+        // Available = negotiations without an intermediator assigned
+        $negotiations = Negotiation::with([
+            'payments',
+            'seller:id,name,email,phone',
+            'buyer:id,name,email,phone',
+            'intermediator:id,name',
+        ])
+            ->whereNull('intermediator_id')
+            ->whereNotIn('status', $unavailableStatuses)
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(fn ($n) => $this->transform($n, $user, ['include_photos' => false, 'intermediator_list' => true]));
+
+        return response()->json(['data' => $negotiations]);
+    }
+
+    /**
+     * Intermediator: list my assigned negotiations.
+     */
+    public function intermediatorMine(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!in_array($user->role, ['intermediator', 'admin'], true)) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        $negotiations = Negotiation::with([
+            'payments',
+            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'intermediator:id,name',
+        ])
+            ->where('intermediator_id', $user->id)
+            ->orderByDesc('updated_at')
+            ->get()
+            ->map(fn ($n) => $this->transform($n, $user, ['include_photos' => false, 'intermediator_list' => true]));
+
+        return response()->json(['data' => $negotiations]);
+    }
+
+    /**
+     * Intermediator: list all negotiations in intermediation flow, including who is assigned.
+     */
+    public function intermediatorAll(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!in_array($user->role, ['intermediator', 'admin'], true)) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        $negotiations = Negotiation::with([
+            'payments',
+            'seller:id,name,email,phone',
+            'buyer:id,name,email,phone',
+            'intermediator:id,name',
+        ])
+            ->orderByDesc('updated_at')
+            ->get()
+            ->map(fn ($n) => $this->transform($n, $user, ['include_photos' => false, 'intermediator_list' => true]));
+
+        return response()->json(['data' => $negotiations]);
+    }
+
+    /**
+     * Intermediator: assign a negotiation to self.
+     */
+    public function intermediatorAssign(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if (!in_array($user->role, ['intermediator', 'admin'], true)) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($request, $user) {
+            // Only assign if not already assigned
+            if ($negotiation->intermediator_id !== null) {
+                return response()->json(['message' => 'Esta negociação já está sendo intermediada por outro usuário.'], 422);
+            }
+
+            // Disallow assignment when the negotiation is already concluded/closed.
+            $unavailableStatuses = ['delivered', 'rejected_by_admin', 'cancelled', 'expired'];
+            if (in_array((string) $negotiation->status, $unavailableStatuses, true)) {
+                return response()->json(['message' => 'Esta negociação não está disponível para intermediação.'], 422);
+            }
+
+            $negotiation->intermediator_id = $user->id;
+            $negotiation->intermediator_assigned_at = now();
+            $negotiation->save();
+
+            AuditLogger::log($request, 'negotiation.intermediator_assigned', $negotiation);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Você assumiu esta intermediação.',
+                'data' => $this->transform($negotiation->fresh(['seller', 'buyer', 'payments', 'intermediator']), $user),
+            ]);
+        });
+    }
+
+    /**
+     * Intermediator: unassign self from a negotiation.
+     */
+    public function intermediatorUnassign(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if (!in_array($user->role, ['intermediator', 'admin'], true)) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        return $this->withLockedNegotiation($id, function (Negotiation $negotiation) use ($request, $user) {
+            if ($negotiation->intermediator_id !== $user->id) {
+                return response()->json(['message' => 'Você não está atribuído a esta negociação.'], 422);
+            }
+
+            $negotiation->intermediator_id = null;
+            $negotiation->intermediator_assigned_at = null;
+            $negotiation->save();
+
+            AuditLogger::log($request, 'negotiation.intermediator_unassigned', $negotiation);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Você deixou de intermediar esta negociação.',
+            ]);
+        });
     }
 
     /**
@@ -2104,13 +2476,15 @@ class IntermediationController extends Controller
     public function saveInspectionReport(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        if ($user->role !== 'admin' && $user->role !== 'inspector') {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
         $negotiation = Negotiation::find($id);
         if (! $negotiation) {
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        $isAdminOrInspector = $user->role === 'admin' || $user->role === 'inspector';
+        $isAssignedIntermediator = $user->role === 'intermediator' && (int) $negotiation->intermediator_id === (int) $user->id;
+        if (! $isAdminOrInspector && ! $isAssignedIntermediator) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
         if ($this->isDigitalDeliveryCategory($negotiation->category)) {
@@ -2149,7 +2523,11 @@ class IntermediationController extends Controller
             'photos_count' => is_array($allPhotos) ? count($allPhotos) : 0,
         ]);
 
-        $negotiation->load(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state']);
+        $negotiation->load([
+            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'intermediator:id,name',
+        ]);
 
         return response()->json([
             'success' => true,
@@ -2163,13 +2541,15 @@ class IntermediationController extends Controller
     public function addLog(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        if ($user->role !== 'admin' && $user->role !== 'inspector') {
-            return response()->json(['message' => 'Acesso negado.'], 403);
-        }
-
         $negotiation = Negotiation::find($id);
         if (! $negotiation) {
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
+        }
+
+        $isAdminOrInspector = $user->role === 'admin' || $user->role === 'inspector';
+        $isAssignedIntermediator = $user->role === 'intermediator' && (int) $negotiation->intermediator_id === (int) $user->id;
+        if (! $isAdminOrInspector && ! $isAssignedIntermediator) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
         $data = Validator::make($request->all(), [
@@ -2199,7 +2579,11 @@ class IntermediationController extends Controller
             'type' => $data['type'] ?? 'note',
         ]);
 
-        $negotiation->load(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state']);
+        $negotiation->load([
+            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'intermediator:id,name',
+        ]);
 
         return response()->json([
             'success' => true, 
@@ -2219,7 +2603,9 @@ class IntermediationController extends Controller
             return response()->json(['message' => 'Negociacao nao encontrada.'], 404);
         }
 
-        if (! $negotiation->isParticipant($user) && $user->role !== 'admin') {
+        $isAdmin = $user && $user->role === 'admin';
+        $isAssignedIntermediator = $user && $user->role === 'intermediator' && (int) $negotiation->intermediator_id === (int) $user->id;
+        if (! $negotiation->isParticipant($user) && ! $isAdmin && ! $isAssignedIntermediator) {
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
@@ -2635,7 +3021,7 @@ class IntermediationController extends Controller
             ];
         }
 
-        return [
+        $data = [
             'id' => $negotiation->id,
             'title' => $title,
             'description' => $description,
@@ -2708,6 +3094,13 @@ class IntermediationController extends Controller
                 'address_city' => $negotiation->buyer->address_city,
                 'address_state' => $negotiation->buyer->address_state,
             ] : null,
+            'intermediator' => $negotiation->intermediator ? [
+                'id' => $negotiation->intermediator->id,
+                'name' => $negotiation->intermediator->name,
+                'code' => $negotiation->intermediator->intermediator_code ?? null,
+                'is_principal' => (bool) ($negotiation->intermediator->is_intermediator_principal ?? false),
+            ] : null,
+            'intermediator_assigned_at' => $this->toIso8601StringOrNull($negotiation->intermediator_assigned_at),
             'my_role' => $negotiation->getUserRole($currentUser),
             // Aliases usados no front
             'tracking_to_intermediary' => $trackingToIntermediary,
@@ -2754,5 +3147,61 @@ class IntermediationController extends Controller
             'created_at' => $this->toIso8601StringOrNull($negotiation->created_at),
             'updated_at' => $this->toIso8601StringOrNull($negotiation->updated_at),
         ];
+
+        $asIntermediatorObserver = (bool) ($options['intermediator_observer'] ?? false);
+        $asIntermediatorList = (bool) ($options['intermediator_list'] ?? false);
+
+        if (($asIntermediatorObserver || $asIntermediatorList) && (($currentUser?->role ?? null) === 'intermediator')) {
+            // Somente leitura / resumo: não expor dados sensíveis.
+            $data['pix_code'] = null;
+            $data['pix_generated_at'] = null;
+            $data['internal_logs'] = [];
+            $data['payments'] = [];
+            $data['buyer_payment_proof_url'] = null;
+            $data['buyer_payment_proof_uploaded_at'] = null;
+
+            $data['tracking_code'] = null;
+            $data['tracking_carrier'] = null;
+            $data['buyer_tracking_code'] = null;
+            $data['buyer_tracking_carrier'] = null;
+
+            $data['rejection_reason'] = null;
+            $data['buyer_rejection_reason'] = null;
+            $data['buyer_rejection_details'] = null;
+
+            $data['product_photos'] = [];
+            $data['inspection_report'] = null;
+            $data['intermediary_checklist'] = [];
+            $data['intermediary_notes'] = null;
+            $data['intermediary_photos'] = [];
+            $data['inspection_saved_at'] = null;
+
+            $data['gold_delivery'] = null;
+            $data['service_delivery'] = null;
+
+            if (is_array($data['seller'] ?? null)) {
+                $data['seller']['phone'] = null;
+                $data['seller']['address_zipcode'] = null;
+                $data['seller']['address_street'] = null;
+                $data['seller']['address_number'] = null;
+                $data['seller']['address_complement'] = null;
+                $data['seller']['address_neighborhood'] = null;
+                $data['seller']['address_city'] = null;
+                $data['seller']['address_state'] = null;
+            }
+
+            if (is_array($data['buyer'] ?? null)) {
+                $data['buyer']['phone'] = null;
+                $data['buyer']['address_zipcode'] = null;
+                $data['buyer']['address_street'] = null;
+                $data['buyer']['address_number'] = null;
+                $data['buyer']['address_complement'] = null;
+                $data['buyer']['address_neighborhood'] = null;
+                $data['buyer']['address_city'] = null;
+                $data['buyer']['address_state'] = null;
+            }
+        }
+
+        return $data;
     }
 }

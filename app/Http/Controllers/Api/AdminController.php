@@ -15,13 +15,32 @@ use Illuminate\Support\Str;
 
 class AdminController extends Controller
 {
+    protected function canManageUsers(?User $actor): bool
+    {
+        if (! $actor) {
+            return false;
+        }
+
+        if ($actor->role === 'admin') {
+            return true;
+        }
+
+        return $actor->role === 'intermediator' && (bool) ($actor->is_intermediator_principal ?? false);
+    }
+
+    protected function nextIntermediatorCode(): int
+    {
+        $max = (int) (User::query()->max('intermediator_code') ?? 0);
+        return max(1, $max + 1);
+    }
+
     /**
      * List all users (admin only).
      */
     public function users(Request $request): JsonResponse
     {
-        $admin = $request->user();
-        if (! $admin || $admin->role !== 'admin') {
+        $actor = $request->user();
+        if (! $this->canManageUsers($actor)) {
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
@@ -31,6 +50,8 @@ class AdminController extends Controller
             'email',
             'phone',
             'role',
+            'intermediator_code',
+            'is_intermediator_principal',
             'address_zipcode',
             'address_street',
             'address_number',
@@ -63,8 +84,60 @@ class AdminController extends Controller
      */
     public function storeUser(Request $request): JsonResponse
     {
-        // TODO: validate and create user
-        return response()->json(['data' => null], 201);
+        $actor = $request->user();
+        if (! $this->canManageUsers($actor)) {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
+            'phone' => ['nullable', 'string', 'max:32'],
+            'role' => ['required', 'string', 'in:buyer,seller,admin,inspector,intermediator'],
+            'password' => ['nullable', 'string', 'min:8'],
+        ]);
+
+        $phone = isset($data['phone']) ? preg_replace('/\D+/', '', $data['phone']) : null;
+        if ($phone === '') {
+            $phone = null;
+        }
+
+        $role = (string) $data['role'];
+
+        // Segurança: intermediador principal não pode criar contas admin/inspector.
+        if (($actor->role ?? null) !== 'admin' && $role !== 'intermediator') {
+            return response()->json(['message' => 'Acesso negado.'], 403);
+        }
+
+        $password = isset($data['password']) && trim((string) $data['password']) !== ''
+            ? (string) $data['password']
+            : Str::random(16);
+
+        $payload = [
+            'name' => $data['name'],
+            'email' => $data['email'],
+            'phone' => $phone,
+            'role' => $role,
+            'password' => $password,
+            'email_verified_at' => now(),
+        ];
+
+        if ($role === 'intermediator') {
+            $payload['intermediator_code'] = $this->nextIntermediatorCode();
+            $payload['is_intermediator_principal'] = false;
+        }
+
+        $user = User::create($payload);
+
+        AuditLogger::log($request, 'admin.user.create', $user, [
+            'target_user_id' => $user->id,
+            'role' => $role,
+        ]);
+
+        return response()->json([
+            'data' => $user,
+            'password' => $role === 'intermediator' ? null : null,
+        ], 201);
     }
 
     /**
@@ -72,12 +145,12 @@ class AdminController extends Controller
      */
     public function destroyUser(Request $request, int $id): JsonResponse
     {
-        $admin = $request->user();
-        if (!$admin || $admin->role !== 'admin') {
+        $actor = $request->user();
+        if (! $this->canManageUsers($actor)) {
             return response()->json(['message' => 'Acesso negado.'], 403);
         }
 
-        if ($admin->id === $id) {
+        if ($actor->id === $id) {
             return response()->json(['message' => 'Você não pode remover seu próprio usuário.'], 422);
         }
 

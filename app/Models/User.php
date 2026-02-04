@@ -29,6 +29,8 @@ class User extends Authenticatable
         'address_city',
         'address_state',
         'role',
+        'intermediator_code',
+        'is_intermediator_principal',
         'password',
     ];
 
@@ -59,6 +61,8 @@ class User extends Authenticatable
             'api_token_expires_at' => 'datetime',
             'confirmation_code_expires_at' => 'datetime',
             'confirmation_code_last_sent_at' => 'datetime',
+            'intermediator_code' => 'integer',
+            'is_intermediator_principal' => 'boolean',
             'password' => 'hashed',
         ];
     }

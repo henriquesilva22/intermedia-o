@@ -81,6 +81,19 @@ class Negotiation extends Model
     protected $fillable = [
         'seller_id',
         'buyer_id',
+        'intermediator_id',
+        'intermediator_assigned_at',
+        'schema_version',
+        'negotiation_type',
+        'universal_game',
+        'universal_platform',
+        'universal_region_server',
+        'universal_game_type',
+        'allows_negotiation',
+        'universal_delivery_method',
+        'universal_estimated_delivery',
+        'form_completeness',
+        'risk_assessment',
         'title',
         'description',
         'category',
@@ -109,6 +122,11 @@ class Negotiation extends Model
         'game_account_level',
         'game_account_rank',
         'game_account_has_ban',
+        'game_account_first_owner',
+        'game_account_has_original_email',
+        'game_account_linked_providers',
+        'game_account_region',
+        'game_account_extras',
         'game_account_seller_notes',
         'product_photos',
         'price',
@@ -177,6 +195,7 @@ class Negotiation extends Model
     protected function casts(): array
     {
         return [
+            'schema_version' => 'integer',
             'price' => 'decimal:2',
             'digital_quantity' => 'integer',
             'delivery_days' => 'integer',
@@ -186,10 +205,17 @@ class Negotiation extends Model
             'service_schedule_confirmed_at' => 'datetime',
             'battle_pass_duration_days' => 'integer',
             'game_account_has_ban' => 'boolean',
+            'game_account_first_owner' => 'boolean',
+            'game_account_has_original_email' => 'boolean',
+            'game_account_linked_providers' => 'array',
+            'game_account_extras' => 'array',
             'product_photos' => 'array',
             'intermediary_checklist' => 'array',
             'intermediary_photos' => 'array',
             'internal_logs' => 'array',
+            'allows_negotiation' => 'boolean',
+            'form_completeness' => 'array',
+            'risk_assessment' => 'array',
             'inspection_saved_at' => 'datetime',
             'pix_generated_at' => 'datetime',
             'buyer_payment_proof_uploaded_at' => 'datetime',
@@ -210,6 +236,7 @@ class Negotiation extends Model
             'gold_seller_sent_confirmed_at' => 'datetime',
             'gold_buyer_reschedule_requested_at' => 'datetime',
             'seller_fee_deduct_from_payout' => 'boolean',
+            'intermediator_assigned_at' => 'datetime',
             'accepted_at' => 'datetime',
             'paid_at' => 'datetime',
             'shipped_at' => 'datetime',
@@ -233,6 +260,19 @@ class Negotiation extends Model
     public function buyer(): BelongsTo
     {
         return $this->belongsTo(User::class, 'buyer_id');
+    }
+
+    /**
+     * The intermediator assigned to this negotiation.
+     */
+    public function intermediator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'intermediator_id');
+    }
+
+    public function isIntermediator(User $user): bool
+    {
+        return (int) $this->intermediator_id === (int) $user->id;
     }
 
     public function payments(): HasMany
@@ -309,6 +349,9 @@ class Negotiation extends Model
         }
         if ($this->isBuyer($user)) {
             return 'buyer';
+        }
+        if ($this->isIntermediator($user)) {
+            return 'intermediator';
         }
         return null;
     }

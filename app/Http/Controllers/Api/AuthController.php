@@ -39,8 +39,11 @@ class AuthController extends Controller
             'state' => ['nullable', 'string', 'max:2'],
             'password' => [
                 'required',
+                'string',
+                'min:8',
                 'confirmed',
-                Password::min(10)->mixedCase()->numbers()->symbols()->uncompromised(),
+                'regex:/[A-Z]/',
+                'regex:/[0-9]/',
             ],
         ])->validate();
 
@@ -114,6 +117,9 @@ class AuthController extends Controller
             'password' => ['required', 'string'],
         ])->validate();
 
+        $data['email'] = trim($data['email']);
+        $data['password'] = trim($data['password']);
+
         $user = User::where('email', $data['email'])->first();
 
         if (! $user || ! Hash::check($data['password'], $user->password)) {
@@ -182,6 +188,32 @@ class AuthController extends Controller
             return response()->json(['message' => 'Informe email ou tag.'], 400);
         }
 
+        $normalize = function (?string $value): string {
+            $value = trim((string) $value);
+            $value = preg_replace('/\s+/', ' ', $value) ?? $value;
+            $value = mb_strtolower($value);
+            return Str::ascii($value);
+        };
+
+        $abbreviate = function (?string $value): string {
+            $value = trim((string) $value);
+            $value = preg_replace('/\s+/', ' ', $value) ?? $value;
+            if ($value === '') {
+                return 'Usuario';
+            }
+            $parts = preg_split('/\s+/', $value) ?: [];
+            if (count($parts) <= 1) {
+                return $parts[0] ?? $value;
+            }
+            $first = array_shift($parts);
+            $initials = array_map(static function ($part) {
+                $letter = mb_substr((string) $part, 0, 1);
+                return $letter ? mb_strtoupper($letter) . '.' : '';
+            }, $parts);
+            $initials = array_filter($initials);
+            return trim($first . ' ' . implode(' ', $initials));
+        };
+
         $user = null;
         if ($email) {
             $user = User::where('email', $email)->first();
@@ -196,14 +228,19 @@ class AuthController extends Controller
                 $namePart = trim(implode('#', $chunks));
             }
 
-            if (!ctype_digit($idPart)) {
+            $idPart = preg_replace('/\s+/', '', (string) $idPart);
+            if (!ctype_digit((string) $idPart)) {
                 return response()->json(['user' => null, 'found' => false, 'message' => 'Formato inválido. Use nome#id (ex: henrique#15).']);
             }
 
             $user = User::find((int) $idPart);
             if ($user && $namePart) {
+                $namePartNormalized = $normalize($namePart);
+                $fullNameNormalized = $normalize($user->name);
                 $firstName = trim(explode(' ', trim((string) $user->name))[0] ?? '');
-                if ($firstName && mb_strtolower($firstName) !== mb_strtolower($namePart)) {
+                $firstNameNormalized = $normalize($firstName);
+
+                if ($namePartNormalized && $namePartNormalized !== $firstNameNormalized && $namePartNormalized !== $fullNameNormalized) {
                     return response()->json(['user' => null, 'found' => false, 'message' => 'Nome não confere com o ID informado.']);
                 }
             }
@@ -220,11 +257,13 @@ class AuthController extends Controller
 
         $firstName = trim(explode(' ', trim((string) $user->name))[0] ?? '');
         $displayTag = ($firstName ?: 'usuario') . '#' . $user->id;
+        $shortName = $abbreviate($user->name);
 
         return response()->json([
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
+                'short_name' => $shortName,
                 'tag' => $displayTag,
             ],
             'found' => true
@@ -476,6 +515,8 @@ class AuthController extends Controller
             'address_city' => $user->address_city,
             'address_state' => $user->address_state,
             'role' => $user->role,
+            'intermediator_code' => $user->intermediator_code ?? null,
+            'is_intermediator_principal' => (bool) ($user->is_intermediator_principal ?? false),
         ];
     }
 }

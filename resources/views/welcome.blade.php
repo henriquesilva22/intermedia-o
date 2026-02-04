@@ -136,6 +136,8 @@
     </div>
     <script src="{{ asset('app/sp-cities.js') }}" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" defer></script>
-    <script src="{{ asset('app/app.js') }}" defer></script>
+    <script src="{{ asset('app/app.part1.js') }}" defer></script>
+    <script src="{{ asset('app/app.part2.js') }}" defer></script>
+    <script src="{{ asset('app/app.part3.js') }}" defer></script>
 </body>
 </html>
