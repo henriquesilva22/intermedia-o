@@ -34,7 +34,7 @@ class IntermediationController extends Controller
     private const SERVICE_CARRY_PVE_CATEGORY = 'Carry de Conteúdo (PvE)';
     private const SERVICE_LEVELING_CATEGORY = 'Leveling';
     private const SERVICE_CURRENCY_CATEGORY = 'Venda de Moeda';
-    private const SERVICE_COLLECTIBLES_CATEGORY = 'Conquistas / Colecionáveis';
+    private const SERVICE_COLLECTIBLES_CATEGORY = 'Conquistas e Colecionáveis';
     private const SERVICE_SEASONAL_CATEGORY = 'Serviço de Temporada';
     private const SERVICE_CUSTOM_CATEGORY = 'Serviço Personalizado';
 
@@ -315,7 +315,21 @@ class IntermediationController extends Controller
 
     private function isServiceScheduleCategory(?string $category): bool
     {
-        // Service flow categories (taxonomy + legacy) require seller schedule options.
+        // Service flow categories (taxonomy + legacy) require seller schedule options,
+        // except Boost de Rank (slots are captured in service_fields and are optional).
+        $category = trim((string) $category);
+        if ($category === self::SERVICE_BOOST_RANK_CATEGORY) {
+            return false;
+        }
+
+        if (in_array($category, [
+            self::SERVICE_COLLECTIBLES_CATEGORY,
+            self::SERVICE_SEASONAL_CATEGORY,
+            self::SERVICE_CUSTOM_CATEGORY,
+        ], true)) {
+            return false;
+        }
+
         return $this->isServiceFormsCategory($category);
     }
 
@@ -450,10 +464,21 @@ class IntermediationController extends Controller
             'description' => ['nullable', 'string', 'max:2000'],
             'price' => ['required', 'numeric', 'min:50', 'max:100000'],
             'category' => ['required', 'string', 'max:100'],
+            'negotiation_type' => ['nullable', 'string', 'in:digital,physical'],
             'service_id' => ['nullable', 'string', 'max:80'],
             'game_id' => ['nullable', 'string', 'max:80'],
             'service_fields' => ['nullable'],
             'delivery_days' => ['nullable', 'integer', 'min:1', 'max:25'],
+
+            // Camada universal (novos campos) + aliases usados pelo frontend atual
+            'universal_game' => ['nullable', 'string', 'max:120'],
+            'universal_game_name' => ['nullable', 'string', 'max:120'],
+            'universal_platform' => ['nullable', 'string', 'max:60'],
+            'universal_region_server' => ['nullable', 'string', 'max:120'],
+            'universal_game_type' => ['nullable', 'string', 'max:40'],
+            'allows_negotiation' => ['nullable'],
+            'universal_delivery_method' => ['nullable', 'string', 'max:40'],
+            'universal_estimated_delivery' => ['nullable', 'string', 'max:80'],
             'game_title' => ['nullable', 'string', 'max:120'],
             'item_name' => ['nullable', 'string', 'max:160'],
             'item_general_info' => ['nullable', 'string', 'max:1000'],
@@ -575,6 +600,120 @@ class IntermediationController extends Controller
                 $timeRanges = $this->normalizeTimeRangeOptions($request->input('service_seller_time_range_options'), 3);
                 if (! $timeRanges) {
                     $validator->errors()->add('service_seller_time_range_options', 'Informe pelo menos 1 intervalo de horário (início/fim), máx 3.');
+                }
+            }
+
+            // Carry PvE (universal): validate required service_fields according to the final model.
+            if ($category === self::SERVICE_CARRY_PVE_CATEGORY) {
+                $raw = $request->input('service_fields');
+                if (is_string($raw)) {
+                    $decoded = json_decode($raw, true);
+                    if (is_array($decoded)) {
+                        $raw = $decoded;
+                    }
+                }
+
+                $fields = is_array($raw) ? $raw : [];
+                $get = static fn (string $key): string => trim((string) ($fields[$key] ?? ''));
+
+                // Game title is required (stored under game_other_name when game_id='other').
+                if ($get('game_other_name') === '') {
+                    $validator->errors()->add('service_fields.game_other_name', 'Informe o nome do jogo.' );
+                }
+
+                // Content definition
+                if ($get('content_type') === '') {
+                    $validator->errors()->add('service_fields.content_type', 'Selecione o tipo de conteúdo.');
+                }
+                if ($get('content_name') === '') {
+                    $validator->errors()->add('service_fields.content_name', 'Informe o nome do conteúdo.');
+                }
+                if ($get('objective') === '') {
+                    $validator->errors()->add('service_fields.objective', 'Selecione o objetivo do serviço.');
+                }
+
+                // Execution
+                if ($get('difficulty') === '') {
+                    $validator->errors()->add('service_fields.difficulty', 'Informe a dificuldade.');
+                }
+                $runs = $get('runs_count');
+                if ($runs === '' || !is_numeric($runs) || (int) $runs < 1) {
+                    $validator->errors()->add('service_fields.runs_count', 'Informe a quantidade de runs (mín. 1).');
+                }
+
+                // Availability: require one main slot date+time.
+                if ($get('slot1_date') === '') {
+                    $validator->errors()->add('service_fields.slot1_date', 'Informe a data principal.');
+                }
+                if ($get('slot1_time') === '') {
+                    $validator->errors()->add('service_fields.slot1_time', 'Informe a hora principal.');
+                }
+
+                // Method
+                if ($get('execution_method') === '') {
+                    $validator->errors()->add('service_fields.execution_method', 'Selecione como o serviço será executado.');
+                }
+
+                // Rewards
+                if ($get('reward_main') === '') {
+                    $validator->errors()->add('service_fields.reward_main', 'Informe a recompensa principal esperada.');
+                }
+            }
+
+            // Boost de Rank (universal): validate required fields from the new model.
+            if ($category === self::SERVICE_BOOST_RANK_CATEGORY) {
+                $raw = $request->input('service_fields');
+                if (is_string($raw)) {
+                    $decoded = json_decode($raw, true);
+                    if (is_array($decoded)) {
+                        $raw = $decoded;
+                    }
+                }
+
+                $fields = is_array($raw) ? $raw : [];
+
+                $get = static fn (string $key): string => trim((string) ($fields[$key] ?? ''));
+
+                if ($get('game_other_name') === '') {
+                    $validator->errors()->add('service_fields.game_other_name', 'Informe o nome do jogo.');
+                }
+
+                if ($get('boost_type') === '') {
+                    $validator->errors()->add('service_fields.boost_type', 'Selecione o tipo de boost.');
+                }
+
+                if ($get('boost_method') === '') {
+                    $validator->errors()->add('service_fields.boost_method', 'Selecione a forma do boost.');
+                }
+
+                // Availability slots are optional, but if partially filled, validate and require both date+time.
+                for ($i = 1; $i <= 3; $i++) {
+                    $dKey = 'slot'.$i.'_date';
+                    $tKey = 'slot'.$i.'_time';
+                    $d = $get($dKey);
+                    $t = $get($tKey);
+
+                    if ($d === '' && $t === '') {
+                        continue;
+                    }
+
+                    if ($d === '') {
+                        $validator->errors()->add('service_fields.'.$dKey, 'Informe a data deste horário.');
+                    } elseif (! preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
+                        $validator->errors()->add('service_fields.'.$dKey, 'Data inválida.');
+                    }
+
+                    if ($t === '') {
+                        $validator->errors()->add('service_fields.'.$tKey, 'Informe a hora deste horário.');
+                    } elseif (! preg_match('/^(\d{2}):(\d{2})$/', $t, $m)) {
+                        $validator->errors()->add('service_fields.'.$tKey, 'Hora inválida.');
+                    } else {
+                        $h = (int) $m[1];
+                        $min = (int) $m[2];
+                        if ($h < 0 || $h > 23 || $min < 0 || $min > 59) {
+                            $validator->errors()->add('service_fields.'.$tKey, 'Hora inválida.');
+                        }
+                    }
                 }
             }
 
@@ -945,9 +1084,123 @@ class IntermediationController extends Controller
             $serviceSellerTimeRangeOptions = $this->normalizeTimeRangeOptions($data['service_seller_time_range_options'] ?? [], 3);
         }
 
+        // ----------------------------
+        // Camada Universal (derivada + compat)
+        // ----------------------------
+        $negotiationType = array_key_exists('negotiation_type', $data)
+            ? trim((string) $data['negotiation_type'])
+            : '';
+
+        // Frontend atual usa aliases universal_game_name / universal_game_type.
+        $universalGame = trim((string) ($data['universal_game'] ?? $data['universal_game_name'] ?? ''));
+        if ($universalGame === '') {
+            $universalGame = trim((string) ($data['digital_game'] ?? $data['game_title'] ?? $data['game_account_game'] ?? $data['battle_pass_game'] ?? ''));
+        }
+
+        $universalPlatform = trim((string) ($data['universal_platform'] ?? ''));
+        if ($universalPlatform === '') {
+            $universalPlatform = trim((string) ($data['game_account_platform'] ?? $data['battle_pass_platform'] ?? ''));
+        }
+
+        $universalRegionServer = trim((string) ($data['universal_region_server'] ?? ''));
+        if ($universalRegionServer === '') {
+            $universalRegionServer = trim((string) ($data['digital_platform_server'] ?? $data['game_account_region'] ?? $data['gold_buyer_server'] ?? ''));
+        }
+
+        $universalGameType = trim((string) ($data['universal_game_type'] ?? ''));
+        if ($universalGameType === '') {
+            $universalGameType = trim((string) ($data['game_account_type'] ?? ''));
+        }
+
+        $allowsNegotiation = null;
+        if (array_key_exists('allows_negotiation', $data)) {
+            $allowsNegotiation = filter_var($data['allows_negotiation'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+        }
+
+        $universalDeliveryMethod = trim((string) ($data['universal_delivery_method'] ?? ''));
+        if ($universalDeliveryMethod === '') {
+            $universalDeliveryMethod = trim((string) ($data['digital_delivery_method'] ?? ''));
+        }
+
+        $universalEstimatedDelivery = trim((string) ($data['universal_estimated_delivery'] ?? ''));
+        if ($universalEstimatedDelivery === '' && isset($data['delivery_days']) && is_numeric($data['delivery_days'])) {
+            $days = (int) $data['delivery_days'];
+            if ($days > 0) {
+                $universalEstimatedDelivery = $days.' dia'.($days === 1 ? '' : 's');
+            }
+        }
+
+        // Completeness + Risk (MVP): gerar snapshots sem bloquear a criação
+        $missing = [];
+        foreach (['universal_game' => $universalGame, 'universal_platform' => $universalPlatform, 'universal_game_type' => $universalGameType] as $k => $v) {
+            if (trim((string) $v) === '') {
+                $missing[] = $k;
+            }
+        }
+        $filled = 3 - count($missing);
+        $percent = (int) round(($filled / 3) * 100);
+        $formCompleteness = [
+            'percent' => max(0, min(100, $percent)),
+            'missing_required_fields' => $missing,
+            'last_calculated_at' => now()->toIso8601String(),
+        ];
+
+        $riskFlags = [];
+        $riskScore = 100;
+        if ($allowsPhotos && empty($photosPaths)) {
+            $riskFlags[] = 'no_proofs';
+            $riskScore -= 20;
+        }
+        if ($isGameAccount) {
+            $firstOwnerRaw = $data['game_account_first_owner'] ?? null;
+            $hasOriginalEmailRaw = $data['game_account_has_original_email'] ?? null;
+            $firstOwner = filter_var($firstOwnerRaw, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+            $hasOriginalEmail = filter_var($hasOriginalEmailRaw, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+
+            if ($firstOwner === false) {
+                $riskFlags[] = 'not_first_owner';
+                $riskScore -= 15;
+            }
+            if ($hasOriginalEmail === false) {
+                $riskFlags[] = 'no_original_email';
+                $riskScore -= 15;
+            }
+
+            $providers = $data['game_account_linked_providers'] ?? [];
+            if (is_array($providers)) {
+                $providers = array_values(array_filter(array_map('strval', $providers)));
+                if ($providers && ! in_array('none', $providers, true)) {
+                    $riskFlags[] = 'third_party_linked';
+                    $riskScore -= 10;
+                }
+            }
+
+            $punishment = trim((string) ($data['game_account_punishment_history'] ?? ''));
+            if ($punishment !== '') {
+                $riskFlags[] = 'punishment_history_present';
+                $riskScore -= 5;
+            }
+        }
+        $riskAssessment = [
+            'score' => max(0, min(100, (int) $riskScore)),
+            'flags' => array_values(array_unique($riskFlags)),
+            'calculated_at' => now()->toIso8601String(),
+        ];
+
         $payload = [
             'seller_id' => $user->id,
             'buyer_id' => $buyerId,
+            'schema_version' => 1,
+            'negotiation_type' => $negotiationType !== '' ? $negotiationType : null,
+            'universal_game' => $universalGame !== '' ? $universalGame : null,
+            'universal_platform' => $universalPlatform !== '' ? $universalPlatform : null,
+            'universal_region_server' => $universalRegionServer !== '' ? $universalRegionServer : null,
+            'universal_game_type' => $universalGameType !== '' ? $universalGameType : null,
+            'allows_negotiation' => $allowsNegotiation,
+            'universal_delivery_method' => $universalDeliveryMethod !== '' ? $universalDeliveryMethod : null,
+            'universal_estimated_delivery' => $universalEstimatedDelivery !== '' ? $universalEstimatedDelivery : null,
+            'form_completeness' => $formCompleteness,
+            'risk_assessment' => $riskAssessment,
             'title' => $data['title'],
             'description' => $description,
             'price' => $data['price'],
@@ -1009,6 +1262,17 @@ class IntermediationController extends Controller
         ];
 
         $optionalColumns = [
+            'schema_version',
+            'negotiation_type',
+            'universal_game',
+            'universal_platform',
+            'universal_region_server',
+            'universal_game_type',
+            'allows_negotiation',
+            'universal_delivery_method',
+            'universal_estimated_delivery',
+            'form_completeness',
+            'risk_assessment',
             'service_id',
             'game_id',
             'game_account_first_owner',
@@ -1037,6 +1301,74 @@ class IntermediationController extends Controller
         }
 
         $negotiation = Negotiation::create($payload);
+
+        // Dual-write: persist fields in negotiation_fields for extensibilidade
+        try {
+            $upsertField = function (string $fieldId, mixed $value) use ($negotiation) {
+                $fieldId = trim($fieldId);
+                if ($fieldId === '') return;
+                if ($value === null) return;
+
+                if (is_bool($value)) {
+                    $text = $value ? '1' : '0';
+                } elseif (is_scalar($value)) {
+                    $text = trim((string) $value);
+                } else {
+                    $text = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                }
+
+                if (! is_string($text) || trim($text) === '') {
+                    return;
+                }
+
+                // Prevent gigantic payloads.
+                if (strlen($text) > 20000) {
+                    $text = substr($text, 0, 20000);
+                }
+
+                NegotiationField::updateOrCreate(
+                    ['negotiation_id' => $negotiation->id, 'field_id' => $fieldId],
+                    ['field_value' => $text]
+                );
+            };
+
+            $upsertField('universal.negotiation_type', $negotiationType);
+            $upsertField('universal.game_name', $universalGame);
+            $upsertField('universal.platform', $universalPlatform);
+            $upsertField('universal.region_server', $universalRegionServer);
+            $upsertField('universal.game_type', $universalGameType);
+
+            $upsertField('commercial.price', $data['price'] ?? null);
+            $upsertField('commercial.allows_negotiation', $allowsNegotiation);
+            $upsertField('commercial.delivery_method', $universalDeliveryMethod);
+            $upsertField('commercial.estimated_delivery', $universalEstimatedDelivery);
+
+            // Segurança (quando presente)
+            if ($isGameAccount) {
+                $upsertField('security.first_owner', filter_var($data['game_account_first_owner'] ?? null, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE));
+                $upsertField('security.has_original_email', filter_var($data['game_account_has_original_email'] ?? null, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE));
+                $upsertField('security.ban_history', $data['game_account_punishment_history'] ?? null);
+                $upsertField('security.linked_third_parties', $data['game_account_linked_providers'] ?? null);
+            }
+
+            // Provas (paths) — útil para checklist/inspeção
+            if (! empty($photosPaths)) {
+                $upsertField('security.proofs', $photosPaths);
+            }
+
+            // Itens exclusivos (estrutura atual de GA)
+            if ($isGameAccount && isset($data['game_account_extras']) && is_array($data['game_account_extras'])) {
+                if (array_key_exists('exclusive_items', $data['game_account_extras'])) {
+                    $upsertField('exclusive_items.items', $data['game_account_extras']['exclusive_items']);
+                }
+            }
+
+            // Snapshots
+            $upsertField('system.form_completeness', $formCompleteness);
+            $upsertField('system.risk_assessment', $riskAssessment);
+        } catch (\Throwable $exception) {
+            // Never block creation.
+        }
 
         if ($isServiceFormsCategory) {
             $rawFields = $request->input('service_fields');
@@ -1652,6 +1984,121 @@ class IntermediationController extends Controller
                 ];
             }
 
+            $normalizeJson = static function ($value): array {
+                if ($value === null || $value === '') {
+                    return [];
+                }
+                if (is_array($value)) {
+                    return $value;
+                }
+                if (is_string($value)) {
+                    $decoded = json_decode($value, true);
+                    return is_array($decoded) ? $decoded : [];
+                }
+                return [];
+            };
+
+            $buyerInviteInputs = $normalizeJson($request->input('buyer_invite_inputs'));
+            $buyerInviteConfirmations = $normalizeJson($request->input('buyer_invite_confirmations'));
+            $buyerInviteAvailability = $normalizeJson($request->input('buyer_invite_availability'));
+            $buyerInviteAccess = $normalizeJson($request->input('buyer_invite_access'));
+            $buyerInviteProofs = $normalizeJson($request->input('buyer_invite_proofs'));
+            $buyerInviteNotes = trim((string) $request->input('buyer_invite_notes'));
+
+            $confirmScope = filter_var($buyerInviteConfirmations['scope'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            $confirmDeadline = filter_var($buyerInviteConfirmations['deadline'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            $confirmTerms = filter_var($buyerInviteConfirmations['terms'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            if (! $confirmScope || ! $confirmDeadline || ! $confirmTerms) {
+                return response()->json(['message' => 'Confirme o escopo, prazo e termos da plataforma.'], 422);
+            }
+
+            $category = trim((string) $negotiation->category);
+            $getInput = static fn (string $key): string => trim((string) ($buyerInviteInputs[$key] ?? ''));
+
+            if ($category === self::GAME_ACCOUNT_CATEGORY) {
+                $confirmRecovery = filter_var($buyerInviteConfirmations['account_recovery'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                $confirmDesc = filter_var($buyerInviteConfirmations['description'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                $confirmProofs = filter_var($buyerInviteConfirmations['proofs'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                if (! $confirmRecovery || ! $confirmDesc || ! $confirmProofs) {
+                    return response()->json(['message' => 'Confirme a recuperação de conta, descrição e provas.'], 422);
+                }
+            }
+
+            if ($category === self::KEY_DLC_CATEGORY) {
+                $confirmPlatform = filter_var($buyerInviteConfirmations['platform_compatible'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                $confirmRegion = filter_var($buyerInviteConfirmations['region_compatible'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                if (! $confirmPlatform || ! $confirmRegion) {
+                    return response()->json(['message' => 'Confirme plataforma e região compatíveis.'], 422);
+                }
+            }
+
+            $rngRequired = false;
+            $rngFlag = strtolower($getInput('rng_has_chance'));
+            if ($rngFlag !== '') {
+                $rngRequired = in_array($rngFlag, ['sim', 'true', '1', 'yes'], true);
+            }
+            if ($category === self::SERVICE_COLLECTIBLES_CATEGORY && $rngRequired) {
+                $confirmRng = filter_var($buyerInviteConfirmations['rng'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                if (! $confirmRng) {
+                    return response()->json(['message' => 'Confirme a política de RNG antes de aceitar.'], 422);
+                }
+            }
+
+            if ($category === self::SERVICE_BOOST_RANK_CATEGORY) {
+                if ($getInput('rank_current_confirmed') === '' || $getInput('class_character') === '' || $getInput('availability') === '') {
+                    return response()->json(['message' => 'Preencha rank atual, classe/personagem e disponibilidade.'], 422);
+                }
+            }
+
+            if ($category === self::SERVICE_CARRY_PVE_CATEGORY) {
+                if ($getInput('class_role') === '' || $getInput('character_level') === '' || $getInput('experience') === '' || $getInput('availability') === '') {
+                    return response()->json(['message' => 'Preencha classe/role, nível, experiência e disponibilidade.'], 422);
+                }
+            }
+
+            if ($category === self::SERVICE_LEVELING_CATEGORY) {
+                if ($getInput('class_character') === '' || $getInput('availability') === '') {
+                    return response()->json(['message' => 'Preencha classe/personagem e disponibilidade.'], 422);
+                }
+            }
+
+            if ($category === self::SERVICE_COLLECTIBLES_CATEGORY) {
+                if ($getInput('already_have') === '' || $getInput('character_used') === '' || $getInput('availability') === '') {
+                    return response()->json(['message' => 'Preencha o que já possui, personagem usado e disponibilidade.'], 422);
+                }
+                if ($rngRequired && ($getInput('rng_attempts') === '' || $getInput('rng_policy') === '')) {
+                    return response()->json(['message' => 'Informe tentativas e política caso não drope.'], 422);
+                }
+            }
+
+            if ($category === self::SERVICE_SEASONAL_CATEGORY) {
+                if ($getInput('goals') === '' || $getInput('frequency') === '') {
+                    return response()->json(['message' => 'Preencha metas desejadas e frequência de jogo.'], 422);
+                }
+            }
+
+            if ($category === self::SERVICE_CUSTOM_CATEGORY) {
+                if ($getInput('objective_detail') === '' || $getInput('availability') === '') {
+                    return response()->json(['message' => 'Descreva o objetivo e informe disponibilidade.'], 422);
+                }
+            }
+
+            if ($category === self::SERVICE_EXCHANGE_CATEGORY) {
+                if ($getInput('offered_service') === '' || $getInput('availability') === '') {
+                    return response()->json(['message' => 'Informe o serviço oferecido e disponibilidade.'], 422);
+                }
+            }
+
+            $buyerInviteUpdates = [
+                'buyer_invite_inputs' => $buyerInviteInputs ?: null,
+                'buyer_invite_confirmations' => $buyerInviteConfirmations ?: null,
+                'buyer_invite_availability' => $buyerInviteAvailability ?: null,
+                'buyer_invite_access' => $buyerInviteAccess ?: null,
+                'buyer_invite_proofs' => $buyerInviteProofs ?: null,
+                'buyer_invite_notes' => $buyerInviteNotes !== '' ? $buyerInviteNotes : null,
+                'buyer_invite_submitted_at' => now(),
+            ];
+
             $becameBuyer = false;
             if (! $negotiation->buyer_id) {
                 $becameBuyer = true;
@@ -1659,7 +2106,7 @@ class IntermediationController extends Controller
                     'buyer_id' => $user->id,
                     'status' => 'awaiting_admin_approval',
                     'accepted_at' => now(),
-                ], $goldBuyerUpdates, $serviceBuyerUpdates));
+                ], $goldBuyerUpdates, $serviceBuyerUpdates, $buyerInviteUpdates));
 
                 AuditLogger::log($request, 'negotiation.accepted_by_buyer', $negotiation, [
                     'became_buyer' => true,
@@ -1672,7 +2119,7 @@ class IntermediationController extends Controller
                 $negotiation->update(array_merge([
                     'status' => 'awaiting_admin_approval',
                     'accepted_at' => now(),
-                ], $goldBuyerUpdates, $serviceBuyerUpdates));
+                ], $goldBuyerUpdates, $serviceBuyerUpdates, $buyerInviteUpdates));
 
                 AuditLogger::log($request, 'negotiation.accepted_by_buyer', $negotiation, [
                     'became_buyer' => $becameBuyer,
@@ -3127,6 +3574,17 @@ class IntermediationController extends Controller
             'rejection_reason' => $negotiation->rejection_reason,
             'buyer_rejection_reason' => $negotiation->buyer_rejection_reason,
             'buyer_rejection_details' => $negotiation->buyer_rejection_details,
+            'buyer_invite_inputs' => $negotiation->buyer_invite_inputs,
+            'buyer_invite_confirmations' => $negotiation->buyer_invite_confirmations,
+            'buyer_invite_availability' => $negotiation->buyer_invite_availability,
+            'buyer_invite_access' => $negotiation->buyer_invite_access,
+            'buyer_invite_proofs' => $negotiation->buyer_invite_proofs,
+            'buyer_invite_notes' => $negotiation->buyer_invite_notes,
+            'buyer_invite_submitted_at' => $this->toIso8601StringOrNull($negotiation->buyer_invite_submitted_at),
+            'buyer_request_changes' => $negotiation->buyer_request_changes,
+            'buyer_request_changes_at' => $this->toIso8601StringOrNull($negotiation->buyer_request_changes_at),
+            'buyer_report_reason' => $negotiation->buyer_report_reason,
+            'buyer_reported_at' => $this->toIso8601StringOrNull($negotiation->buyer_reported_at),
             'product_photos' => $productPhotos,
             'inspection_report' => $inspectionReport,
             'intermediary_checklist' => $checklist,

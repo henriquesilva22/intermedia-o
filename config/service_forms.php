@@ -39,8 +39,10 @@ return [
     'serviceGames' => [
         // Until now (plus "other" as free-text game)
         // Rules (fixed): only show games that support the service.
-        'boost_rank' => ['valorant', 'cs2', 'lol', 'wow'],
-        'carry_pve' => ['wow', 'ffxiv', 'diablo4', 'tibia'],
+        // Universal: ask for game title (free-text) instead of fixed game list.
+        'boost_rank' => ['other'],
+        // Universal: ask for game title (free-text) instead of fixed game list.
+        'carry_pve' => ['other'],
         'leveling' => ['wow', 'albion', 'tibia', 'ffxiv', 'diablo4'],
         'currency' => ['wow', 'albion', 'tibia', 'ffxiv'],
         'collectibles' => ['wow', 'ffxiv'],
@@ -57,7 +59,8 @@ return [
                 ['id' => 'rank_target', 'label' => 'Rank desejado', 'type' => 'text'],
                 ['id' => 'method', 'label' => 'Método', 'type' => 'select', 'options' => ['Duo', 'Acesso à conta']],
                 ['id' => 'wins_estimate', 'label' => 'Estimativa de vitórias', 'type' => 'number'],
-                ['id' => 'deadline', 'label' => 'Prazo', 'type' => 'text'],
+                ['id' => 'delivery_deadline', 'label' => 'Prazo para entrega', 'type' => 'text'],
+                ['id' => 'time_needed', 'label' => 'Tempo necessário para realizar', 'type' => 'text'],
                 ['id' => 'notes', 'label' => 'Observações', 'type' => 'textarea'],
             ],
             'cs2' => [
@@ -65,7 +68,8 @@ return [
                 ['id' => 'rank_target', 'label' => 'Rank desejado', 'type' => 'text'],
                 ['id' => 'prime', 'label' => 'Prime', 'type' => 'select', 'options' => ['Sim', 'Não']],
                 ['id' => 'method', 'label' => 'Método', 'type' => 'select', 'options' => ['Duo', 'Acesso à conta']],
-                ['id' => 'deadline', 'label' => 'Prazo', 'type' => 'text'],
+                ['id' => 'delivery_deadline', 'label' => 'Prazo para entrega', 'type' => 'text'],
+                ['id' => 'time_needed', 'label' => 'Tempo necessário para realizar', 'type' => 'text'],
                 ['id' => 'notes', 'label' => 'Observações', 'type' => 'textarea'],
             ],
             'lol' => [
@@ -73,7 +77,8 @@ return [
                 ['id' => 'elo_current', 'label' => 'Elo atual', 'type' => 'text'],
                 ['id' => 'elo_target', 'label' => 'Elo desejado', 'type' => 'text'],
                 ['id' => 'method', 'label' => 'Método', 'type' => 'select', 'options' => ['Duo', 'Acesso à conta']],
-                ['id' => 'deadline', 'label' => 'Prazo', 'type' => 'text'],
+                ['id' => 'delivery_deadline', 'label' => 'Prazo para entrega', 'type' => 'text'],
+                ['id' => 'time_needed', 'label' => 'Tempo necessário para realizar', 'type' => 'text'],
             ],
             'wow' => [
                 ['id' => 'region', 'label' => 'Região', 'type' => 'select', 'options' => []],
@@ -83,7 +88,8 @@ return [
                 ['id' => 'rating_target', 'label' => 'Rating desejado', 'type' => 'number'],
                 ['id' => 'class_spec', 'label' => 'Classe / Especialização', 'type' => 'text'],
                 ['id' => 'method', 'label' => 'Método', 'type' => 'select', 'options' => ['Duo', 'Acesso à conta']],
-                ['id' => 'deadline', 'label' => 'Prazo', 'type' => 'text'],
+                ['id' => 'delivery_deadline', 'label' => 'Prazo para entrega', 'type' => 'text'],
+                ['id' => 'time_needed', 'label' => 'Tempo necessário para realizar', 'type' => 'text'],
                 ['id' => 'notes', 'label' => 'Observações', 'type' => 'textarea'],
             ],
             'other' => [
@@ -93,39 +99,58 @@ return [
         ],
 
         'carry_pve' => [
-            'wow' => [
-                ['id' => 'content_type', 'label' => 'Tipo de conteúdo', 'type' => 'select', 'options' => ['Mythic+', 'Raid']],
-                ['id' => 'difficulty', 'label' => 'Dificuldade', 'type' => 'text'],
-                ['id' => 'runs_quantity', 'label' => 'Quantidade de runs', 'type' => 'number'],
-                ['id' => 'class', 'label' => 'Classe', 'type' => 'text'],
-                ['id' => 'region_server', 'label' => 'Região / Servidor', 'type' => 'text'],
-                ['id' => 'deadline', 'label' => 'Prazo', 'type' => 'text'],
-                ['id' => 'notes', 'label' => 'Observações', 'type' => 'textarea'],
-            ],
-            'ffxiv' => [
-                ['id' => 'data_center', 'label' => 'Data Center', 'type' => 'text'],
-                ['id' => 'content', 'label' => 'Conteúdo', 'type' => 'select', 'options' => ['Dungeon', 'Trial', 'Raid']],
-                ['id' => 'deadline', 'label' => 'Prazo', 'type' => 'text'],
-                ['id' => 'difficulty', 'label' => 'Dificuldade', 'type' => 'text'],
-                ['id' => 'quantity', 'label' => 'Quantidade', 'type' => 'number'],
-                ['id' => 'method', 'label' => 'Método', 'type' => 'text'],
-            ],
-            'tibia' => [
-                ['id' => 'world', 'label' => 'Mundo / Servidor', 'type' => 'text'],
-                ['id' => 'boss_or_quest', 'label' => 'Boss ou Quest', 'type' => 'text'],
-                ['id' => 'method', 'label' => 'Método', 'type' => 'text'],
-                ['id' => 'deadline', 'label' => 'Prazo', 'type' => 'text'],
-            ],
-            'diablo4' => [
-                ['id' => 'content', 'label' => 'Conteúdo', 'type' => 'select', 'options' => ['Dungeon', 'Boss']],
-                ['id' => 'tier', 'label' => 'Tier', 'type' => 'text'],
-                ['id' => 'quantity', 'label' => 'Quantidade', 'type' => 'number'],
-                ['id' => 'deadline', 'label' => 'Prazo', 'type' => 'text'],
-            ],
+            // Universal model (Modelo Final): use free-text game title.
             'other' => [
+                // 1) Identificação do Serviço
                 ['id' => 'game_other_name', 'label' => 'Nome do jogo', 'type' => 'text'],
-                ['id' => 'what', 'label' => 'O que será feito?', 'type' => 'textarea'],
-                ['id' => 'notes', 'label' => 'Observações', 'type' => 'textarea'],
+                ['id' => 'platform', 'label' => 'Plataforma', 'type' => 'text'],
+                ['id' => 'region_server', 'label' => 'Região / Servidor', 'type' => 'text'],
+
+                // 2) Definição do Conteúdo
+                ['id' => 'content_type', 'label' => 'Tipo de Conteúdo', 'type' => 'select', 'options' => ['Raid', 'Dungeon', 'Boss', 'Evento', 'Farm', 'Missão', 'Outro']],
+                ['id' => 'content_name', 'label' => 'Nome do Conteúdo', 'type' => 'text'],
+                ['id' => 'objective', 'label' => 'Objetivo do Serviço', 'type' => 'select', 'options' => ['Completar conteúdo', 'Farmar item', 'Conquista', 'Liberar conteúdo', 'Outro']],
+
+                // 3) Execução do Serviço
+                ['id' => 'difficulty', 'label' => 'Dificuldade', 'type' => 'text'],
+                ['id' => 'runs_count', 'label' => 'Quantidade de Runs', 'type' => 'number'],
+                ['id' => 'client_participation', 'label' => 'Cliente participa?', 'type' => 'select', 'options' => ['Sim', 'Não']],
+                ['id' => 'client_class_build', 'label' => 'Classe / Build', 'type' => 'text'],
+                ['id' => 'client_group_role', 'label' => 'Função no grupo', 'type' => 'text'],
+
+                // 4) Pontuação / Score (opcional)
+                ['id' => 'score_has_system', 'label' => 'Conta possui sistema de pontuação?', 'type' => 'select', 'options' => ['Sim', 'Não', 'Não sei']],
+                ['id' => 'score_current', 'label' => 'Pontuação atual do cliente', 'type' => 'number'],
+                ['id' => 'score_target', 'label' => 'Pontuação desejada', 'type' => 'number'],
+                ['id' => 'score_type', 'label' => 'Tipo de pontuação', 'type' => 'text'],
+
+                // 5) Disponibilidade e Prazo
+                // Disponibilidade: 1 slot principal + até 2 adicionais (máx 3)
+                ['id' => 'slot1_date', 'label' => 'Data (principal)', 'type' => 'text'],
+                ['id' => 'slot1_time', 'label' => 'Hora (principal)', 'type' => 'text'],
+                ['id' => 'slot2_date', 'label' => 'Data (opcional)', 'type' => 'text'],
+                ['id' => 'slot2_time', 'label' => 'Hora (opcional)', 'type' => 'text'],
+                ['id' => 'slot3_date', 'label' => 'Data (opcional)', 'type' => 'text'],
+                ['id' => 'slot3_time', 'label' => 'Hora (opcional)', 'type' => 'text'],
+                ['id' => 'preferred_slot', 'label' => 'Horário principal', 'type' => 'select', 'options' => ['1', '2', '3']],
+
+                ['id' => 'delivery_deadline', 'label' => 'Prazo para entrega', 'type' => 'text'],
+                ['id' => 'time_needed', 'label' => 'Tempo necessário para realizar', 'type' => 'text'],
+
+                // 6) Forma de Execução
+                ['id' => 'execution_method', 'label' => 'Como será feito', 'type' => 'select', 'options' => ['Cliente joga junto', 'Booster joga', 'Misto']],
+                ['id' => 'needs_account_access', 'label' => 'Necessita acesso à conta?', 'type' => 'select', 'options' => ['Sim', 'Não']],
+                ['id' => 'warranty', 'label' => 'Possui garantia?', 'type' => 'select', 'options' => ['Sim', 'Não']],
+
+                // 7) Recompensas Esperadas
+                ['id' => 'reward_main', 'label' => 'Recompensa principal', 'type' => 'text'],
+                // RNG removido (não necessário)
+
+                // 8) Provas
+                ['id' => 'proofs', 'label' => 'Provas', 'type' => 'select', 'options' => ['Screenshot', 'Vídeo', 'Stream', 'Log', 'Nenhum']],
+
+                // 9) Observações
+                ['id' => 'notes', 'label' => 'Observações Gerais', 'type' => 'textarea'],
             ],
         ],
 

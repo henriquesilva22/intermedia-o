@@ -26,12 +26,11 @@
       payload.successMessage = null;
     }
     setState(payload);
-    if (type !== 'error') {
-      toastTimer = setTimeout(() => {
-        setState({ toast: null, successMessage: null });
-        toastTimer = null;
-      }, 4000);
-    }
+    const timeout = type === 'error' ? 3500 : 4000;
+    toastTimer = setTimeout(() => {
+      setState({ toast: null, successMessage: null, errorMessage: null });
+      toastTimer = null;
+    }, timeout);
   }
 
   function handleError(error, fallbackMessage = 'Ocorreu um erro. Tente novamente.') {
@@ -1607,7 +1606,6 @@
           sellerFeeMode: 'deduct',
           deliveryDays: '',
           digitalGame: '',
-          digitalCurrencyType: '',
           digitalQuantity: '',
           digitalPlatformServer: '',
           digitalDeliveryMethod: '',
@@ -1648,7 +1646,6 @@
           sellerFeeMode: 'deduct',
           deliveryDays: '',
           digitalGame: '',
-          digitalCurrencyType: '',
           digitalQuantity: '',
           digitalPlatformServer: '',
           digitalDeliveryMethod: '',
@@ -1776,7 +1773,8 @@
       if (step === 3) {
         const category = String(state.createNegForm?.category || '').trim();
         const isService = isServiceTaxonomyCategory(category) || category === CATEGORY_SERVICE;
-        if (isService) {
+        const requiresSchedule = isService && category !== CATEGORY_BOOST_RANK;
+        if (requiresSchedule) {
           try {
             const form = document.querySelector('form[data-action="createNegotiation"]');
             if (form instanceof HTMLFormElement) {
@@ -1992,7 +1990,6 @@
       const shouldTitleCase = [
         'title',
         'digitalGame',
-        'digitalCurrencyType',
         'digitalPlatformServer',
       ].includes(field);
       if (shouldTitleCase) {
@@ -2026,7 +2023,7 @@
         return;
       }
 
-      // Quantity (currency): format as pt-BR "1.000,00" while typing; store raw formatted string.
+      // Quantity: format as pt-BR "1.000,00" while typing; store raw formatted string.
       if (field === 'digitalQuantity') {
         const digits = String(value || '').replace(/\D/g, '');
         if (!digits) {
@@ -2087,9 +2084,19 @@
           nextForm.serviceId = sid;
           nextForm.service_id = sid;
           if (!prevWasServiceTax || prevCategory !== nextCategory) {
-            nextForm.gameId = '';
-            nextForm.game_id = '';
+            // Carry PvE + Boost Rank are universal: no game select step; store as game_id='other' + typed game title.
+            if (nextCategory === CATEGORY_CARRY_PVE || nextCategory === CATEGORY_BOOST_RANK) {
+              nextForm.gameId = 'other';
+              nextForm.game_id = 'other';
+            } else {
+              nextForm.gameId = '';
+              nextForm.game_id = '';
+            }
             nextForm.serviceFields = {};
+
+            // Slots UI state (per-service)
+            if (nextCategory === CATEGORY_BOOST_RANK) nextForm._uiBoostRankSlotCount = 1;
+            if (nextCategory === CATEGORY_CARRY_PVE) nextForm._uiCarryPveSlotCount = 1;
           }
         } else if (prevWasServiceTax) {
           nextForm.serviceId = '';
@@ -2203,6 +2210,149 @@
       }
     },
 
+    carryPveAddSlot() {
+      if (!state.showCreateNegotiationModal) return;
+      try {
+        const category = String(state.createNegForm?.category || '').trim();
+        if (category !== CATEGORY_CARRY_PVE) return;
+        const current = Number(state.createNegForm?._uiCarryPveSlotCount) || 1;
+        const next = Math.max(1, Math.min(3, current + 1));
+        state.createNegForm = { ...(state.createNegForm || {}), _uiCarryPveSlotCount: next };
+        updateCreateNegotiationModalDynamicUI();
+      } catch {
+        // ignore
+      }
+    },
+
+    carryPveRemoveSlot({ dataset }) {
+      if (!state.showCreateNegotiationModal) return;
+      try {
+        const category = String(state.createNegForm?.category || '').trim();
+        if (category !== CATEGORY_CARRY_PVE) return;
+        const idx = Number(dataset?.index) || 0;
+        if (![2, 3].includes(idx)) return;
+
+        const fields = (state.createNegForm?.serviceFields && typeof state.createNegForm.serviceFields === 'object')
+          ? state.createNegForm.serviceFields
+          : {};
+
+        const nextFields = { ...fields };
+
+        if (idx === 2) {
+          // Keep options contiguous: if slot3 exists, move it into slot2.
+          const s3d = String(nextFields.slot3_date || '').trim();
+          const s3t = String(nextFields.slot3_time || '').trim();
+          if (s3d || s3t) {
+            nextFields.slot2_date = s3d;
+            nextFields.slot2_time = s3t;
+          } else {
+            delete nextFields.slot2_date;
+            delete nextFields.slot2_time;
+          }
+          delete nextFields.slot3_date;
+          delete nextFields.slot3_time;
+        } else {
+          delete nextFields.slot3_date;
+          delete nextFields.slot3_time;
+        }
+
+        // Normalize preferred slot if it points to a removed option.
+        const preferred = String(nextFields.preferred_slot || '').trim();
+        if (idx === 3 && preferred === '3') {
+          delete nextFields.preferred_slot;
+        }
+        if (idx === 2) {
+          // If user preferred slot2 and we moved slot3->slot2, keep it as '2'.
+          // If user preferred slot3, it becomes '2'.
+          if (preferred === '3') nextFields.preferred_slot = '2';
+          if (preferred === '2' && !(String(nextFields.slot2_date || '').trim() || String(nextFields.slot2_time || '').trim())) {
+            delete nextFields.preferred_slot;
+          }
+        }
+
+        const currentCount = Number(state.createNegForm?._uiCarryPveSlotCount) || 1;
+        const nextCount = Math.max(1, Math.min(3, currentCount - 1));
+
+        state.createNegForm = {
+          ...(state.createNegForm || {}),
+          _uiCarryPveSlotCount: nextCount,
+          serviceFields: nextFields,
+        };
+        updateCreateNegotiationModalDynamicUI();
+      } catch {
+        // ignore
+      }
+    },
+
+    boostRankAddSlot() {
+      if (!state.showCreateNegotiationModal) return;
+      try {
+        const category = String(state.createNegForm?.category || '').trim();
+        if (category !== CATEGORY_BOOST_RANK) return;
+        const current = Number(state.createNegForm?._uiBoostRankSlotCount) || 1;
+        const next = Math.max(1, Math.min(3, current + 1));
+        state.createNegForm = { ...(state.createNegForm || {}), _uiBoostRankSlotCount: next };
+        updateCreateNegotiationModalDynamicUI();
+      } catch {
+        // ignore
+      }
+    },
+
+    boostRankRemoveSlot({ dataset }) {
+      if (!state.showCreateNegotiationModal) return;
+      try {
+        const category = String(state.createNegForm?.category || '').trim();
+        if (category !== CATEGORY_BOOST_RANK) return;
+        const idx = Number(dataset?.index) || 0;
+        if (![2, 3].includes(idx)) return;
+
+        const fields = (state.createNegForm?.serviceFields && typeof state.createNegForm.serviceFields === 'object')
+          ? state.createNegForm.serviceFields
+          : {};
+        const nextFields = { ...fields };
+
+        if (idx === 2) {
+          const s3d = String(nextFields.slot3_date || '').trim();
+          const s3t = String(nextFields.slot3_time || '').trim();
+          if (s3d || s3t) {
+            nextFields.slot2_date = s3d;
+            nextFields.slot2_time = s3t;
+          } else {
+            delete nextFields.slot2_date;
+            delete nextFields.slot2_time;
+          }
+          delete nextFields.slot3_date;
+          delete nextFields.slot3_time;
+        } else {
+          delete nextFields.slot3_date;
+          delete nextFields.slot3_time;
+        }
+
+        const preferred = String(nextFields.preferred_slot || '').trim();
+        if (idx === 3 && preferred === '3') {
+          delete nextFields.preferred_slot;
+        }
+        if (idx === 2) {
+          if (preferred === '3') nextFields.preferred_slot = '2';
+          if (preferred === '2' && !(String(nextFields.slot2_date || '').trim() || String(nextFields.slot2_time || '').trim())) {
+            delete nextFields.preferred_slot;
+          }
+        }
+
+        const currentCount = Number(state.createNegForm?._uiBoostRankSlotCount) || 1;
+        const nextCount = Math.max(1, Math.min(3, currentCount - 1));
+
+        state.createNegForm = {
+          ...(state.createNegForm || {}),
+          _uiBoostRankSlotCount: nextCount,
+          serviceFields: nextFields,
+        };
+        updateCreateNegotiationModalDynamicUI();
+      } catch {
+        // ignore
+      }
+    },
+
     updateCreateServiceId({ element }) {
       const serviceId = element && typeof element.value !== 'undefined' ? String(element.value ?? '') : '';
       state.createNegForm = {
@@ -2230,7 +2380,14 @@
     updateCreateServiceField({ element, dataset }) {
       const fieldId = String(dataset?.fieldId || dataset?.field_id || '').trim();
       if (!fieldId) return;
-      const value = element && typeof element.value !== 'undefined' ? String(element.value ?? '') : '';
+      let value = element && typeof element.value !== 'undefined' ? String(element.value ?? '') : '';
+      try {
+        if (element instanceof HTMLInputElement && element.type === 'checkbox') {
+          value = element.checked ? String(element.value ?? '1') : '';
+        }
+      } catch {
+        // ignore
+      }
       const current = (state.createNegForm?.serviceFields && typeof state.createNegForm.serviceFields === 'object') ? state.createNegForm.serviceFields : {};
       state.createNegForm = {
         ...(state.createNegForm || {}),
@@ -2239,6 +2396,49 @@
           [fieldId]: value,
         }
       };
+
+      // Carry PvE has conditional UI (participation, RNG, account access) + optional score accordion.
+      // Re-render only for fields that change visibility of other inputs.
+      try {
+        const category = String(state.createNegForm?.category || '').trim();
+        if (category === CATEGORY_CARRY_PVE) {
+          const rerenderKeys = new Set([
+            'client_participation',
+            'score_has_system',
+            'needs_account_access',
+            'preferred_slot',
+          ]);
+          if (rerenderKeys.has(fieldId)) {
+            updateCreateNegotiationModalDynamicUI();
+          }
+        }
+
+        if (category === CATEGORY_BOOST_RANK) {
+          const rerenderKeys = new Set([
+            'needs_account_access',
+            'downgrade_risk',
+            'preferred_slot',
+          ]);
+          if (rerenderKeys.has(fieldId)) {
+            updateCreateNegotiationModalDynamicUI();
+          }
+        }
+
+        if ([CATEGORY_CUSTOM_SERVICE, CATEGORY_SEASONAL, CATEGORY_COLLECTIBLES].includes(category)) {
+          const rerenderKeys = new Set([
+            'has_numeric_goal',
+            'needs_account_access',
+            'known_risk',
+            'rng_has_chance',
+            'desired_deadline',
+          ]);
+          if (rerenderKeys.has(fieldId)) {
+            updateCreateNegotiationModalDynamicUI();
+          }
+        }
+      } catch {
+        // ignore
+      }
     },
     async searchBuyer({ element }) {
       const raw = String(state.createNegForm.buyerTag || '').trim();
@@ -2534,14 +2734,17 @@
         };
       }
 
+      let serviceId = '';
+      let gameId = '';
+
       if (!isServiceProductFlow) {
         if (!values.title?.trim()) {
           notify({ type: 'error', message: 'Informe o título do produto.' });
           return;
         }
       } else {
-        const serviceId = String(values.service_id || state.createNegForm?.serviceId || state.createNegForm?.service_id || '').trim();
-        const gameId = String(values.game_id || state.createNegForm?.gameId || state.createNegForm?.game_id || '').trim();
+        serviceId = String(values.service_id || state.createNegForm?.serviceId || state.createNegForm?.service_id || '').trim();
+        gameId = String(values.game_id || state.createNegForm?.gameId || state.createNegForm?.game_id || '').trim();
         if (!serviceId) {
           notify({ type: 'error', message: 'Selecione o serviço.' });
           return;
@@ -2576,10 +2779,6 @@
           notify({ type: 'error', message: 'Informe o jogo.' });
           return;
         }
-        if (!values.digital_currency_type?.trim()) {
-          notify({ type: 'error', message: 'Informe o tipo de moeda.' });
-          return;
-        }
         const qty = parsePtBrToIntUnits(values.digital_quantity);
         if (!qty || qty < 1) {
           notify({ type: 'error', message: 'Informe a quantidade da moeda.' });
@@ -2611,34 +2810,112 @@
       }
 
       if (isService) {
+        const serviceFields = (state.createNegForm?.serviceFields && typeof state.createNegForm.serviceFields === 'object')
+          ? state.createNegForm.serviceFields
+          : {};
+        const sf = (key) => String(serviceFields?.[key] ?? '').trim();
+
+        if (serviceId === 'custom') {
+          if (!sf('game_name')) {
+            notify({ type: 'error', message: 'Informe o nome do jogo.' });
+            return;
+          }
+          if (!sf('objective_what')) {
+            notify({ type: 'error', message: 'Descreva o que deseja que seja feito.' });
+            return;
+          }
+          if (!sf('objective_expected')) {
+            notify({ type: 'error', message: 'Informe o resultado esperado.' });
+            return;
+          }
+          if (!sf('execution_method')) {
+            notify({ type: 'error', message: 'Selecione a forma do serviço.' });
+            return;
+          }
+          if (sf('has_numeric_goal') === 'Sim') {
+            if (!sf('numeric_goal_desc') || !sf('numeric_goal_value')) {
+              notify({ type: 'error', message: 'Preencha a descrição e o valor da meta numérica.' });
+              return;
+            }
+          }
+        }
+
+        if (serviceId === 'seasonal') {
+          if (!sf('game_name')) {
+            notify({ type: 'error', message: 'Informe o nome do jogo.' });
+            return;
+          }
+          if (!sf('season_name')) {
+            notify({ type: 'error', message: 'Informe o nome ou número da temporada.' });
+            return;
+          }
+          if (!sf('season_type')) {
+            notify({ type: 'error', message: 'Selecione o tipo de temporada.' });
+            return;
+          }
+          if (!sf('reward_desired')) {
+            notify({ type: 'error', message: 'Informe a recompensa desejada.' });
+            return;
+          }
+          if (!sf('execution_method')) {
+            notify({ type: 'error', message: 'Selecione a forma do serviço.' });
+            return;
+          }
+        }
+
+        if (serviceId === 'collectibles') {
+          if (!sf('game_name')) {
+            notify({ type: 'error', message: 'Informe o nome do jogo.' });
+            return;
+          }
+          if (!sf('collectible_type')) {
+            notify({ type: 'error', message: 'Selecione o tipo de colecionável.' });
+            return;
+          }
+          if (!sf('item_name')) {
+            notify({ type: 'error', message: 'Informe o nome do item ou conquista.' });
+            return;
+          }
+          if (sf('rng_has_chance') === 'Sim') {
+            if (!sf('rng_attempts') || !sf('rng_policy')) {
+              notify({ type: 'error', message: 'Informe as tentativas e a política caso não drope.' });
+              return;
+            }
+          }
+        }
+
         const days = parseInt(values.delivery_days || '', 10);
         if (!days || days < 1 || days > DIGITAL_SERVICE_DELIVERY_MAX_DAYS) {
           notify({ type: 'error', message: `Selecione um prazo de entrega de 1 a ${DIGITAL_SERVICE_DELIVERY_MAX_DAYS} dias.` });
           return;
         }
 
-        const rawDates = values['service_seller_start_date_options[]'] ?? values.service_seller_start_date_options;
-        const dates = normalizeDateOptions(rawDates, 3);
-        if (!dates.length) {
-          notify({ type: 'error', message: 'Informe pelo menos 1 data de início (até 3).' });
-          return;
-        }
+        const flexibleCategories = [CATEGORY_CUSTOM_SERVICE, CATEGORY_SEASONAL, CATEGORY_COLLECTIBLES];
+        const isFlexibleService = flexibleCategories.includes(category);
+        if (!isFlexibleService) {
+          const rawDates = values['service_seller_start_date_options[]'] ?? values.service_seller_start_date_options;
+          const dates = normalizeDateOptions(rawDates, 3);
+          if (!dates.length) {
+            notify({ type: 'error', message: 'Informe pelo menos 1 data de início (até 3).' });
+            return;
+          }
 
-        const startsRaw = values['service_seller_time_range_start[]'] ?? values.service_seller_time_range_start;
-        const endsRaw = values['service_seller_time_range_end[]'] ?? values.service_seller_time_range_end;
-        const starts = Array.isArray(startsRaw) ? startsRaw : (startsRaw ? [startsRaw] : []);
-        const ends = Array.isArray(endsRaw) ? endsRaw : (endsRaw ? [endsRaw] : []);
-        const ranges = [];
-        for (let i = 0; i < Math.max(starts.length, ends.length); i += 1) {
-          const a = String(starts[i] || '').trim();
-          const b = String(ends[i] || '').trim();
-          if (!a || !b) continue;
-          ranges.push(`${a}-${b}`);
-        }
-        const normalizedRanges = normalizeTimeRangeOptions(ranges, 3);
-        if (!normalizedRanges.length) {
-          notify({ type: 'error', message: 'Informe pelo menos 1 intervalo de horário (início/fim), máx 3.' });
-          return;
+          const startsRaw = values['service_seller_time_range_start[]'] ?? values.service_seller_time_range_start;
+          const endsRaw = values['service_seller_time_range_end[]'] ?? values.service_seller_time_range_end;
+          const starts = Array.isArray(startsRaw) ? startsRaw : (startsRaw ? [startsRaw] : []);
+          const ends = Array.isArray(endsRaw) ? endsRaw : (endsRaw ? [endsRaw] : []);
+          const ranges = [];
+          for (let i = 0; i < Math.max(starts.length, ends.length); i += 1) {
+            const a = String(starts[i] || '').trim();
+            const b = String(ends[i] || '').trim();
+            if (!a || !b) continue;
+            ranges.push(`${a}-${b}`);
+          }
+          const normalizedRanges = normalizeTimeRangeOptions(ranges, 3);
+          if (!normalizedRanges.length) {
+            notify({ type: 'error', message: 'Informe pelo menos 1 intervalo de horário (início/fim), máx 3.' });
+            return;
+          }
         }
       }
 
@@ -2841,7 +3118,6 @@
 
         if (isCurrency) {
           formData.append('digital_game', values.digital_game.trim());
-          formData.append('digital_currency_type', values.digital_currency_type.trim());
           formData.append('digital_quantity', String(parsePtBrToIntUnits(values.digital_quantity)));
           formData.append('digital_platform_server', values.digital_platform_server.trim());
           formData.append('digital_delivery_method', values.digital_delivery_method);
@@ -3006,7 +3282,6 @@
             sellerFeeMode: 'deduct',
             deliveryDays: '',
             digitalGame: '',
-            digitalCurrencyType: '',
             digitalQuantity: '',
             digitalPlatformServer: '',
             digitalDeliveryMethod: '',
@@ -3296,6 +3571,7 @@
       if (!id) return;
 
       const hasValues = values && typeof values === 'object';
+      const toBool = (value) => ['1', 'true', 'on', 'sim', 'yes'].includes(String(value || '').trim().toLowerCase());
 
       const resolveNegotiation = async () => {
         if (state.currentNegotiation && Number(state.currentNegotiation.id) === id) {
@@ -3323,6 +3599,16 @@
 
       const isCurrencyCategory = category === CATEGORY_CURRENCY;
       const isServiceCategory = isServiceTaxonomyCategory(category) || category === CATEGORY_SERVICE;
+      const requiresServiceSchedule = isServiceScheduleCategory(category);
+      const isAccountCategory = category === CATEGORY_GAME_ACCOUNT;
+      const isKeyDlcCategory = category === CATEGORY_KEY_DLC;
+      const isBoostRankCategory = category === CATEGORY_BOOST_RANK;
+      const isCarryPveCategory = category === CATEGORY_CARRY_PVE;
+      const isLevelingCategory = category === CATEGORY_LEVELING;
+      const isCollectiblesCategory = category === CATEGORY_COLLECTIBLES;
+      const isSeasonalCategory = category === CATEGORY_SEASONAL;
+      const isCustomCategory = category === CATEGORY_CUSTOM_SERVICE;
+      const isServiceExchangeCategory = category === CATEGORY_SERVICE_EXCHANGE;
 
       if (!hasValues) {
         // If the user clicked "accept" from a list/card (no form), some categories
@@ -3332,38 +3618,63 @@
           notify({ type: 'error', message: 'Para aceitar, preencha os dados (personagem/servidor/facção) e selecione um horário no detalhe da negociação.' });
           return;
         }
-        if (isServiceCategory) {
+        if (isServiceCategory && requiresServiceSchedule) {
           openNegotiationDetail(id);
           notify({ type: 'error', message: 'Para aceitar, selecione a data de início e o intervalo de horário no detalhe da negociação.' });
           return;
         }
 
-        if (!confirm('Confirma que deseja aceitar esta negociação?')) return;
+        openNegotiationDetail(id);
+        notify({ type: 'error', message: 'Para aceitar, revise o resumo e confirme as informações obrigatórias no detalhe da negociação.' });
+        return;
       }
 
       const buyerTimes = (hasValues && isCurrencyCategory)
         ? normalizeTimes(values['gold_buyer_time_options[]'] ?? values.gold_buyer_time_options)
         : [];
 
-      const payload = (() => {
+      const extractPrefixed = (prefix) => {
         if (!hasValues) return {};
-        if (isCurrencyCategory) {
-          return {
-            gold_buyer_character_name: toTitleCasePtBr(String(values.gold_buyer_character_name || '').trim()),
-            gold_buyer_server: toTitleCasePtBr(String(values.gold_buyer_server || '').trim()),
-            gold_buyer_faction: toTitleCasePtBr(String(values.gold_buyer_faction || '').trim()),
-            gold_buyer_notes: String(values.gold_buyer_notes || '').trim() || null,
-            gold_buyer_time_options: buyerTimes,
-          };
-        }
-        if (isServiceCategory) {
-          return {
-            service_buyer_selected_start_date: String(values.service_buyer_selected_start_date || '').trim(),
-            service_buyer_selected_time_range: String(values.service_buyer_selected_time_range || '').trim(),
-          };
-        }
-        return {};
-      })();
+        const output = {};
+        const prefixKey = `${prefix}[`;
+        Object.entries(values).forEach(([key, value]) => {
+          if (!key.startsWith(prefixKey) || !key.endsWith(']')) return;
+          const inner = key.slice(prefixKey.length, -1);
+          if (!inner) return;
+          output[inner] = Array.isArray(value)
+            ? value.map((v) => String(v || '').trim()).filter(Boolean)
+            : String(value || '').trim();
+        });
+        return output;
+      };
+
+      const buyerInviteInputs = extractPrefixed('buyer_invite_inputs');
+      const buyerInviteConfirmations = extractPrefixed('buyer_invite_confirmations');
+      const buyerInviteAvailability = extractPrefixed('buyer_invite_availability');
+      const buyerInviteAccess = extractPrefixed('buyer_invite_access');
+      const buyerInviteProofs = extractPrefixed('buyer_invite_proofs');
+      const buyerInviteNotes = hasValues ? String(values.buyer_invite_notes || '').trim() : '';
+
+      const payload = {};
+      if (hasValues && isCurrencyCategory) {
+        payload.gold_buyer_character_name = toTitleCasePtBr(String(values.gold_buyer_character_name || '').trim());
+        payload.gold_buyer_server = toTitleCasePtBr(String(values.gold_buyer_server || '').trim());
+        payload.gold_buyer_faction = toTitleCasePtBr(String(values.gold_buyer_faction || '').trim());
+        payload.gold_buyer_notes = String(values.gold_buyer_notes || '').trim() || null;
+        payload.gold_buyer_time_options = buyerTimes;
+      }
+      if (hasValues && isServiceCategory && requiresServiceSchedule) {
+        payload.service_buyer_selected_start_date = String(values.service_buyer_selected_start_date || '').trim();
+        payload.service_buyer_selected_time_range = String(values.service_buyer_selected_time_range || '').trim();
+      }
+      if (hasValues) {
+        payload.buyer_invite_inputs = buyerInviteInputs;
+        payload.buyer_invite_confirmations = buyerInviteConfirmations;
+        if (Object.keys(buyerInviteAvailability).length) payload.buyer_invite_availability = buyerInviteAvailability;
+        if (Object.keys(buyerInviteAccess).length) payload.buyer_invite_access = buyerInviteAccess;
+        if (Object.keys(buyerInviteProofs).length) payload.buyer_invite_proofs = buyerInviteProofs;
+        if (buyerInviteNotes) payload.buyer_invite_notes = buyerInviteNotes;
+      }
 
       if (hasValues && isCurrencyCategory) {
         if (!payload.gold_buyer_character_name) {
@@ -3390,7 +3701,7 @@
 
       // If the buyer didn't select a seller time, treat as a suggestion via buyer time options/notes.
 
-      if (hasValues && isServiceCategory) {
+      if (hasValues && isServiceCategory && requiresServiceSchedule) {
         if (!payload.service_buyer_selected_start_date) {
           notify({ type: 'error', message: 'Escolha 1 data de início.' });
           return;
@@ -3398,6 +3709,90 @@
         if (!payload.service_buyer_selected_time_range) {
           notify({ type: 'error', message: 'Escolha 1 intervalo de horário.' });
           return;
+        }
+      }
+
+      if (hasValues) {
+        const confirmScope = toBool(buyerInviteConfirmations.scope);
+        const confirmDeadline = toBool(buyerInviteConfirmations.deadline);
+        const confirmTerms = toBool(buyerInviteConfirmations.terms);
+        if (!confirmScope || !confirmDeadline || !confirmTerms) {
+          notify({ type: 'error', message: 'Confirme o escopo, prazo e termos da plataforma.' });
+          return;
+        }
+
+        if (isAccountCategory) {
+          if (!toBool(buyerInviteConfirmations.account_recovery) || !toBool(buyerInviteConfirmations.description) || !toBool(buyerInviteConfirmations.proofs)) {
+            notify({ type: 'error', message: 'Confirme recuperação de conta, descrição e provas.' });
+            return;
+          }
+        }
+
+        if (isKeyDlcCategory) {
+          if (!toBool(buyerInviteConfirmations.platform_compatible) || !toBool(buyerInviteConfirmations.region_compatible)) {
+            notify({ type: 'error', message: 'Confirme plataforma e região compatíveis.' });
+            return;
+          }
+        }
+
+        const getBuyerInput = (key) => String(buyerInviteInputs[key] || '').trim();
+        const rngHasChance = ['sim', 'true', '1', 'yes'].includes(String(buyerInviteInputs.rng_has_chance || '').toLowerCase());
+
+        if (isBoostRankCategory) {
+          if (!getBuyerInput('rank_current_confirmed') || !getBuyerInput('class_character') || !getBuyerInput('availability')) {
+            notify({ type: 'error', message: 'Preencha rank atual, classe/personagem e disponibilidade.' });
+            return;
+          }
+        }
+
+        if (isCarryPveCategory) {
+          if (!getBuyerInput('class_role') || !getBuyerInput('character_level') || !getBuyerInput('experience') || !getBuyerInput('availability')) {
+            notify({ type: 'error', message: 'Preencha classe/role, nível, experiência e disponibilidade.' });
+            return;
+          }
+        }
+
+        if (isLevelingCategory) {
+          if (!getBuyerInput('class_character') || !getBuyerInput('availability')) {
+            notify({ type: 'error', message: 'Preencha classe/personagem e disponibilidade.' });
+            return;
+          }
+        }
+
+        if (isCollectiblesCategory) {
+          if (!getBuyerInput('already_have') || !getBuyerInput('character_used') || !getBuyerInput('availability')) {
+            notify({ type: 'error', message: 'Preencha o que já possui, personagem usado e disponibilidade.' });
+            return;
+          }
+          if (rngHasChance && (!getBuyerInput('rng_attempts') || !getBuyerInput('rng_policy'))) {
+            notify({ type: 'error', message: 'Informe tentativas e política caso não drope.' });
+            return;
+          }
+          if (rngHasChance && !toBool(buyerInviteConfirmations.rng)) {
+            notify({ type: 'error', message: 'Confirme a política de RNG.' });
+            return;
+          }
+        }
+
+        if (isSeasonalCategory) {
+          if (!getBuyerInput('goals') || !getBuyerInput('frequency')) {
+            notify({ type: 'error', message: 'Preencha metas desejadas e frequência de jogo.' });
+            return;
+          }
+        }
+
+        if (isCustomCategory) {
+          if (!getBuyerInput('objective_detail') || !getBuyerInput('availability')) {
+            notify({ type: 'error', message: 'Descreva o objetivo e informe disponibilidade.' });
+            return;
+          }
+        }
+
+        if (isServiceExchangeCategory) {
+          if (!getBuyerInput('offered_service') || !getBuyerInput('availability')) {
+            notify({ type: 'error', message: 'Informe o serviço oferecido e disponibilidade.' });
+            return;
+          }
         }
       }
 

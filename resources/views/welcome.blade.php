@@ -134,10 +134,10 @@
         <noscript>Habilite o JavaScript para utilizar o sistema de intermediação.</noscript>
         <div id="app"></div>
     </div>
-    <script src="{{ asset('app/sp-cities.js') }}" defer></script>
+    <script src="{{ asset('app/sp-cities.js') }}?v={{ @filemtime(public_path('app/sp-cities.js')) }}" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" defer></script>
-    <script src="{{ asset('app/app.part1.js') }}" defer></script>
-    <script src="{{ asset('app/app.part2.js') }}" defer></script>
-    <script src="{{ asset('app/app.part3.js') }}" defer></script>
+    <script src="{{ asset('app/app.part1.js') }}?v={{ @filemtime(public_path('app/app.part1.js')) }}" defer></script>
+    <script src="{{ asset('app/app.part2.js') }}?v={{ @filemtime(public_path('app/app.part2.js')) }}" defer></script>
+    <script src="{{ asset('app/app.part3.js') }}?v={{ @filemtime(public_path('app/app.part3.js')) }}" defer></script>
 </body>
 </html>

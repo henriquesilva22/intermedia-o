@@ -21,8 +21,7 @@
     'Boost de Rank',
     'Carry de Conteúdo (PvE)',
     'Leveling',
-    'Venda de Moeda',
-    'Conquistas / Colecionáveis',
+    'Conquistas e Colecionáveis',
     'Serviço de Temporada',
     'Serviço Personalizado',
     'Troca de serviço',
@@ -40,8 +39,7 @@
     'Boost de Rank',
     'Carry de Conteúdo (PvE)',
     'Leveling',
-    'Venda de Moeda',
-    'Conquistas / Colecionáveis',
+    'Conquistas e Colecionáveis',
     'Serviço de Temporada',
     'Serviço Personalizado',
     'Troca de serviço'
@@ -62,8 +60,7 @@
   const CATEGORY_BOOST_RANK = 'Boost de Rank';
   const CATEGORY_CARRY_PVE = 'Carry de Conteúdo (PvE)';
   const CATEGORY_LEVELING = 'Leveling';
-  const CATEGORY_SERVICE_CURRENCY = 'Venda de Moeda';
-  const CATEGORY_COLLECTIBLES = 'Conquistas / Colecionáveis';
+  const CATEGORY_COLLECTIBLES = 'Conquistas e Colecionáveis';
   const CATEGORY_SEASONAL = 'Serviço de Temporada';
   const CATEGORY_CUSTOM_SERVICE = 'Serviço Personalizado';
 
@@ -78,7 +75,6 @@
     [CATEGORY_BOOST_RANK]: 'boost_rank',
     [CATEGORY_CARRY_PVE]: 'carry_pve',
     [CATEGORY_LEVELING]: 'leveling',
-    [CATEGORY_SERVICE_CURRENCY]: 'currency',
     [CATEGORY_COLLECTIBLES]: 'collectibles',
     [CATEGORY_SEASONAL]: 'seasonal',
     [CATEGORY_CUSTOM_SERVICE]: 'custom',
@@ -93,6 +89,14 @@
     const c = String(category || '').trim();
     // Service product flow = category implies service_id + game + dynamic fields.
     // "Troca de serviço" is a separate category (no dynamic service form).
+    return isServiceTaxonomyCategory(c) || c === CATEGORY_SERVICE;
+  }
+
+  function isServiceScheduleCategory(category) {
+    const c = String(category || '').trim();
+    if (c === CATEGORY_CUSTOM_SERVICE || c === CATEGORY_SEASONAL || c === CATEGORY_COLLECTIBLES) {
+      return false;
+    }
     return isServiceTaxonomyCategory(c) || c === CATEGORY_SERVICE;
   }
 
@@ -413,7 +417,6 @@
         'item_name',
         'item_general_info',
         'digital_game',
-        'digital_currency_type',
         'digital_quantity',
         'digital_platform_server',
         'digital_delivery_method',
@@ -634,6 +637,9 @@
       const selectedCategory = String(state.createNegForm?.category || '').trim();
       const showCurrencyFields = selectedCategory === CATEGORY_CURRENCY;
       const showServiceFields = isServiceTaxonomyCategory(selectedCategory) || selectedCategory === CATEGORY_SERVICE;
+      const showServiceScheduleFields = showServiceFields
+        && selectedCategory !== CATEGORY_BOOST_RANK
+        && ![CATEGORY_CUSTOM_SERVICE, CATEGORY_SEASONAL, CATEGORY_COLLECTIBLES].includes(selectedCategory);
       const showServiceProductFlow = isServiceProductFlowCategory(selectedCategory);
       const showGameAccountFields = selectedCategory === CATEGORY_GAME_ACCOUNT;
       const showSkinFields = selectedCategory === CATEGORY_SKIN;
@@ -711,6 +717,12 @@
           const formFields = (cfg?.formFields && typeof cfg.formFields === 'object') ? cfg.formFields : {};
           const fieldDefs = Array.isArray(formFields?.[currentServiceId]?.[currentGameId]) ? formFields[currentServiceId][currentGameId] : [];
 
+          const isCarryPveUniversal = currentServiceId === 'carry_pve';
+          const isBoostRankUniversal = currentServiceId === 'boost_rank';
+          const isCustomUniversal = currentServiceId === 'custom';
+          const isSeasonalUniversal = currentServiceId === 'seasonal';
+          const isCollectiblesUniversal = currentServiceId === 'collectibles';
+
           if (state.serviceFormsLoading) {
             serviceProduct.innerHTML = `
               <div class="p-4 bg-white border border-gray-200 rounded-xl">
@@ -740,6 +752,1264 @@
               const label = String(gamesMap?.[v] || v).trim();
               return `<option value="${escapeAttr(v)}" ${v && v === currentGameId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
             }).join('');
+
+            if (isCustomUniversal) {
+              const f = serviceFields || {};
+              const v = (key) => {
+                const raw = f?.[key];
+                return raw === null || raw === undefined ? '' : String(raw);
+              };
+              const platformOptions = ['PC','PlayStation','Xbox','Mobile','Outro'];
+              const objectiveCategories = ['PvE','PvP','Progressão','Farm','Coaching','Evento','Social / Roleplay','Outro'];
+              const complexityOptions = ['Simples','Média','Alta','Não sei'];
+              const hasNumericGoal = String(v('has_numeric_goal') || '').trim();
+              const showNumericGoal = hasNumericGoal === 'Sim';
+              const access = String(v('needs_account_access') || '').trim();
+              const showAccessAlert = access === 'Sim';
+              const knownRisk = String(v('known_risk') || '').trim();
+              const showRiskDetails = knownRisk === 'Sim';
+              const desiredDeadline = String(v('desired_deadline') || '').trim();
+              const deliveryDays = Number(draft?.deliveryDays || draft?.delivery_days || 0);
+              const showShortDeadlineWarning = (deliveryDays > 0 && deliveryDays <= 2) || /hoje|amanh|\b[12]\s*dias?\b/i.test(desiredDeadline);
+
+              serviceProduct.innerHTML = `
+                <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-6">
+                  <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                    <i class="fas fa-list-alt text-primary-600"></i>
+                    Produto do serviço
+                  </div>
+
+                  <div>
+                    <div class="text-sm text-gray-700 font-medium mb-2">Serviço selecionado</div>
+                    <div class="text-sm text-gray-900 font-semibold">${escapeHtml(selectedCategory || 'Serviço Personalizado')}</div>
+                  </div>
+
+                  <input type="hidden" name="game_id" value="other">
+
+                  <div class="space-y-6">
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🧩 Identificação do Serviço</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Nome do jogo *</label>
+                        <input type="text" maxlength="120" required data-action="updateCreateServiceField" data-field-id="game_name" value="${escapeAttr(v('game_name'))}" placeholder="Ex: World of Warcraft" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Plataforma</label>
+                        <select data-action="updateCreateServiceField" data-field-id="platform" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('platform') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${platformOptions.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('platform') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Região / Servidor</label>
+                        <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="region_server" value="${escapeAttr(v('region_server'))}" placeholder="Opcional" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⭐ Objetivo do Serviço</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">O que deseja que seja feito? *</label>
+                        <textarea rows="3" required data-action="updateCreateServiceField" data-field-id="objective_what" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('objective_what'))}</textarea>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Resultado esperado *</label>
+                        <textarea rows="2" required data-action="updateCreateServiceField" data-field-id="objective_expected" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('objective_expected'))}</textarea>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Categoria aproximada do serviço</label>
+                        <select data-action="updateCreateServiceField" data-field-id="objective_category" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('objective_category') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${objectiveCategories.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('objective_category') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⚔️ Escopo do Serviço</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Existe meta numérica?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="has_numeric_goal" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${hasNumericGoal === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === hasNumericGoal ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      ${showNumericGoal ? `
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Descrição da meta *</label>
+                          <textarea rows="2" required data-action="updateCreateServiceField" data-field-id="numeric_goal_desc" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('numeric_goal_desc'))}</textarea>
+                        </div>
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Valor/meta numérica *</label>
+                          <input type="number" inputmode="numeric" required data-action="updateCreateServiceField" data-field-id="numeric_goal_value" value="${escapeAttr(v('numeric_goal_value'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        </div>
+                      ` : ''}
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Complexidade estimada pelo cliente</label>
+                        <select data-action="updateCreateServiceField" data-field-id="complexity" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('complexity') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${complexityOptions.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('complexity') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⏳ Execução</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Forma do serviço *</label>
+                        <select required data-action="updateCreateServiceField" data-field-id="execution_method" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('execution_method') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Booster joga na conta','Cliente participa','Coaching','Misto'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('execution_method') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Necessita acesso à conta?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="needs_account_access" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('needs_account_access') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('needs_account_access') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                        ${showAccessAlert ? `
+                          <div class="mt-2 p-3 rounded-lg bg-warning-50 border border-warning-200 text-warning-700 text-xs">
+                            <i class="fas fa-exclamation-triangle mr-1"></i>
+                            Atenção: solicitar acesso à conta envolve riscos. Combine segurança e termos claros.
+                          </div>
+                        ` : ''}
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Cliente pode jogar durante o serviço?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="client_can_play" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('client_can_play') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não','Depende'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('client_can_play') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📅 Prazo e Disponibilidade</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Prazo desejado</label>
+                        <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="desired_deadline" value="${escapeAttr(v('desired_deadline'))}" placeholder="Opcional" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Horários disponíveis</label>
+                        <textarea rows="2" maxlength="500" data-action="updateCreateServiceField" data-field-id="available_times" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('available_times'))}</textarea>
+                      </div>
+                      ${showShortDeadlineWarning ? `
+                        <div class="p-3 bg-warning-50 border border-warning-200 rounded-lg text-warning-700 text-xs">
+                          <i class="fas fa-exclamation-triangle mr-1"></i>
+                          Prazo curto pode aumentar o risco de atraso. Combine expectativas antes de confirmar.
+                        </div>
+                      ` : ''}
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🛡️ Garantias e Segurança</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Possui garantia?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="warranty" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('warranty') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('warranty') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Existe risco conhecido?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="known_risk" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${knownRisk === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === knownRisk ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      ${showRiskDetails ? `
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Detalhes do risco</label>
+                          <textarea rows="2" maxlength="800" data-action="updateCreateServiceField" data-field-id="known_risk_details" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('known_risk_details'))}</textarea>
+                        </div>
+                      ` : ''}
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📎 Provas do Serviço</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Provas</label>
+                        <select data-action="updateCreateServiceField" data-field-id="proofs" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('proofs') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Screenshot','Vídeo','Stream','Log','Nenhum'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('proofs') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📝 Observações gerais</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Observações</label>
+                        <textarea rows="3" maxlength="2000" data-action="updateCreateServiceField" data-field-id="notes" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('notes'))}</textarea>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              `;
+              return;
+            }
+
+            if (isSeasonalUniversal) {
+              const f = serviceFields || {};
+              const v = (key) => {
+                const raw = f?.[key];
+                return raw === null || raw === undefined ? '' : String(raw);
+              };
+              const platformOptions = ['PC','PlayStation','Xbox','Mobile','Outro'];
+              const seasonTypes = ['Passe de batalha','Temporada ranqueada','Evento sazonal','Progressão PvE','Outro'];
+              const access = String(v('needs_account_access') || '').trim();
+              const showAccessAlert = access === 'Sim';
+              const desiredDeadline = String(v('desired_deadline') || '').trim();
+              const deliveryDays = Number(draft?.deliveryDays || draft?.delivery_days || 0);
+              const showShortDeadlineWarning = (deliveryDays > 0 && deliveryDays <= 2) || /hoje|amanh|\b[12]\s*dias?\b/i.test(desiredDeadline);
+
+              serviceProduct.innerHTML = `
+                <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-6">
+                  <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                    <i class="fas fa-list-alt text-primary-600"></i>
+                    Produto do serviço
+                  </div>
+
+                  <div>
+                    <div class="text-sm text-gray-700 font-medium mb-2">Serviço selecionado</div>
+                    <div class="text-sm text-gray-900 font-semibold">${escapeHtml(selectedCategory || 'Serviço de Temporada')}</div>
+                  </div>
+
+                  <input type="hidden" name="game_id" value="other">
+
+                  <div class="space-y-6">
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🧩 Identificação</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Nome do jogo *</label>
+                        <input type="text" maxlength="120" required data-action="updateCreateServiceField" data-field-id="game_name" value="${escapeAttr(v('game_name'))}" placeholder="Ex: Fortnite" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Plataforma</label>
+                        <select data-action="updateCreateServiceField" data-field-id="platform" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('platform') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${platformOptions.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('platform') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Região / Servidor</label>
+                        <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="region_server" value="${escapeAttr(v('region_server'))}" placeholder="Opcional" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⭐ Informações da Temporada</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Nome ou número da temporada *</label>
+                        <input type="text" maxlength="120" required data-action="updateCreateServiceField" data-field-id="season_name" value="${escapeAttr(v('season_name'))}" placeholder="Ex: Temporada 12 / Capítulo 5" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Tipo de temporada *</label>
+                        <select required data-action="updateCreateServiceField" data-field-id="season_type" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('season_type') === '' ? 'selected' : ''}>Selecione</option>
+                          ${seasonTypes.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('season_type') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🏆 Objetivo da Temporada</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Recompensa desejada *</label>
+                        <input type="text" maxlength="200" required data-action="updateCreateServiceField" data-field-id="reward_desired" value="${escapeAttr(v('reward_desired'))}" placeholder="Ex: Skin X, Passe nível 50" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Progresso atual do cliente</label>
+                        <textarea rows="2" maxlength="800" data-action="updateCreateServiceField" data-field-id="progress_current" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('progress_current'))}</textarea>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Meta desejada</label>
+                        <textarea rows="2" maxlength="800" data-action="updateCreateServiceField" data-field-id="goal_target" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('goal_target'))}</textarea>
+                      </div>
+                    </div>
+
+                    <details class="p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                      <summary class="cursor-pointer text-sm font-semibold text-gray-900">📈 Ranking / Progressão (opcional)</summary>
+                      <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Tier atual</label>
+                          <input type="text" maxlength="60" data-action="updateCreateServiceField" data-field-id="rank_current_tier" value="${escapeAttr(v('rank_current_tier'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        </div>
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Score atual</label>
+                          <input type="number" inputmode="numeric" data-action="updateCreateServiceField" data-field-id="rank_current_score" value="${escapeAttr(v('rank_current_score'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        </div>
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Tier desejado</label>
+                          <input type="text" maxlength="60" data-action="updateCreateServiceField" data-field-id="rank_target_tier" value="${escapeAttr(v('rank_target_tier'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        </div>
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Score desejado</label>
+                          <input type="number" inputmode="numeric" data-action="updateCreateServiceField" data-field-id="rank_target_score" value="${escapeAttr(v('rank_target_score'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        </div>
+                      </div>
+                    </details>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⚔️ Execução</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Forma do serviço *</label>
+                        <select required data-action="updateCreateServiceField" data-field-id="execution_method" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('execution_method') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Booster joga','Cliente participa','Misto'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('execution_method') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Necessita acesso à conta?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="needs_account_access" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('needs_account_access') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('needs_account_access') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                        ${showAccessAlert ? `
+                          <div class="mt-2 p-3 rounded-lg bg-warning-50 border border-warning-200 text-warning-700 text-xs">
+                            <i class="fas fa-exclamation-triangle mr-1"></i>
+                            Atenção: solicitar acesso à conta envolve riscos. Combine segurança e termos claros.
+                          </div>
+                        ` : ''}
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⏳ Prazo</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Data limite da temporada</label>
+                        <input type="date" data-action="updateCreateServiceField" data-field-id="deadline_date" value="${escapeAttr(v('deadline_date'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Prazo desejado para conclusão</label>
+                        <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="desired_deadline" value="${escapeAttr(v('desired_deadline'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      ${showShortDeadlineWarning ? `
+                        <div class="p-3 bg-warning-50 border border-warning-200 rounded-lg text-warning-700 text-xs">
+                          <i class="fas fa-exclamation-triangle mr-1"></i>
+                          Prazo curto pode aumentar o risco de atraso. Combine expectativas antes de confirmar.
+                        </div>
+                      ` : ''}
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🎁 Recompensas extras</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Recompensas extras</label>
+                        <textarea rows="2" maxlength="800" data-action="updateCreateServiceField" data-field-id="extra_rewards" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('extra_rewards'))}</textarea>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📎 Provas</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Provas</label>
+                        <select data-action="updateCreateServiceField" data-field-id="proofs" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('proofs') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Screenshot','Vídeo','Stream','Log','Nenhum'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('proofs') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📝 Observações</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Observações</label>
+                        <textarea rows="3" maxlength="2000" data-action="updateCreateServiceField" data-field-id="notes" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('notes'))}</textarea>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              `;
+              return;
+            }
+
+            if (isCollectiblesUniversal) {
+              const f = serviceFields || {};
+              const v = (key) => {
+                const raw = f?.[key];
+                return raw === null || raw === undefined ? '' : String(raw);
+              };
+              const platformOptions = ['PC','PlayStation','Xbox','Mobile','Outro'];
+              const collectibleTypes = ['Montaria','Skin','Transmog','Skin de arma','Mascote','Emote / Dança','Título','Item raro','Outro'];
+              const obtainMethods = ['Drop','Evento','Quest','Craft','Loja do jogo','Outro'];
+              const executionMethods = ['Farm repetitivo','Completar conteúdo','Evento limitado','Outro'];
+              const rng = String(v('rng_has_chance') || '').trim();
+              const showRngDetails = rng === 'Sim';
+              const access = String(v('needs_account_access') || '').trim();
+              const showAccessAlert = access === 'Sim';
+              const desiredDeadline = String(v('desired_deadline') || '').trim();
+              const deliveryDays = Number(draft?.deliveryDays || draft?.delivery_days || 0);
+              const showShortDeadlineWarning = (deliveryDays > 0 && deliveryDays <= 2) || /hoje|amanh|\b[12]\s*dias?\b/i.test(desiredDeadline);
+
+              serviceProduct.innerHTML = `
+                <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-6">
+                  <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                    <i class="fas fa-list-alt text-primary-600"></i>
+                    Produto do serviço
+                  </div>
+
+                  <div>
+                    <div class="text-sm text-gray-700 font-medium mb-2">Serviço selecionado</div>
+                    <div class="text-sm text-gray-900 font-semibold">${escapeHtml(selectedCategory || 'Conquistas e Colecionáveis')}</div>
+                  </div>
+
+                  <input type="hidden" name="game_id" value="other">
+
+                  <div class="space-y-6">
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🧩 Identificação</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Nome do jogo *</label>
+                        <input type="text" maxlength="120" required data-action="updateCreateServiceField" data-field-id="game_name" value="${escapeAttr(v('game_name'))}" placeholder="Ex: WoW" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Plataforma</label>
+                        <select data-action="updateCreateServiceField" data-field-id="platform" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('platform') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${platformOptions.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('platform') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Região / Servidor</label>
+                        <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="region_server" value="${escapeAttr(v('region_server'))}" placeholder="Opcional" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⭐ Tipo de Colecionável</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Tipo de colecionável *</label>
+                        <select required data-action="updateCreateServiceField" data-field-id="collectible_type" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('collectible_type') === '' ? 'selected' : ''}>Selecione</option>
+                          ${collectibleTypes.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('collectible_type') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🎯 Item ou Conquista Desejada</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Nome do item ou conquista *</label>
+                        <input type="text" maxlength="200" required data-action="updateCreateServiceField" data-field-id="item_name" value="${escapeAttr(v('item_name'))}" placeholder="Ex: Montaria X" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Forma de obtenção</label>
+                        <select data-action="updateCreateServiceField" data-field-id="obtain_method" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('obtain_method') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${obtainMethods.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('obtain_method') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⚔️ Execução</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Método de obtenção</label>
+                        <select data-action="updateCreateServiceField" data-field-id="execution_method" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('execution_method') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${executionMethods.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('execution_method') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Necessita acesso à conta?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="needs_account_access" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('needs_account_access') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('needs_account_access') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                        ${showAccessAlert ? `
+                          <div class="mt-2 p-3 rounded-lg bg-warning-50 border border-warning-200 text-warning-700 text-xs">
+                            <i class="fas fa-exclamation-triangle mr-1"></i>
+                            Atenção: solicitar acesso à conta envolve riscos. Combine segurança e termos claros.
+                          </div>
+                        ` : ''}
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Cliente participa?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="client_participation" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('client_participation') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não','Depende'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('client_participation') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🎲 RNG</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Existe chance aleatória?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="rng_has_chance" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${rng === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === rng ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      ${showRngDetails ? `
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Tentativas incluídas *</label>
+                          <input type="number" inputmode="numeric" required data-action="updateCreateServiceField" data-field-id="rng_attempts" value="${escapeAttr(v('rng_attempts'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        </div>
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Política caso não drope *</label>
+                          <textarea rows="2" required maxlength="800" data-action="updateCreateServiceField" data-field-id="rng_policy" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('rng_policy'))}</textarea>
+                        </div>
+                      ` : ''}
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⏳ Prazo</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Prazo desejado</label>
+                        <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="desired_deadline" value="${escapeAttr(v('desired_deadline'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      ${showShortDeadlineWarning ? `
+                        <div class="p-3 bg-warning-50 border border-warning-200 rounded-lg text-warning-700 text-xs">
+                          <i class="fas fa-exclamation-triangle mr-1"></i>
+                          Prazo curto pode aumentar o risco de atraso. Combine expectativas antes de confirmar.
+                        </div>
+                      ` : ''}
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🎁 Recompensas secundárias</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Recompensas secundárias</label>
+                        <textarea rows="2" maxlength="800" data-action="updateCreateServiceField" data-field-id="extra_rewards" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('extra_rewards'))}</textarea>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📎 Provas</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Provas</label>
+                        <select data-action="updateCreateServiceField" data-field-id="proofs" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('proofs') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Screenshot','Vídeo','Stream','Log','Nenhum'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('proofs') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📝 Observações</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Observações</label>
+                        <textarea rows="3" maxlength="2000" data-action="updateCreateServiceField" data-field-id="notes" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('notes'))}</textarea>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              `;
+              return;
+            }
+
+            // Carry PvE (universal): render a custom form (no game dropdown).
+            if (isCarryPveUniversal) {
+              const f = serviceFields || {};
+              const v = (key) => {
+                const raw = f?.[key];
+                return raw === null || raw === undefined ? '' : String(raw);
+              };
+              const isYes = (key) => String(v(key) || '').trim() === 'Sim';
+              const scoreHasSystem = String(v('score_has_system') || '').trim();
+              const showScoreDetails = scoreHasSystem !== '' || String(v('score_current') || '').trim() !== '' || String(v('score_target') || '').trim() !== '' || String(v('score_type') || '').trim() !== '';
+              const showParticipationExtras = isYes('client_participation');
+              const showAccountAccessAlert = isYes('needs_account_access');
+
+              // Availability slots UI state (1..3)
+              const uiCountRaw = Number(draft?._uiCarryPveSlotCount) || 0;
+              const hasSlot2Data = Boolean(String(v('slot2_date') || '').trim() || String(v('slot2_time') || '').trim());
+              const hasSlot3Data = Boolean(String(v('slot3_date') || '').trim() || String(v('slot3_time') || '').trim());
+              const derivedCount = 1 + (hasSlot2Data ? 1 : 0) + (hasSlot3Data ? 1 : 0);
+              const slotCount = Math.max(1, Math.min(3, uiCountRaw || derivedCount || 1));
+
+              const toSlotLabel = (idx) => {
+                const d = String(v(`slot${idx}_date`) || '').trim();
+                const t = String(v(`slot${idx}_time`) || '').trim();
+                if (!d && !t) return `Opção ${idx}`;
+                if (d && t) return `${d} ${t}`;
+                return `${d || '—'} ${t || '—'}`.trim();
+              };
+
+              const preferredSlot = String(v('preferred_slot') || '').trim();
+              const preferredOptions = [1, 2, 3]
+                .slice(0, slotCount)
+                .map((idx) => {
+                  const val = String(idx);
+                  const label = toSlotLabel(idx);
+                  return `<option value="${escapeAttr(val)}" ${(preferredSlot ? preferredSlot === val : idx === 1) ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+                })
+                .join('');
+
+              serviceProduct.innerHTML = `
+                <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-6">
+                  <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                    <i class="fas fa-list-alt text-primary-600"></i>
+                    Produto do serviço
+                  </div>
+
+                  <div>
+                    <div class="text-sm text-gray-700 font-medium mb-2">Serviço selecionado</div>
+                    <div class="text-sm text-gray-900 font-semibold">${escapeHtml(selectedCategory || 'Carry de Conteúdo (PvE)')}</div>
+                  </div>
+
+                  <!-- Keep backend contract: service flow requires game_id; Carry PvE uses 'other' internally. -->
+                  <input type="hidden" name="game_id" value="other">
+
+                  <div class="space-y-6">
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🧩 1. Identificação do Serviço</div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Nome do jogo *</label>
+                        <input type="text" maxlength="120" required data-action="updateCreateServiceField" data-field-id="game_other_name" value="${escapeAttr(v('game_other_name'))}" placeholder="Ex: World of Warcraft" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Plataforma</label>
+                        <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="platform" value="${escapeAttr(v('platform'))}" placeholder="Ex: PC, PS5, Xbox" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Região / Servidor</label>
+                        <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="region_server" value="${escapeAttr(v('region_server'))}" placeholder="Opcional (recomendado)" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🎮 2. Definição do Conteúdo</div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Tipo de Conteúdo *</label>
+                        <select required data-action="updateCreateServiceField" data-field-id="content_type" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('content_type') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Raid','Dungeon','Boss','Evento','Farm','Missão','Outro'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('content_type') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Nome do Conteúdo *</label>
+                        <input type="text" maxlength="200" required data-action="updateCreateServiceField" data-field-id="content_name" value="${escapeAttr(v('content_name'))}" placeholder="Ex: Raid X, Dungeon Y" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Objetivo do Serviço *</label>
+                        <select required data-action="updateCreateServiceField" data-field-id="objective" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('objective') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Completar conteúdo','Farmar item','Conquista','Liberar conteúdo','Outro'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('objective') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⚔️ 3. Execução do Serviço</div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Dificuldade *</label>
+                        <input type="text" maxlength="200" required data-action="updateCreateServiceField" data-field-id="difficulty" value="${escapeAttr(v('difficulty'))}" placeholder="Ex: Normal, Heroic, +15..." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Quantidade de Runs *</label>
+                        <input type="number" inputmode="numeric" min="1" required data-action="updateCreateServiceField" data-field-id="runs_count" value="${escapeAttr(v('runs_count'))}" placeholder="Ex: 10" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Cliente participa?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="client_participation" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('client_participation') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('client_participation') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+
+                      ${showParticipationExtras ? `
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Classe / Build</label>
+                            <input type="text" maxlength="200" data-action="updateCreateServiceField" data-field-id="client_class_build" value="${escapeAttr(v('client_class_build'))}" placeholder="Opcional" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          </div>
+                          <div>
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Função no grupo</label>
+                            <input type="text" maxlength="200" data-action="updateCreateServiceField" data-field-id="client_group_role" value="${escapeAttr(v('client_group_role'))}" placeholder="Opcional" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          </div>
+                        </div>
+                      ` : ''}
+                    </div>
+
+                    <details class="p-4 bg-gray-50 rounded-xl border border-gray-100" ${showScoreDetails ? 'open' : ''}>
+                      <summary class="cursor-pointer select-none flex items-center justify-between">
+                        <div class="text-sm font-semibold text-gray-900">⭐ 4. Pontuação / Score (opcional)</div>
+                        <i class="fas fa-chevron-down text-gray-400"></i>
+                      </summary>
+                      <div class="mt-3 space-y-3">
+                        <p class="text-xs text-gray-600">
+                          Use este bloco apenas se quiser informar seu score/ilvl/rating atual e o desejado. Isso ajuda em serviços progressivos.
+                        </p>
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Conta possui sistema de pontuação?</label>
+                          <select data-action="updateCreateServiceField" data-field-id="score_has_system" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            <option value="" ${scoreHasSystem === '' ? 'selected' : ''}>Selecione</option>
+                            ${['Sim','Não','Não sei'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === scoreHasSystem ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                          </select>
+                        </div>
+
+                        ${scoreHasSystem === 'Sim' ? `
+                          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Pontuação atual do cliente</label>
+                              <input type="number" inputmode="numeric" data-action="updateCreateServiceField" data-field-id="score_current" value="${escapeAttr(v('score_current'))}" placeholder="Ex: Mythic+ Score" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Pontuação desejada</label>
+                              <input type="number" inputmode="numeric" data-action="updateCreateServiceField" data-field-id="score_target" value="${escapeAttr(v('score_target'))}" placeholder="Ex: 2500" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                          </div>
+                          <div>
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Tipo de pontuação</label>
+                            <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="score_type" value="${escapeAttr(v('score_type'))}" placeholder="Ex: Mythic+ Score, Gear Score, Raid Progress" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          </div>
+                        ` : ''}
+                      </div>
+                    </details>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📅 5. Disponibilidade e Prazo</div>
+
+                      <div class="space-y-3">
+                        <div class="text-xs text-gray-600">
+                          Selecione uma data e um horário principal. Se quiser, adicione até 2 opções extras (máx. 3).
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Data (principal)</label>
+                            <input type="date" required data-action="updateCreateServiceField" data-field-id="slot1_date" value="${escapeAttr(v('slot1_date'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          </div>
+                          <div>
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Hora (principal)</label>
+                            <input type="time" required data-action="updateCreateServiceField" data-field-id="slot1_time" value="${escapeAttr(v('slot1_time'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          </div>
+                        </div>
+
+                        ${slotCount >= 2 ? `
+                          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Data (opcional)</label>
+                              <input type="date" data-action="updateCreateServiceField" data-field-id="slot2_date" value="${escapeAttr(v('slot2_date'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                            <div class="relative">
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Hora (opcional)</label>
+                              <input type="time" data-action="updateCreateServiceField" data-field-id="slot2_time" value="${escapeAttr(v('slot2_time'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                              <button type="button" class="absolute right-2 top-9 text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-700" data-action="carryPveRemoveSlot" data-index="2">Remover</button>
+                            </div>
+                          </div>
+                        ` : ''}
+
+                        ${slotCount >= 3 ? `
+                          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Data (opcional)</label>
+                              <input type="date" data-action="updateCreateServiceField" data-field-id="slot3_date" value="${escapeAttr(v('slot3_date'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                            <div class="relative">
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Hora (opcional)</label>
+                              <input type="time" data-action="updateCreateServiceField" data-field-id="slot3_time" value="${escapeAttr(v('slot3_time'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                              <button type="button" class="absolute right-2 top-9 text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-700" data-action="carryPveRemoveSlot" data-index="3">Remover</button>
+                            </div>
+                          </div>
+                        ` : ''}
+
+                        <div class="flex items-center gap-3">
+                          <button type="button" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm text-gray-700 transition" data-action="carryPveAddSlot" ${slotCount >= 3 ? 'disabled' : ''}>
+                            Adicionar data e hora
+                          </button>
+                          <div class="text-xs text-gray-500">Máximo: 3 opções</div>
+                        </div>
+
+                        ${slotCount > 1 ? `
+                          <div>
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Horário principal</label>
+                            <select data-action="updateCreateServiceField" data-field-id="preferred_slot" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                              ${preferredOptions}
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">Escolha qual opção deve ser considerada a principal.</p>
+                          </div>
+                        ` : ''}
+                      </div>
+
+                      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Prazo para entrega</label>
+                          <input type="text" maxlength="200" data-action="updateCreateServiceField" data-field-id="delivery_deadline" value="${escapeAttr(v('delivery_deadline'))}" placeholder="Ex: até 7 dias" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        </div>
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Tempo necessário para realizar</label>
+                          <input type="text" maxlength="200" data-action="updateCreateServiceField" data-field-id="time_needed" value="${escapeAttr(v('time_needed'))}" placeholder="Ex: 2h" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">💰 6. Forma de Execução</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Como será feito *</label>
+                        <select required data-action="updateCreateServiceField" data-field-id="execution_method" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('execution_method') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Cliente joga junto','Booster joga','Misto'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('execution_method') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Necessita acesso à conta?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="needs_account_access" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('needs_account_access') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('needs_account_access') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                        ${showAccountAccessAlert ? `
+                          <div class="mt-2 p-3 rounded-lg bg-warning-50 border border-warning-200 text-warning-700 text-xs">
+                            <i class="fas fa-exclamation-triangle mr-1"></i>
+                            Atenção: solicitar acesso à conta envolve risco e deve ser combinado com segurança e termos claros.
+                          </div>
+                        ` : ''}
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Possui garantia?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="warranty" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('warranty') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('warranty') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🎁 7. Recompensas Esperadas</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Recompensa principal *</label>
+                        <input type="text" maxlength="200" required data-action="updateCreateServiceField" data-field-id="reward_main" value="${escapeAttr(v('reward_main'))}" placeholder="Ex: Item X, Conquista Y" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📎 8. Provas</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Provas</label>
+                        <select data-action="updateCreateServiceField" data-field-id="proofs" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('proofs') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Screenshot','Vídeo','Stream','Log','Nenhum'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('proofs') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📝 9. Observações Gerais</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Observações</label>
+                        <textarea rows="3" maxlength="2000" data-action="updateCreateServiceField" data-field-id="notes" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('notes'))}</textarea>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              `;
+              return;
+            }
+
+            // Boost de Rank (universal): custom form (no game dropdown).
+            if (isBoostRankUniversal) {
+              const f = serviceFields || {};
+              const v = (key) => {
+                const raw = f?.[key];
+                return raw === null || raw === undefined ? '' : String(raw);
+              };
+
+              const slotCountRaw = Number(draft?._uiBoostRankSlotCount) || 1;
+              const slotCount = Math.max(1, Math.min(3, slotCountRaw));
+
+              const currentTier = String(v('rank_current_tier') || '').trim();
+              const targetTier = String(v('rank_target_tier') || '').trim();
+              const tierOptions = ['Bronze', 'Prata', 'Ouro', 'Platina', 'Diamante', 'Mestre', 'Outro'];
+
+              const access = String(v('needs_account_access') || '').trim();
+              const showAccessAlert = access === 'Sim';
+
+              const risk = String(v('downgrade_risk') || '').trim();
+              const showPolicy = risk === '1' || risk === 'true' || risk === 'on' || risk === 'yes';
+
+              serviceProduct.innerHTML = `
+                <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
+                  <div class="flex items-center gap-2 text-gray-900 font-semibold">
+                    <i class="fas fa-list-alt text-primary-600"></i>
+                    Produto do serviço
+                  </div>
+
+                  <!-- Keep backend contract: service flow requires game_id; Boost Rank uses 'other' internally. -->
+                  <input type="hidden" name="game_id" value="other">
+
+                  <div class="space-y-6">
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🧩 1. Identificação do Serviço</div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Nome do jogo *</label>
+                        <input type="text" maxlength="120" required data-action="updateCreateServiceField" data-field-id="game_other_name" value="${escapeAttr(v('game_other_name'))}" placeholder="Ex: Valorant" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Plataforma</label>
+                        <select data-action="updateCreateServiceField" data-field-id="platform" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('platform') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['PC','PlayStation','Xbox','Mobile','Outro'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('platform') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Região / Servidor</label>
+                        <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="region_server" value="${escapeAttr(v('region_server'))}" placeholder="Ex: BR / NA / EU / Servidor" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        <p class="text-xs text-gray-500 mt-1">Opcional (mas muito recomendado).</p>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">🏆 2. Objetivo do Boost</div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Tipo de Boost *</label>
+                        <select required data-action="updateCreateServiceField" data-field-id="boost_type" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('boost_type') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Rank competitivo PvP','Rank PvE competitivo','Liberação de modo ranqueado','Conquista competitiva','Outro'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('boost_type') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+
+                      <details class="p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                        <summary class="cursor-pointer text-sm font-medium text-gray-800">Campos de ranking (opcional)</summary>
+                        <div class="mt-3 space-y-4">
+                          <div class="text-xs text-gray-600">
+                            Você pode preencher só o Tier, só o Score, ou ambos.
+                          </div>
+
+                          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div class="p-3 bg-white border border-gray-200 rounded-lg space-y-3">
+                              <div class="text-sm font-medium text-gray-800">Ranking atual</div>
+
+                              <div>
+                                <label class="block text-sm text-gray-700 font-medium mb-2">Tier atual</label>
+                                <select data-action="updateCreateServiceField" data-field-id="rank_current_tier" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                                  <option value="" ${currentTier === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                                  ${tierOptions.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === currentTier ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                                </select>
+                              </div>
+
+                              <div>
+                                <label class="block text-sm text-gray-700 font-medium mb-2">Score atual</label>
+                                <input type="number" inputmode="numeric" data-action="updateCreateServiceField" data-field-id="rank_current_score" value="${escapeAttr(v('rank_current_score'))}" placeholder="Ex: 120" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                              </div>
+                            </div>
+
+                            <div class="p-3 bg-white border border-gray-200 rounded-lg space-y-3">
+                              <div class="text-sm font-medium text-gray-800">Ranking desejado</div>
+
+                              <div>
+                                <label class="block text-sm text-gray-700 font-medium mb-2">Tier desejado</label>
+                                <select data-action="updateCreateServiceField" data-field-id="rank_target_tier" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                                  <option value="" ${targetTier === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                                  ${tierOptions.map((opt) => `<option value="${escapeAttr(opt)}" ${opt === targetTier ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                                </select>
+                              </div>
+
+                              <div>
+                                <label class="block text-sm text-gray-700 font-medium mb-2">Score desejado</label>
+                                <input type="number" inputmode="numeric" data-action="updateCreateServiceField" data-field-id="rank_target_score" value="${escapeAttr(v('rank_target_score'))}" placeholder="Ex: 300" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                              </div>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Tipo de pontuação usada pelo jogo</label>
+                            <input type="text" maxlength="60" data-action="updateCreateServiceField" data-field-id="score_type" value="${escapeAttr(v('score_type'))}" placeholder="Ex: LP, MMR, SR, Elo" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          </div>
+                        </div>
+                      </details>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">⚔️ 3. Execução do Boost</div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Forma do Boost *</label>
+                        <select required data-action="updateCreateServiceField" data-field-id="boost_method" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('boost_method') === '' ? 'selected' : ''}>Selecione</option>
+                          ${['Booster joga na conta','Cliente joga junto','Coaching','Misto'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('boost_method') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Necessita acesso à conta?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="needs_account_access" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('needs_account_access') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('needs_account_access') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                        ${showAccessAlert ? `
+                          <div class="mt-2 p-3 bg-warning-50 border border-warning-200 rounded-lg text-sm text-warning-800">
+                            Atenção: nunca compartilhe senha reutilizada. Recomendado: alterar senha antes/depois e ativar 2FA.
+                          </div>
+                        ` : ''}
+                      </div>
+
+                      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Cliente pode jogar durante o boost?</label>
+                          <select data-action="updateCreateServiceField" data-field-id="client_can_play" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            <option value="" ${v('client_can_play') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                            ${['Sim','Não','Depende'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('client_can_play') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                          </select>
+                        </div>
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Pode usar VPN?</label>
+                          <select data-action="updateCreateServiceField" data-field-id="can_use_vpn" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            <option value="" ${v('can_use_vpn') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                            ${['Sim','Não','Depende'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('can_use_vpn') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                          </select>
+                          <p class="text-xs text-gray-500 mt-1">Importante para segurança da conta.</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📊 4. Informações Técnicas do Ranking</div>
+                      <details class="p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                        <summary class="cursor-pointer text-sm font-medium text-gray-800">Bloco opcional</summary>
+                        <div class="mt-3 space-y-3">
+                          <div>
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Histórico competitivo relevante</label>
+                            <textarea rows="2" maxlength="800" data-action="updateCreateServiceField" data-field-id="tech_history" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('tech_history'))}</textarea>
+                          </div>
+
+                          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Melhor rank já alcançado (Tier)</label>
+                              <input type="text" maxlength="60" data-action="updateCreateServiceField" data-field-id="best_rank_tier" value="${escapeAttr(v('best_rank_tier'))}" placeholder="Ex: Diamante" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Melhor rank já alcançado (Score)</label>
+                              <input type="number" inputmode="numeric" data-action="updateCreateServiceField" data-field-id="best_rank_score" value="${escapeAttr(v('best_rank_score'))}" placeholder="Ex: 500" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                          </div>
+
+                          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Taxa de vitória atual (Winrate %)</label>
+                              <input type="number" inputmode="numeric" data-action="updateCreateServiceField" data-field-id="winrate" value="${escapeAttr(v('winrate'))}" placeholder="Ex: 55" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Partidas necessárias (aprox.)</label>
+                              <input type="number" inputmode="numeric" data-action="updateCreateServiceField" data-field-id="matches_estimate" value="${escapeAttr(v('matches_estimate'))}" placeholder="Ex: 20" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                          </div>
+                        </div>
+                      </details>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📅 5. Disponibilidade e Prazo</div>
+
+                      <div class="text-xs text-gray-600">
+                        Horários disponíveis são opcionais. Se quiser, adicione até 3 opções.
+                      </div>
+
+                      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Data (principal)</label>
+                          <input type="date" data-action="updateCreateServiceField" data-field-id="slot1_date" value="${escapeAttr(v('slot1_date'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        </div>
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Hora (principal)</label>
+                          <input type="time" data-action="updateCreateServiceField" data-field-id="slot1_time" value="${escapeAttr(v('slot1_time'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        </div>
+                      </div>
+
+                      ${slotCount >= 2 ? `
+                        <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
+                          <div class="flex items-center justify-between">
+                            <div class="text-sm font-medium text-gray-800">Opção 2 (opcional)</div>
+                            <button type="button" class="text-xs px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded-lg text-gray-700 transition" data-action="boostRankRemoveSlot" data-index="2">Remover</button>
+                          </div>
+                          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Data</label>
+                              <input type="date" data-action="updateCreateServiceField" data-field-id="slot2_date" value="${escapeAttr(v('slot2_date'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Hora</label>
+                              <input type="time" data-action="updateCreateServiceField" data-field-id="slot2_time" value="${escapeAttr(v('slot2_time'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                          </div>
+                        </div>
+                      ` : ''}
+
+                      ${slotCount >= 3 ? `
+                        <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
+                          <div class="flex items-center justify-between">
+                            <div class="text-sm font-medium text-gray-800">Opção 3 (opcional)</div>
+                            <button type="button" class="text-xs px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded-lg text-gray-700 transition" data-action="boostRankRemoveSlot" data-index="3">Remover</button>
+                          </div>
+                          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Data</label>
+                              <input type="date" data-action="updateCreateServiceField" data-field-id="slot3_date" value="${escapeAttr(v('slot3_date'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                            <div>
+                              <label class="block text-sm text-gray-700 font-medium mb-2">Hora</label>
+                              <input type="time" data-action="updateCreateServiceField" data-field-id="slot3_time" value="${escapeAttr(v('slot3_time'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                            </div>
+                          </div>
+                        </div>
+                      ` : ''}
+
+                      <div class="flex items-center gap-3">
+                        <button type="button" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition disabled:opacity-50" data-action="boostRankAddSlot" ${slotCount >= 3 ? 'disabled' : ''}>
+                          Adicionar data e hora
+                        </button>
+
+                        ${slotCount > 1 ? `
+                          <div class="flex-1">
+                            <label class="block text-sm text-gray-700 font-medium mb-2">Horário principal</label>
+                            <select data-action="updateCreateServiceField" data-field-id="preferred_slot" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                              ${Array.from({ length: slotCount }).map((_, i) => {
+                                const n = String(i + 1);
+                                const current = String(v('preferred_slot') || '').trim() || '1';
+                                return `<option value="${escapeAttr(n)}" ${n === current ? 'selected' : ''}>Opção ${escapeHtml(n)}</option>`;
+                              }).join('')}
+                            </select>
+                          </div>
+                        ` : ''}
+                      </div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Prazo desejado</label>
+                        <input type="text" maxlength="120" data-action="updateCreateServiceField" data-field-id="desired_deadline" value="${escapeAttr(v('desired_deadline'))}" placeholder="Ex: até domingo / 7 dias" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">💰 6. Garantias e Regras</div>
+
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Possui garantia de rank?</label>
+                        <select data-action="updateCreateServiceField" data-field-id="has_rank_warranty" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                          <option value="" ${v('has_rank_warranty') === '' ? 'selected' : ''}>Selecione (opcional)</option>
+                          ${['Sim','Não'].map((opt) => `<option value="${escapeAttr(opt)}" ${opt === v('has_rank_warranty') ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        </select>
+                      </div>
+
+                      <div class="flex items-start gap-3">
+                        <input type="checkbox" ${showPolicy ? 'checked' : ''} data-action="updateCreateServiceField" data-field-id="downgrade_risk" value="1" class="mt-1">
+                        <div class="flex-1">
+                          <div class="text-sm font-medium text-gray-800">Existe risco de rebaixamento?</div>
+                          <div class="text-xs text-gray-600">Se marcado, você pode descrever a política abaixo.</div>
+                        </div>
+                      </div>
+
+                      ${showPolicy ? `
+                        <div>
+                          <label class="block text-sm text-gray-700 font-medium mb-2">Política caso caia de rank</label>
+                          <textarea rows="2" maxlength="800" data-action="updateCreateServiceField" data-field-id="downgrade_policy" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('downgrade_policy'))}</textarea>
+                        </div>
+                      ` : ''}
+                    </div>
+
+                    <div class="space-y-3">
+                      <div class="text-sm font-semibold text-gray-900">📝 Observações</div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Observações</label>
+                        <textarea rows="3" maxlength="2000" data-action="updateCreateServiceField" data-field-id="notes" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none">${escapeHtml(v('notes'))}</textarea>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              `;
+              return;
+            }
+
+            const isBoostRank = currentServiceId === 'boost_rank';
+            const boostSlotCountRaw = Number(draft?._uiBoostRankSlotCount) || 1;
+            const boostSlotCount = Math.max(1, Math.min(3, boostSlotCountRaw));
+            const boostV = (key) => {
+              const raw = serviceFields?.[key];
+              return raw === null || raw === undefined ? '' : String(raw);
+            };
+
+            const boostScheduleHtml = isBoostRank ? `
+              <div class="pt-4 border-t border-gray-100 space-y-3">
+                <div class="text-sm font-semibold text-gray-900">📅 Disponibilidade (data e hora)</div>
+                <div class="text-xs text-gray-600">
+                  Selecione uma data e um horário principal. Se quiser, adicione até 2 opções extras (máx. 3).
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label class="block text-sm text-gray-700 font-medium mb-2">Data (principal) *</label>
+                    <input type="date" required data-action="updateCreateServiceField" data-field-id="slot1_date" value="${escapeAttr(boostV('slot1_date'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  </div>
+                  <div>
+                    <label class="block text-sm text-gray-700 font-medium mb-2">Hora (principal) *</label>
+                    <input type="time" required data-action="updateCreateServiceField" data-field-id="slot1_time" value="${escapeAttr(boostV('slot1_time'))}" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                  </div>
+                </div>
+
+                ${boostSlotCount >= 2 ? `
+                  <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
+                    <div class="flex items-center justify-between">
+                      <div class="text-sm font-medium text-gray-800">Opção 2 (opcional)</div>
+                      <button type="button" class="text-xs px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded-lg text-gray-700 transition" data-action="boostRankRemoveSlot" data-index="2">Remover</button>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Data</label>
+                        <input type="date" data-action="updateCreateServiceField" data-field-id="slot2_date" value="${escapeAttr(boostV('slot2_date'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Hora</label>
+                        <input type="time" data-action="updateCreateServiceField" data-field-id="slot2_time" value="${escapeAttr(boostV('slot2_time'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                    </div>
+                  </div>
+                ` : ''}
+
+                ${boostSlotCount >= 3 ? `
+                  <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
+                    <div class="flex items-center justify-between">
+                      <div class="text-sm font-medium text-gray-800">Opção 3 (opcional)</div>
+                      <button type="button" class="text-xs px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded-lg text-gray-700 transition" data-action="boostRankRemoveSlot" data-index="3">Remover</button>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Data</label>
+                        <input type="date" data-action="updateCreateServiceField" data-field-id="slot3_date" value="${escapeAttr(boostV('slot3_date'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                      <div>
+                        <label class="block text-sm text-gray-700 font-medium mb-2">Hora</label>
+                        <input type="time" data-action="updateCreateServiceField" data-field-id="slot3_time" value="${escapeAttr(boostV('slot3_time'))}" class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                      </div>
+                    </div>
+                  </div>
+                ` : ''}
+
+                <div class="flex items-center gap-3">
+                  <button type="button" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition disabled:opacity-50" data-action="boostRankAddSlot" ${boostSlotCount >= 3 ? 'disabled' : ''}>
+                    Adicionar data e hora
+                  </button>
+
+                  ${boostSlotCount > 1 ? `
+                    <div class="flex-1">
+                      <label class="block text-sm text-gray-700 font-medium mb-2">Horário principal</label>
+                      <select data-action="updateCreateServiceField" data-field-id="preferred_slot" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                        ${Array.from({ length: boostSlotCount }).map((_, i) => {
+                          const n = String(i + 1);
+                          const current = String(boostV('preferred_slot') || '').trim() || '1';
+                          return `<option value="${escapeAttr(n)}" ${n === current ? 'selected' : ''}>Opção ${escapeHtml(n)}</option>`;
+                        }).join('')}
+                      </select>
+                    </div>
+                  ` : ''}
+                </div>
+              </div>
+            ` : '';
 
             const fieldHtml = fieldDefs.length ? `
               <div class="pt-4 border-t border-gray-100 space-y-3">
@@ -802,6 +2072,7 @@
                     </div>
                   `;
                 }).join('')}
+                ${boostScheduleHtml}
               </div>
             ` : `
               <div class="pt-4 border-t border-gray-100">
@@ -1660,8 +2931,8 @@
                 <input type="text" name="digital_game" required value="${escapeAttr(getDraft('digital_game'))}" placeholder="Ex: World of Warcraft" data-action="updateNegFormField" data-field="digitalGame" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
               </div>
               <div>
-                <label class="block text-sm text-gray-700 font-medium mb-2">Tipo de moeda *</label>
-                <input type="text" name="digital_currency_type" required value="${escapeAttr(getDraft('digital_currency_type'))}" placeholder="Ex: Gold, Coins, Créditos" data-action="updateNegFormField" data-field="digitalCurrencyType" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
+                <label class="block text-sm text-gray-700 font-medium mb-2">Servidor *</label>
+                <input type="text" name="digital_platform_server" required value="${escapeAttr(getDraft('digital_platform_server'))}" placeholder="Ex: Azralon" data-action="updateNegFormField" data-field="digitalPlatformServer" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all">
               </div>
             </div>
 
@@ -1707,7 +2978,7 @@
         const serviceRangesDraft = normalizeTimeRangeOptions(getDraftArray('service_seller_time_range_options'), 3);
 
         // Keep scheduling on Step 3 only (so Step 2 doesn't get too long)
-        if (!showServiceFields || step !== 3) {
+        if (!showServiceScheduleFields || step !== 3) {
           serviceSchedule.innerHTML = '';
         } else {
           serviceSchedule.innerHTML = `
@@ -2506,7 +3777,7 @@
     const isAuthenticated = Boolean(state.token && state.user);
     const appBackgroundClass = 'bg-transparent';
     const content = `
-      <div class="min-h-screen ${appBackgroundClass} text-gray-900 flex flex-col overflow-x-hidden">
+      <div class="${appBackgroundClass} text-gray-900 overflow-x-hidden">
         ${renderHeader(isAuthenticated)}
         ${isAuthenticated ? renderProtectedView() : renderPublicLayout()}
         ${renderFooter()}
@@ -2798,7 +4069,7 @@
 
   function renderPublicLayout() {
     return `
-      <main class="flex-1 bg-gradient-to-br from-primary-600 via-primary-700 to-secondary-600 flex items-center justify-center p-4 sm:p-6 min-h-[calc(100vh-200px)]">
+      <main class="min-h-screen bg-gradient-to-br from-primary-600 via-primary-700 to-secondary-600 flex items-center justify-center p-4 sm:p-6">
         <div class="absolute inset-0 overflow-hidden pointer-events-none opacity-30">
           <div class="absolute -top-40 -right-40 w-80 h-80 bg-white/10 rounded-full blur-3xl"></div>
           <div class="absolute -bottom-40 -left-40 w-80 h-80 bg-secondary-400/20 rounded-full blur-3xl"></div>
@@ -3155,7 +4426,7 @@
 
   function renderProtectedView() {
     return `
-      <main class="flex-1 w-full p-4 sm:p-6 overflow-x-hidden">
+      <main class="min-h-screen w-full p-4 sm:p-6 overflow-x-hidden">
         <div class="w-full max-w-6xl mx-auto">${renderProtectedPage()}</div>
       </main>
     `;
@@ -5131,12 +6402,23 @@
     const category = String(neg?.category || '').trim();
     const isCurrency = category === CATEGORY_CURRENCY;
     const isService = isServiceTaxonomyCategory(category) || category === CATEGORY_SERVICE;
+    const isServiceSchedule = isServiceScheduleCategory(category);
+    const isServiceExchange = category === CATEGORY_SERVICE_EXCHANGE;
+    const isAccount = category === CATEGORY_GAME_ACCOUNT;
+    const isKeyDlc = category === CATEGORY_KEY_DLC;
+    const isBoostRank = category === CATEGORY_BOOST_RANK;
+    const isCarryPve = category === CATEGORY_CARRY_PVE;
+    const isLeveling = category === CATEGORY_LEVELING;
+    const isCollectibles = category === CATEGORY_COLLECTIBLES;
+    const isSeasonal = category === CATEGORY_SEASONAL;
+    const isCustomService = category === CATEGORY_CUSTOM_SERVICE;
     const gold = neg?.gold_delivery || null;
     const sellerTimeOptions = Array.isArray(gold?.seller?.time_options) ? gold.seller.time_options : [];
 
     const service = neg?.service_delivery || null;
     const serviceStartDates = Array.isArray(service?.seller?.start_date_options) ? service.seller.start_date_options : [];
     const serviceTimeRanges = Array.isArray(service?.seller?.time_range_options) ? service.seller.time_range_options : [];
+    const serviceInfo = neg?.service || null;
     const hasDesc = Boolean(neg?.description && String(neg.description).trim());
     const methodLabel = (m) => {
       const v = String(m || '').trim();
@@ -5147,6 +6429,334 @@
     };
     const qtyLabel = isCurrency && neg?.digital_quantity ? formatPtBrMoney(Number(neg.digital_quantity) || 0) : '';
     const deadlineDays = Number(neg?.delivery_days) > 0 ? Number(neg.delivery_days) : DIGITAL_DELIVERY_DEADLINE_BUSINESS_DAYS;
+    const productTitle = String(neg?.product_title || neg?.product_name || neg?.title || 'Negociação').trim();
+    const productAmount = Number(neg?.amount || neg?.product_amount || 0);
+
+    const buyerInviteSummary = `
+      <div class="p-4 rounded-xl border border-gray-100 bg-gray-50 mb-4">
+        <h3 class="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+          <i class="fas fa-clipboard-list text-secondary-500"></i> Resumo do anúncio
+        </h3>
+        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+          <div>
+            <dt class="text-gray-500">Anúncio</dt>
+            <dd class="text-gray-800 font-medium">${escapeHtml(productTitle || '—')}</dd>
+          </div>
+          <div>
+            <dt class="text-gray-500">Categoria</dt>
+            <dd class="text-gray-800 font-medium">${escapeHtml(category || '—')}</dd>
+          </div>
+          <div>
+            <dt class="text-gray-500">Valor</dt>
+            <dd class="text-gray-800 font-medium">${productAmount ? formatCurrency(productAmount) : '—'}</dd>
+          </div>
+          <div>
+            <dt class="text-gray-500">Prazo combinado</dt>
+            <dd class="text-gray-800 font-medium">${deadlineDays} ${deadlineDays === 1 ? 'dia' : 'dias'}</dd>
+          </div>
+          ${isCurrency ? `
+            <div>
+              <dt class="text-gray-500">Jogo</dt>
+              <dd class="text-gray-800 font-medium">${escapeHtml(neg?.digital_game || '—')}</dd>
+            </div>
+            <div>
+              <dt class="text-gray-500">Quantidade</dt>
+              <dd class="text-gray-800 font-medium">${escapeHtml(qtyLabel || '—')}</dd>
+            </div>
+          ` : ''}
+          ${serviceInfo ? `
+            <div class="sm:col-span-2">
+              <dt class="text-gray-500">Serviço</dt>
+              <dd class="text-gray-800 font-medium">${escapeHtml(String(serviceInfo?.service_label || 'Serviço'))} — ${escapeHtml(String(serviceInfo?.game_label || 'Jogo'))}</dd>
+            </div>
+          ` : ''}
+        </dl>
+      </div>
+    `;
+
+    const buyerInviteInputs = (() => {
+      if (isBoostRank) {
+        return `
+          <div class="p-4 rounded-xl border border-gray-100 bg-white mb-4 space-y-4">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2"><i class="fas fa-signal text-success-600"></i> Dados do rank</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Rank atual *</label>
+                <input type="text" name="buyer_invite_inputs[rank_current_confirmed]" required maxlength="120" placeholder="Ex: Ouro IV" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Classe/Personagem *</label>
+                <input type="text" name="buyer_invite_inputs[class_character]" required maxlength="120" placeholder="Ex: Mago / Assassino" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Disponibilidade *</label>
+              <textarea name="buyer_invite_inputs[availability]" required rows="2" maxlength="500" placeholder="Ex: Seg-Sex 20h-23h" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Rank desejado (opcional)</label>
+                <input type="text" name="buyer_invite_inputs[rank_goal]" maxlength="120" placeholder="Ex: Diamante IV" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Jogar junto?</label>
+                <select name="buyer_invite_inputs[wants_play_together]" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+                  <option value="">Selecione</option>
+                  <option value="Sim">Sim</option>
+                  <option value="Não">Não</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      if (isCarryPve) {
+        return `
+          <div class="p-4 rounded-xl border border-gray-100 bg-white mb-4 space-y-4">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2"><i class="fas fa-dungeon text-success-600"></i> Dados do conteúdo</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Classe/Role *</label>
+                <input type="text" name="buyer_invite_inputs[class_role]" required maxlength="120" placeholder="Ex: Tank / Curandeiro" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Nível do personagem *</label>
+                <input type="text" name="buyer_invite_inputs[character_level]" required maxlength="120" placeholder="Ex: 70" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Experiência no conteúdo *</label>
+              <select name="buyer_invite_inputs[experience]" required class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+                <option value="">Selecione</option>
+                <option value="Iniciante">Iniciante</option>
+                <option value="Intermediário">Intermediário</option>
+                <option value="Avançado">Avançado</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Disponibilidade *</label>
+              <textarea name="buyer_invite_inputs[availability]" required rows="2" maxlength="500" placeholder="Ex: Sab/Dom 14h-18h" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+            </div>
+          </div>
+        `;
+      }
+
+      if (isLeveling) {
+        return `
+          <div class="p-4 rounded-xl border border-gray-100 bg-white mb-4 space-y-4">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2"><i class="fas fa-level-up-alt text-success-600"></i> Dados do leveling</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Classe/Personagem *</label>
+                <input type="text" name="buyer_invite_inputs[class_character]" required maxlength="120" placeholder="Ex: Guerreiro" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Nível atual (opcional)</label>
+                <input type="text" name="buyer_invite_inputs[level_current]" maxlength="120" placeholder="Ex: 35" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Disponibilidade *</label>
+              <textarea name="buyer_invite_inputs[availability]" required rows="2" maxlength="500" placeholder="Ex: Seg-Sex 18h-22h" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+            </div>
+          </div>
+        `;
+      }
+
+      if (isCollectibles) {
+        return `
+          <div class="p-4 rounded-xl border border-gray-100 bg-white mb-4 space-y-4">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2"><i class="fas fa-trophy text-success-600"></i> Dados das conquistas</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">O que você já possui *</label>
+                <input type="text" name="buyer_invite_inputs[already_have]" required maxlength="200" placeholder="Ex: 2 títulos, 1 montaria" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Personagem usado *</label>
+                <input type="text" name="buyer_invite_inputs[character_used]" required maxlength="120" placeholder="Ex: Druida" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Disponibilidade *</label>
+              <textarea name="buyer_invite_inputs[availability]" required rows="2" maxlength="500" placeholder="Ex: Ter/Qui 20h-23h" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Há chance de RNG?</label>
+                <select name="buyer_invite_inputs[rng_has_chance]" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+                  <option value="">Selecione</option>
+                  <option value="Sim">Sim</option>
+                  <option value="Não">Não</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Tentativas (se RNG)</label>
+                <input type="text" name="buyer_invite_inputs[rng_attempts]" maxlength="120" placeholder="Ex: 10 runs" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Política caso não drope (se RNG)</label>
+              <input type="text" name="buyer_invite_inputs[rng_policy]" maxlength="200" placeholder="Ex: Reagendar mais 2 runs" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+            </div>
+          </div>
+        `;
+      }
+
+      if (isSeasonal) {
+        return `
+          <div class="p-4 rounded-xl border border-gray-100 bg-white mb-4 space-y-4">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2"><i class="fas fa-snowflake text-success-600"></i> Metas da temporada</h3>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Metas desejadas *</label>
+              <textarea name="buyer_invite_inputs[goals]" required rows="2" maxlength="500" placeholder="Ex: concluir passe, fechar ranking" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Progresso atual (opcional)</label>
+                <input type="text" name="buyer_invite_inputs[progress_current]" maxlength="120" placeholder="Ex: Tier 30" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-700 font-medium mb-2">Frequência de jogo *</label>
+                <select name="buyer_invite_inputs[frequency]" required class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+                  <option value="">Selecione</option>
+                  <option value="Diário">Diário</option>
+                  <option value="3-4x por semana">3-4x por semana</option>
+                  <option value="1-2x por semana">1-2x por semana</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      if (isCustomService) {
+        return `
+          <div class="p-4 rounded-xl border border-gray-100 bg-white mb-4 space-y-4">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2"><i class="fas fa-pen-nib text-success-600"></i> Objetivo personalizado</h3>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Descreva o objetivo *</label>
+              <textarea name="buyer_invite_inputs[objective_detail]" required rows="3" maxlength="700" placeholder="Explique o que precisa, metas e limites" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Disponibilidade *</label>
+              <textarea name="buyer_invite_inputs[availability]" required rows="2" maxlength="500" placeholder="Ex: Seg-Sex 19h-22h" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Referências (opcional)</label>
+              <input type="text" name="buyer_invite_inputs[references]" maxlength="200" placeholder="Links, prints, ou informações úteis" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+            </div>
+          </div>
+        `;
+      }
+
+      if (isServiceExchange) {
+        return `
+          <div class="p-4 rounded-xl border border-gray-100 bg-white mb-4 space-y-4">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2"><i class="fas fa-exchange-alt text-success-600"></i> Serviço oferecido</h3>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Qual serviço você oferece? *</label>
+              <textarea name="buyer_invite_inputs[offered_service]" required rows="2" maxlength="500" placeholder="Descreva seu serviço, escopo e nível" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Disponibilidade *</label>
+              <textarea name="buyer_invite_inputs[availability]" required rows="2" maxlength="500" placeholder="Ex: Finais de semana à noite" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Restrições (opcional)</label>
+              <input type="text" name="buyer_invite_inputs[constraints]" maxlength="200" placeholder="Ex: Sem login em conta principal" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+            </div>
+          </div>
+        `;
+      }
+
+      if (isCurrency) {
+        return `
+          <div class="p-4 rounded-xl border border-gray-100 bg-white mb-4 space-y-4">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2"><i class="fas fa-coins text-success-600"></i> Preferências da troca</h3>
+            <div>
+              <label class="block text-sm text-gray-700 font-medium mb-2">Método preferido (opcional)</label>
+              <select name="buyer_invite_inputs[currency_preferred_method]" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all">
+                <option value="">Selecione</option>
+                <option value="trade">Trade (troca/encontro no jogo)</option>
+                <option value="mail">Correio do jogo (mail)</option>
+                <option value="gift">Presente (gift)</option>
+              </select>
+            </div>
+          </div>
+        `;
+      }
+
+      if (isAccount || isKeyDlc) {
+        return `
+          <div class="p-4 rounded-xl border border-gray-100 bg-white mb-4">
+            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2"><i class="fas fa-shield-alt text-success-600"></i> Preferências do comprador</h3>
+            <label class="block text-sm text-gray-700 font-medium mb-2">Observações (opcional)</label>
+            <textarea name="buyer_invite_inputs[buyer_preferences]" rows="2" maxlength="500" placeholder="Ex: receber por e-mail, horário para validação" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+          </div>
+        `;
+      }
+
+      return '';
+    })();
+
+    const buyerInviteConfirmations = `
+      <div class="p-4 rounded-xl border border-gray-100 bg-gray-50 mb-4 space-y-3">
+        <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2"><i class="fas fa-check-circle text-success-600"></i> Confirmações obrigatórias</h3>
+        <label class="flex items-start gap-2 text-sm text-gray-700">
+          <input type="checkbox" name="buyer_invite_confirmations[scope]" required>
+          <span>Li e concordo com o escopo apresentado pelo vendedor.</span>
+        </label>
+        <label class="flex items-start gap-2 text-sm text-gray-700">
+          <input type="checkbox" name="buyer_invite_confirmations[deadline]" required>
+          <span>Estou ciente do prazo informado para entrega/conclusão.</span>
+        </label>
+        <label class="flex items-start gap-2 text-sm text-gray-700">
+          <input type="checkbox" name="buyer_invite_confirmations[terms]" required>
+          <span>Concordo com os termos da plataforma e política de disputa.</span>
+        </label>
+        ${isAccount ? `
+          <label class="flex items-start gap-2 text-sm text-gray-700">
+            <input type="checkbox" name="buyer_invite_confirmations[account_recovery]" required>
+            <span>Entendo a política de recuperação de conta e segurança do acesso.</span>
+          </label>
+          <label class="flex items-start gap-2 text-sm text-gray-700">
+            <input type="checkbox" name="buyer_invite_confirmations[description]" required>
+            <span>Li toda a descrição do anúncio e estou ciente do que será entregue.</span>
+          </label>
+          <label class="flex items-start gap-2 text-sm text-gray-700">
+            <input type="checkbox" name="buyer_invite_confirmations[proofs]" required>
+            <span>Revisei as provas anexadas pelo vendedor.</span>
+          </label>
+        ` : ''}
+        ${isKeyDlc ? `
+          <label class="flex items-start gap-2 text-sm text-gray-700">
+            <input type="checkbox" name="buyer_invite_confirmations[platform_compatible]" required>
+            <span>Confirmei que a chave/DLC é compatível com minha plataforma.</span>
+          </label>
+          <label class="flex items-start gap-2 text-sm text-gray-700">
+            <input type="checkbox" name="buyer_invite_confirmations[region_compatible]" required>
+            <span>Confirmei que a região é compatível com minha conta.</span>
+          </label>
+        ` : ''}
+        ${isCollectibles ? `
+          <label class="flex items-start gap-2 text-sm text-gray-700">
+            <input type="checkbox" name="buyer_invite_confirmations[rng]">
+            <span>Estou ciente de que pode haver RNG e aceito a política informada.</span>
+          </label>
+        ` : ''}
+      </div>
+    `;
+
+    const buyerInviteNotes = `
+      <div class="p-4 rounded-xl border border-gray-100 bg-white mb-4">
+        <label class="block text-sm text-gray-700 font-medium mb-2">Observações finais (opcional)</label>
+        <textarea name="buyer_invite_notes" rows="2" maxlength="800" placeholder="Detalhes adicionais para o vendedor/intermediador" class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
+      </div>
+    `;
+
+    const buyerInviteFormFields = `${buyerInviteInputs}${buyerInviteConfirmations}${buyerInviteNotes}`;
 
     return `
       <article class="bg-white rounded-2xl p-6 shadow-card border border-success-200">
@@ -5170,6 +6780,8 @@
           <p class="text-sm text-gray-600">Após o aceite, você receberá as instruções de pagamento.</p>
         </div>
 
+        ${buyerInviteSummary}
+
         ${isCurrency ? `
           <div class="p-4 rounded-xl border border-gray-100 bg-gray-50 mb-4">
             <h3 class="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
@@ -5179,10 +6791,6 @@
               <div>
                 <dt class="text-gray-500">Jogo</dt>
                 <dd class="text-gray-800 font-medium">${escapeHtml(neg?.digital_game || '—')}</dd>
-              </div>
-              <div>
-                <dt class="text-gray-500">Tipo de moeda</dt>
-                <dd class="text-gray-800 font-medium">${escapeHtml(neg?.digital_currency_type || '—')}</dd>
               </div>
               <div>
                 <dt class="text-gray-500">Quantidade</dt>
@@ -5259,6 +6867,8 @@
               <textarea name="gold_buyer_notes" rows="2" maxlength="1000" placeholder="Ex: Chego 5 min antes, posso esperar até 10 min." class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-gray-800 focus:ring-2 focus:ring-success-500 focus:border-success-500 transition-all resize-none"></textarea>
             </div>
 
+            ${buyerInviteFormFields}
+
             <div class="flex flex-wrap gap-3">
               <button type="submit" class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2">
                 <i class="fas fa-check"></i> Aceitar e participar
@@ -5270,7 +6880,7 @@
           </form>
         ` : ''}
 
-        ${isService ? `
+        ${isService && isServiceSchedule ? `
           <form class="p-4 rounded-xl border border-success-200 bg-white mb-4 space-y-4" data-action="acceptNegotiation" data-id="${neg.id}">
             <div class="flex items-center gap-2 text-gray-900 font-semibold">
               <i class="fas fa-calendar-check text-success-600"></i>
@@ -5320,6 +6930,8 @@
               <div>Vendedor: <strong>${escapeHtml(formatPhone(neg?.seller?.phone || '') || '—')}</strong></div>
             </div>
 
+            ${buyerInviteFormFields}
+
             <div class="flex flex-wrap gap-3">
               <button type="submit" class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2" ${(serviceStartDates.length && serviceTimeRanges.length) ? '' : 'disabled'}>
                 <i class="fas fa-check"></i> Aceitar e participar
@@ -5330,16 +6942,19 @@
             </div>
           </form>
         ` : ''}
-        
-        ${(isCurrency || isService) ? '' : `
-          <div class="flex flex-wrap gap-3">
-            <button class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2" data-action="acceptNegotiation" data-id="${neg.id}">
-              <i class="fas fa-check"></i> Aceitar e participar
-            </button>
-            <button class="px-5 py-2.5 bg-danger-100 hover:bg-danger-200 text-danger-700 rounded-lg font-medium transition flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
-              <i class="fas fa-times"></i> Recusar
-            </button>
-          </div>
+
+        ${(isCurrency || (isService && isServiceSchedule)) ? '' : `
+          <form class="p-4 rounded-xl border border-success-200 bg-white mb-4 space-y-4" data-action="acceptNegotiation" data-id="${neg.id}">
+            ${buyerInviteFormFields}
+            <div class="flex flex-wrap gap-3">
+              <button type="submit" class="px-5 py-2.5 bg-success-600 hover:bg-success-700 rounded-lg text-white font-semibold transition flex items-center gap-2">
+                <i class="fas fa-check"></i> Aceitar e participar
+              </button>
+              <button type="button" class="px-5 py-2.5 bg-danger-100 hover:bg-danger-200 text-danger-700 rounded-lg font-medium transition flex items-center gap-2" data-action="openRejectModal" data-id="${neg.id}">
+                <i class="fas fa-times"></i> Recusar
+              </button>
+            </div>
+          </form>
         `}
       </article>
     `;
@@ -7414,63 +9029,63 @@
 
   function renderFooter() {
     return `
-      <footer class="bg-gray-900 text-white py-6">
-        <div class="container mx-auto px-6">
+      <footer class="bg-gray-900 text-white py-4">
+        <div class="container mx-auto px-4">
           <!-- Grid de 3 colunas -->
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-10">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 lg:gap-6">
             <!-- Coluna 1: Logo e descrição -->
-            <div class="space-y-4">
+            <div class="space-y-3">
               <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-gradient-to-br from-primary-500 to-secondary-500 rounded-xl flex items-center justify-center flex-shrink-0 shadow-lg">
+                <div class="w-9 h-9 bg-gradient-to-br from-primary-500 to-secondary-500 rounded-xl flex items-center justify-center flex-shrink-0 shadow-lg">
                   <i class="fas fa-handshake text-white text-lg"></i>
                 </div>
-                <span class="text-xl font-bold">Intermediação<span class="text-transparent bg-clip-text bg-gradient-to-r from-primary-400 to-secondary-400">Pro</span></span>
+                <span class="text-lg font-bold">Intermediação<span class="text-transparent bg-clip-text bg-gradient-to-r from-primary-400 to-secondary-400">Pro</span></span>
               </div>
-              <p class="text-gray-400 text-sm leading-relaxed">Conectando pessoas e oportunidades com segurança e eficiência.</p>
-              <div class="flex gap-3 pt-2">
-                <a href="#" class="w-9 h-9 bg-gradient-to-br from-primary-500 to-secondary-500 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-lg"><i class="fab fa-facebook-f text-sm"></i></a>
-                <a href="#" class="w-9 h-9 bg-gradient-to-br from-secondary-400 to-primary-400 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-lg"><i class="fab fa-twitter text-sm"></i></a>
-                <a href="#" class="w-9 h-9 bg-gradient-to-br from-danger-400 to-warning-400 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-lg"><i class="fab fa-instagram text-sm"></i></a>
+              <p class="text-gray-400 text-xs leading-relaxed">Conectando pessoas e oportunidades com segurança e eficiência.</p>
+              <div class="flex gap-2 pt-1">
+                <a href="#" class="w-8 h-8 bg-gradient-to-br from-primary-500 to-secondary-500 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-lg"><i class="fab fa-facebook-f text-xs"></i></a>
+                <a href="#" class="w-8 h-8 bg-gradient-to-br from-secondary-400 to-primary-400 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-lg"><i class="fab fa-twitter text-xs"></i></a>
+                <a href="#" class="w-8 h-8 bg-gradient-to-br from-danger-400 to-warning-400 rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-lg"><i class="fab fa-instagram text-xs"></i></a>
               </div>
             </div>
 
             <!-- Coluna 2: Links -->
             <div class="grid grid-cols-2 gap-6">
               <div>
-                <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-4">Navegação</h4>
-                <ul class="space-y-2">
-                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">Início</a></li>
-                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">Serviços</a></li>
-                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">Como Funciona</a></li>
+                <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-3">Navegação</h4>
+                <ul class="space-y-1.5">
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-xs">Início</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-xs">Serviços</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-xs">Como Funciona</a></li>
                 </ul>
               </div>
               <div>
-                <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-4">Legal</h4>
-                <ul class="space-y-2">
-                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">Termos de Uso</a></li>
-                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">Privacidade</a></li>
-                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-sm">FAQ</a></li>
+                <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-3">Legal</h4>
+                <ul class="space-y-1.5">
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-xs">Termos de Uso</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-xs">Privacidade</a></li>
+                  <li><a href="#" class="text-gray-400 hover:text-secondary-400 transition text-xs">FAQ</a></li>
                 </ul>
               </div>
             </div>
 
             <!-- Coluna 3: Contato -->
             <div>
-              <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-4">Contato</h4>
+              <h4 class="text-sm font-bold text-white uppercase tracking-wider mb-3">Contato</h4>
               <ul class="space-y-3">
-                <li class="flex items-center gap-3 text-gray-400 text-sm">
+                <li class="flex items-center gap-3 text-gray-400 text-xs">
                   <div class="w-8 h-8 rounded-lg bg-gray-700/50 flex items-center justify-center flex-shrink-0">
                     <i class="fas fa-envelope text-primary-400 text-xs"></i>
                   </div>
                   <span>contato@intermediacaopro.com</span>
                 </li>
-                <li class="flex items-center gap-3 text-gray-400 text-sm">
+                <li class="flex items-center gap-3 text-gray-400 text-xs">
                   <div class="w-8 h-8 rounded-lg bg-gray-700/50 flex items-center justify-center flex-shrink-0">
                     <i class="fas fa-phone text-primary-400 text-xs"></i>
                   </div>
                   <span>(11) 99999-9999</span>
                 </li>
-                <li class="flex items-center gap-3 text-gray-400 text-sm">
+                <li class="flex items-center gap-3 text-gray-400 text-xs">
                   <div class="w-8 h-8 rounded-lg bg-gray-700/50 flex items-center justify-center flex-shrink-0">
                     <i class="fas fa-map-marker-alt text-primary-400 text-xs"></i>
                   </div>
@@ -7481,8 +9096,8 @@
           </div>
 
           <!-- Linha divisória e copyright -->
-          <div class="border-t border-gray-700/50 mt-8 pt-5 flex flex-col md:flex-row items-center justify-between gap-4">
-            <p class="text-gray-500 text-sm">© ${new Date().getFullYear()} IntermediaçãoPro. Todos os direitos reservados.</p>
+          <div class="border-t border-gray-700/50 mt-5 pt-4 flex flex-col md:flex-row items-center justify-between gap-3">
+            <p class="text-gray-500 text-xs">© ${new Date().getFullYear()} IntermediaçãoPro. Todos os direitos reservados.</p>
             <p class="text-gray-600 text-xs">Feito com <i class="fas fa-heart text-danger-400"></i> no Brasil</p>
           </div>
         </div>

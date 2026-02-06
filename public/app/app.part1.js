@@ -158,7 +158,6 @@
       sellerFeeMode: 'deduct',
       deliveryDays: '',
       digitalGame: '',
-      digitalCurrencyType: '',
       digitalQuantity: '',
       digitalPlatformServer: '',
       digitalDeliveryMethod: '',
@@ -184,6 +183,12 @@
     // Modal de rejeição do comprador
     showBuyerRejectModal: false,
     rejectNegotiationId: null,
+
+    // Modais do comprador: negociar / reportar
+    showBuyerNegotiateModal: false,
+    negotiateNegotiationId: null,
+    showBuyerReportModal: false,
+    reportNegotiationId: null,
 
     // Entrega de gold (comprador): mostrar/ocultar formulário de novo horário
     showBuyerGoldRescheduleForm: false,
