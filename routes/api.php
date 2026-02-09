@@ -24,6 +24,7 @@ Route::get('/files/negotiations/{id}/payment-proof', [FileController::class, 'do
 
 Route::middleware(['auth:api', 'api.token.expiry', 'last.seen'])->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
+    Route::post('/me/ping', [AuthController::class, 'ping']);
     Route::post('/logout', [AuthController::class, 'logout']);
 
     // Email verification - send link

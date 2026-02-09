@@ -367,6 +367,17 @@
     const run = async () => {
       if (!state.token) return;
 
+      // Keep-alive presence on the backend even during modals (no UI changes).
+      const now = Date.now();
+      if (now - presenceLastPingAt >= 60000) {
+        presenceLastPingAt = now;
+        try {
+          await apiCall('/me/ping', { method: 'POST' });
+        } catch {
+          // ignore
+        }
+      }
+
       // Evita re-render enquanto modais sensíveis estiverem abertos.
       if (state.showPendingModal || state.showCreateNegotiationModal) return;
 
@@ -374,7 +385,6 @@
       setState({ presenceTick: Date.now() });
 
       // Refresh last_seen_at periodically.
-      const now = Date.now();
       if (now - presenceLastRefreshAt < 60000) return;
 
       presenceLastRefreshAt = now;
@@ -1862,7 +1872,7 @@
             return true;
           })();
 
-          // Entrega (Camada 7) não é necessária no fluxo de conta de jogo: usamos um texto padrão.
+          // Entrega (etapa final) não é necessária no fluxo de conta de jogo: usamos um texto padrão.
           const currentDeliverable = v('what_will_be_delivered');
           if (!currentDeliverable) {
             state.createNegForm = { ...(state.createNegForm || {}), what_will_be_delivered: DEFAULT_GAME_ACCOUNT_DELIVERABLE };
@@ -1906,23 +1916,23 @@
           };
 
           if (!layer1Done) {
-            notify({ type: 'error', message: 'Complete a Camada 1 (Identificação do produto) antes de continuar.' });
+            notify({ type: 'error', message: 'Complete a identificação do produto antes de continuar.' });
             return;
           }
           if (isCompetitiveType && !rankingDone) {
-            openAndScroll('ranking', 'Preencha o Ranking (Camada 3) antes de continuar.');
+            openAndScroll('ranking', 'Preencha o ranking antes de continuar.');
             return;
           }
           if (!exclusiveDone) {
-            openAndScroll('exclusive', 'Preencha a Camada 4 (Itens exclusivos) antes de continuar.');
+            openAndScroll('exclusive', 'Preencha os itens exclusivos antes de continuar.');
             return;
           }
           if (!specificDone) {
-            openAndScroll('specific', 'Preencha a Camada 5 (Dados específicos por tipo) antes de continuar.');
+            openAndScroll('specific', 'Preencha os dados específicos antes de continuar.');
             return;
           }
           if (!securityDone) {
-            openAndScroll('security', 'Preencha a Segurança da conta (Camada 2) antes de continuar.');
+            openAndScroll('security', 'Preencha a segurança da conta antes de continuar.');
             return;
           }
         }
@@ -2150,7 +2160,7 @@
       // Evitar re-render pesado em cada tecla; para select, roda em change.
       if (event && event.type === 'input') return;
       // Importante: antes de re-renderizar, persistir o que o usuário digitou no DOM.
-      // Sem isso, campos com apenas refresh (ex: nome do jogo / números da camada 5) parecem "não aceitar".
+      // Sem isso, campos com apenas refresh (ex: nome do jogo / números do bloco específico) parecem "não aceitar".
       try {
         const form = document.querySelector('form[data-action="createNegotiation"]');
         if (form instanceof HTMLFormElement) {
@@ -2199,6 +2209,40 @@
         } catch {
           // ignore
         }
+      }
+    },
+
+    openGaLayer({ dataset }) {
+      if (!state.showCreateNegotiationModal) return;
+      try {
+        const form = document.querySelector('form[data-action="createNegotiation"]');
+        if (form instanceof HTMLFormElement) {
+          persistCreateNegotiationDraftFromDOM(form);
+        }
+      } catch {
+        // ignore
+      }
+
+      const key = String(dataset?.key || '').trim();
+      if (!key) return;
+      const flag = `_uiGaOpen_${key}`;
+      state.createNegForm = { ...(state.createNegForm || {}), _uiGaActiveKey: key, [flag]: true };
+      updateCreateNegotiationModalDynamicUI();
+
+      try {
+        requestAnimationFrame(() => {
+          const root = document.getElementById('app');
+          const block = root ? root.querySelector(`[data-ga-layer="${CSS.escape(key)}"]`) : null;
+          if (block && typeof block.scrollIntoView === 'function') {
+            block.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+          const first = block ? block.querySelector('input, select, textarea') : null;
+          if (first && typeof first.focus === 'function') {
+            first.focus({ preventScroll: true });
+          }
+        });
+      } catch {
+        // ignore
       }
     },
 
@@ -2637,6 +2681,8 @@
         return;
       }
 
+      const draft = (state.createNegForm && typeof state.createNegForm === 'object') ? state.createNegForm : {};
+
       // Validações
       if (!values.category) {
         notify({ type: 'error', message: 'Selecione uma categoria.' });
@@ -2951,9 +2997,9 @@
 
       if (isGameAccount) {
         const DEFAULT_GAME_ACCOUNT_DELIVERABLE = 'Acesso à conta (login e senha) + instruções para troca de credenciais.';
-        const gameType = String(values.game_account_type ?? '').trim();
-        const gameName = String(values.game_account_game ?? '').trim();
-        const platform = String(values.game_account_platform ?? '').trim();
+        const gameType = String(values.game_account_type ?? draft.game_account_type ?? '').trim();
+        const gameName = String(values.game_account_game ?? draft.game_account_game ?? '').trim();
+        const platform = String(values.game_account_platform ?? draft.game_account_platform ?? '').trim();
         if (!gameType) {
           notify({ type: 'error', message: 'Selecione o tipo do jogo.' });
           return;
@@ -2967,37 +3013,56 @@
           return;
         }
 
-        const firstOwner = String(values.game_account_first_owner ?? '').trim();
+        const firstOwner = String(values.game_account_first_owner ?? draft.game_account_first_owner ?? '').trim();
         if (!['0', '1'].includes(firstOwner)) {
           notify({ type: 'error', message: 'Informe se você é o primeiro dono da conta.' });
           return;
         }
-        const hasOriginalEmail = String(values.game_account_has_original_email ?? '').trim();
+        const hasOriginalEmail = String(values.game_account_has_original_email ?? draft.game_account_has_original_email ?? '').trim();
         if (!['0', '1'].includes(hasOriginalEmail)) {
           notify({ type: 'error', message: 'Informe se possui acesso ao e-mail original.' });
           return;
         }
-        const linkedProviders = normalizeCheckboxArray(values['game_account_linked_providers[]'] ?? values.game_account_linked_providers);
-        if (!linkedProviders.length) {
-          notify({ type: 'error', message: 'Informe as vinculações da conta (ou marque “Nenhuma”).' });
+        const linkedProvidersRaw = values['game_account_linked_providers[]']
+          ?? values.game_account_linked_providers
+          ?? draft.game_account_linked_providers;
+        let linkedProviders = normalizeCheckboxArray(linkedProvidersRaw);
+
+        let hasLinkedProviders = String(values.game_account_has_linked_providers ?? draft.game_account_has_linked_providers ?? '').trim();
+        if (!['0', '1'].includes(hasLinkedProviders)) {
+          if (linkedProviders.includes('none')) hasLinkedProviders = '0';
+          else if (linkedProviders.length) hasLinkedProviders = '1';
+        }
+        if (!['0', '1'].includes(hasLinkedProviders)) {
+          notify({ type: 'error', message: 'A conta possui algum vínculo? Selecione “Sim” ou “Não”.' });
           return;
+        }
+
+        if (hasLinkedProviders === '0') {
+          linkedProviders = ['none'];
+        } else {
+          linkedProviders = linkedProviders.filter((v) => v !== 'none');
+          if (!linkedProviders.length) {
+            notify({ type: 'error', message: 'Selecione pelo menos 1 vínculo (ou marque “Não”).' });
+            return;
+          }
         }
         if (linkedProviders.includes('none') && linkedProviders.length > 1) {
           notify({ type: 'error', message: 'Selecione apenas “Nenhuma” ou as vinculações existentes.' });
           return;
         }
 
-        const canChange = String(values.game_account_can_change_credentials ?? '').trim();
+        const canChange = String(values.game_account_can_change_credentials ?? draft.game_account_can_change_credentials ?? '').trim();
         if (!['yes', 'no', 'partial'].includes(canChange)) {
           notify({ type: 'error', message: 'Informe se é possível alterar e-mail e senha.' });
           return;
         }
-        const punishment = String(values.game_account_punishment_history ?? '').trim();
+        const punishment = String(values.game_account_punishment_history ?? draft.game_account_punishment_history ?? '').trim();
         if (!punishment) {
           notify({ type: 'error', message: 'Informe o histórico de punições.' });
           return;
         }
-        const deliverable = String(values.what_will_be_delivered ?? '').trim() || DEFAULT_GAME_ACCOUNT_DELIVERABLE;
+        const deliverable = String(values.what_will_be_delivered ?? draft.what_will_be_delivered ?? '').trim() || DEFAULT_GAME_ACCOUNT_DELIVERABLE;
         if (deliverable.length > 200) {
           notify({ type: 'error', message: 'O campo de entrega deve ter no máximo 200 caracteres.' });
           return;
@@ -3006,7 +3071,7 @@
         const competitiveTypes = ['fps', 'moba', 'battle_royale', 'mobile', 'esporte'];
         const isCompetitive = competitiveTypes.includes(gameType);
         if (isCompetitive) {
-          const tier = String(values.ga_rank_current_tier ?? '').trim();
+          const tier = String(values.ga_rank_current_tier ?? draft.ga_rank_current_tier ?? '').trim();
           if (!tier) {
             notify({ type: 'error', message: 'Informe o tier atual (ranking).' });
             return;
@@ -3023,8 +3088,9 @@
           other: ['ts_other_progression_general', 'ts_other_has_competitive'],
         };
         const required = requiredByType[gameType] || [];
+        const mergedDynamic = { ...(draft || {}), ...(values || {}) };
         for (const key of required) {
-          const val = values[key];
+          const val = mergedDynamic[key];
           const ok = Array.isArray(val) ? val.length > 0 : String(val ?? '').trim().length > 0;
           if (!ok) {
             notify({ type: 'error', message: 'Preencha os campos obrigatórios do tipo de jogo.' });
@@ -3032,7 +3098,7 @@
           }
         }
 
-        const hasExclusive = String(values.ga_has_exclusive_items ?? '').trim();
+        const hasExclusive = String(values.ga_has_exclusive_items ?? draft.ga_has_exclusive_items ?? '').trim();
         if (!['0', '1'].includes(hasExclusive)) {
           notify({ type: 'error', message: 'Informe se a conta possui itens exclusivos.' });
           return;
@@ -3175,29 +3241,49 @@
         }
 
         if (isGameAccount) {
-          const linkedProviders = normalizeCheckboxArray(values['game_account_linked_providers[]'] ?? values.game_account_linked_providers);
+          const linkedProvidersRaw = values['game_account_linked_providers[]']
+            ?? values.game_account_linked_providers
+            ?? draft.game_account_linked_providers;
+          let linkedProviders = normalizeCheckboxArray(linkedProvidersRaw);
 
-          const gameType = String(values.game_account_type ?? '').trim();
-          const gameName = String(values.game_account_game ?? '').trim();
-          const platform = String(values.game_account_platform ?? '').trim();
+          let hasLinkedProviders = String(values.game_account_has_linked_providers ?? draft.game_account_has_linked_providers ?? '').trim();
+          if (!['0', '1'].includes(hasLinkedProviders)) {
+            if (linkedProviders.includes('none')) hasLinkedProviders = '0';
+            else if (linkedProviders.length) hasLinkedProviders = '1';
+          }
+
+          if (hasLinkedProviders === '0') {
+            linkedProviders = ['none'];
+          } else if (hasLinkedProviders === '1') {
+            linkedProviders = linkedProviders.filter((v) => v !== 'none');
+          }
+
+          const gameType = String(values.game_account_type ?? draft.game_account_type ?? '').trim();
+          const gameName = String(values.game_account_game ?? draft.game_account_game ?? '').trim();
+          const platform = String(values.game_account_platform ?? draft.game_account_platform ?? '').trim();
 
           if (gameType) formData.append('game_account_type', gameType);
           if (platform) formData.append('game_account_platform', platform);
           if (gameName) formData.append('game_account_game', capitalizeFirstPtBr(gameName));
 
-          if (values.game_account_can_change_credentials !== undefined) {
-            formData.append('game_account_can_change_credentials', String(values.game_account_can_change_credentials));
+          if (['0', '1'].includes(hasLinkedProviders)) {
+            formData.append('game_account_has_linked_providers', hasLinkedProviders);
           }
-          if (values.game_account_punishment_history !== undefined) {
-            formData.append('game_account_punishment_history', String(values.game_account_punishment_history));
-          }
-          formData.append('game_account_first_owner', String(values.game_account_first_owner));
-          formData.append('game_account_has_original_email', String(values.game_account_has_original_email));
+
+          const canChange = values.game_account_can_change_credentials ?? draft.game_account_can_change_credentials;
+          const punishment = values.game_account_punishment_history ?? draft.game_account_punishment_history;
+          const firstOwner = values.game_account_first_owner ?? draft.game_account_first_owner;
+          const hasOriginalEmail = values.game_account_has_original_email ?? draft.game_account_has_original_email;
+          if (canChange !== undefined) formData.append('game_account_can_change_credentials', String(canChange));
+          if (punishment !== undefined) formData.append('game_account_punishment_history', String(punishment));
+          if (firstOwner !== undefined) formData.append('game_account_first_owner', String(firstOwner));
+          if (hasOriginalEmail !== undefined) formData.append('game_account_has_original_email', String(hasOriginalEmail));
           linkedProviders.forEach((item) => formData.append('game_account_linked_providers[]', item));
 
           // Append all dynamic universal fields (ga_* / ts_*)
           try {
-            for (const [k, v] of Object.entries(values || {})) {
+            const mergedDynamic = { ...(draft || {}), ...(values || {}) };
+            for (const [k, v] of Object.entries(mergedDynamic)) {
               const key = String(k || '');
               if (!key.startsWith('ga_') && !key.startsWith('ts_')) continue;
               if (v === undefined || v === null) continue;
@@ -3210,7 +3296,7 @@
           } catch { /* ignore */ }
 
           // Exclusive items metadata + images
-          const hasExclusive = String(values.ga_has_exclusive_items ?? '').trim();
+          const hasExclusive = String(values.ga_has_exclusive_items ?? draft.ga_has_exclusive_items ?? '').trim();
           if (hasExclusive === '1') {
             const items = Array.isArray(state.createNegForm?.exclusiveItems) ? state.createNegForm.exclusiveItems : [];
             const withImages = Array.isArray(items) ? items.filter((it) => Boolean(it && it.file)) : [];
@@ -3242,8 +3328,8 @@
 
         // Entrega: para conta de jogo, sempre enviar um texto (padrão se vazio)
         const deliverableValue = isGameAccount
-          ? (String(values.what_will_be_delivered || '').trim() || 'Acesso à conta (login e senha) + instruções para troca de credenciais.')
-          : String(values.what_will_be_delivered || '').trim();
+          ? (String(values.what_will_be_delivered ?? draft.what_will_be_delivered ?? '').trim() || 'Acesso à conta (login e senha) + instruções para troca de credenciais.')
+          : String(values.what_will_be_delivered ?? draft.what_will_be_delivered ?? '').trim();
         if (deliverableValue) {
           formData.append('what_will_be_delivered', deliverableValue);
         }

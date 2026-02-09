@@ -427,6 +427,7 @@
         'game_account_has_original_email',
         'game_account_game_other',
         'game_account_can_change_credentials',
+        'game_account_has_linked_providers',
         'game_account_punishment_history',
         'what_will_be_delivered',
         'gold_seller_time_options',
@@ -440,10 +441,9 @@
       for (const name of fields) {
         try {
           const el = form.querySelector(`[name="${name}"]`);
-          if (!(el instanceof HTMLElement)) {
-            draft[name] = '';
-            continue;
-          }
+          // If the field is not in the DOM (collapsed layer / conditional UI),
+          // do NOT overwrite previously saved draft values.
+          if (!(el instanceof HTMLElement)) continue;
 
           if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox')) {
             const checked = form.querySelector(`[name="${name}"]:checked`);
@@ -460,11 +460,29 @@
 
       // Game account linked providers (checkboxes)
       try {
+        const hasRadio = form.querySelector('[name="game_account_has_linked_providers"]') instanceof HTMLElement;
+        const hasBoxes = form.querySelector('[name="game_account_linked_providers[]"]') instanceof HTMLElement;
+        if (!hasRadio && !hasBoxes) {
+          // Security layer not rendered: keep previous draft untouched.
+          // (Avoid clearing selections when the layer is collapsed.)
+        } else {
         const providers = Array.from(form.querySelectorAll('[name="game_account_linked_providers[]"]'))
           .filter((el) => el instanceof HTMLInputElement && el.checked)
           .map((el) => (el instanceof HTMLInputElement ? String(el.value || '').trim() : ''))
           .filter(Boolean);
-        draft.game_account_linked_providers = providers;
+        let hasLinkedProviders = String(draft.game_account_has_linked_providers || '').trim();
+        hasLinkedProviders = ['0', '1'].includes(hasLinkedProviders) ? hasLinkedProviders : '';
+        if (hasLinkedProviders === '0') {
+          // Backwards-compatible: backend historically expects at least one entry.
+          draft.game_account_linked_providers = ['none'];
+        } else if (hasLinkedProviders === '1') {
+          // When "Sim", keep only real providers (never "none").
+          draft.game_account_linked_providers = providers.filter((p) => p !== 'none');
+        } else {
+          // Unanswered: do not keep any previous selections.
+          draft.game_account_linked_providers = [];
+        }
+        }
       } catch {
         // ignore
       }
@@ -2170,7 +2188,13 @@
         const supportsRank = rankedGames.some((g) => gameNameNormalized.includes(g));
         const supportsRegion = regionGames.some((g) => gameNameNormalized.includes(g));
         const hideLevel = (gameNameNormalized.includes('world of warcraft') || gameNameNormalized === 'wow' || gameNameNormalized.includes(' wow'));
-        const linkedProviders = getDraftArray('game_account_linked_providers');
+        let hasLinkedProviders = String(getDraft('game_account_has_linked_providers') || '').trim();
+        hasLinkedProviders = ['0', '1'].includes(hasLinkedProviders) ? hasLinkedProviders : '';
+        let linkedProviders = getDraftArray('game_account_linked_providers');
+        // Only show/preselect provider checkboxes after the user explicitly chooses "Sim".
+        linkedProviders = (hasLinkedProviders === '1')
+          ? linkedProviders.filter((v) => v !== 'none')
+          : [];
         const extras = getDraftArray('game_account_extras');
         const firstOwner = String(getDraft('game_account_first_owner') || '').trim();
         const hasOriginalEmail = String(getDraft('game_account_has_original_email') || '').trim();
@@ -2208,7 +2232,7 @@
           return true;
         })();
 
-        // Entrega (Camada 7) não é necessária no fluxo de conta de jogo: usar texto padrão.
+        // Entrega (etapa final) não é necessária no fluxo de conta de jogo: usar texto padrão.
         const DEFAULT_GAME_ACCOUNT_DELIVERABLE = 'Acesso à conta (login e senha) + instruções para troca de credenciais.';
         const deliverableValue = nonEmpty(getDraft('what_will_be_delivered'))
           ? String(getDraft('what_will_be_delivered') || '').trim()
@@ -2219,12 +2243,18 @@
           const providers = Array.isArray(draft?.game_account_linked_providers)
             ? draft.game_account_linked_providers.map((v) => String(v || '').trim()).filter(Boolean)
             : getDraftArray('game_account_linked_providers');
+          const providersClean = Array.isArray(providers)
+            ? providers.map((v) => String(v || '').trim()).filter(Boolean).filter((v) => v !== 'none')
+            : [];
+          const providersValid = hasLinkedProviders === '0'
+            ? true
+            : (hasLinkedProviders === '1' && providersClean.length >= 1);
           if (!['0', '1'].includes(firstOwner)) return false;
           if (!['0', '1'].includes(hasOriginalEmail)) return false;
           if (!['yes', 'no', 'partial'].includes(String(getDraft('game_account_can_change_credentials') || '').trim())) return false;
           if (!nonEmpty(getDraft('game_account_punishment_history'))) return false;
-          if (!Array.isArray(providers) || providers.length < 1) return false;
-          if (providers.includes('none') && providers.length > 1) return false;
+          if (!['0', '1'].includes(hasLinkedProviders)) return false;
+          if (!providersValid) return false;
           return true;
         })();
 
@@ -2233,12 +2263,23 @@
         const canOpenSpecific = canOpenExclusive && exclusiveDone;
         const canOpenSecurity = canOpenSpecific && specificDone && deliveryDone;
 
-        let activeKey = '';
+        // IMPORTANT: do not auto-advance layers after the user starts filling one.
+        // We keep a stable active key in the draft, and only move forward via an explicit button.
+        let activeKey = String(draft?._uiGaActiveKey || '').trim();
+        let autoKey = '';
         if (layer1Done) {
-          if (isCompetitiveType && !rankingDone) activeKey = 'ranking';
-          else if (!exclusiveDone) activeKey = 'exclusive';
-          else if (!specificDone) activeKey = 'specific';
-          else if (!securityDone) activeKey = 'security';
+          if (isCompetitiveType && !rankingDone) autoKey = 'ranking';
+          else if (!exclusiveDone) autoKey = 'exclusive';
+          else if (!specificDone) autoKey = 'specific';
+          else if (!securityDone) autoKey = 'security';
+        }
+        if (!activeKey) {
+          activeKey = autoKey;
+          if (activeKey) {
+            // Persist once so later changes don't switch the visible layer automatically.
+            const openFlag = `_uiGaOpen_${activeKey}`;
+            state.createNegForm = { ...(state.createNegForm || {}), _uiGaActiveKey: activeKey, [openFlag]: true };
+          }
         }
 
         const UNIVERSAL_GAME_TYPES = [
@@ -2275,7 +2316,7 @@
               <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4" data-ga-layer="layer1">
                 <div class="flex items-center gap-2 text-gray-900 font-semibold">
                   <i class="fas fa-layer-group text-primary-600"></i>
-                  Camada 1 — Identificação do produto
+                  Identificação do produto
                 </div>
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -2315,17 +2356,17 @@
                 <input type="hidden" name="what_will_be_delivered" value="${escapeAttr(deliverableValue)}">
               </div>
 
-              <!-- Camada 2 (Segurança) movida para o final para performance/fluidez -->
+              <!-- Segurança movida para o final para performance/fluidez -->
 
               ${isCompetitiveType ? `
                 <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4" data-ga-layer="ranking">
                   <div class="flex items-center justify-between gap-3">
                     <div class="flex items-center gap-2 text-gray-900 font-semibold">
                       <i class="fas fa-trophy text-primary-600"></i>
-                      Camada 3 — Ranking (universal)
+                      Ranking (universal)
                     </div>
                     <button type="button" class="px-3 py-2 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="toggleGaLayer" data-key="ranking" ${canOpenRanking ? '' : 'disabled'}>
-                      ${canOpenRanking ? ((activeKey === 'ranking' || uiOpen('ranking')) ? 'Ocultar' : 'Preencher agora') : 'Complete a Camada 1'}
+                      ${canOpenRanking ? ((activeKey === 'ranking' || uiOpen('ranking')) ? 'Ocultar' : 'Preencher agora') : 'Complete a identificação'}
                     </button>
                   </div>
 
@@ -2370,13 +2411,19 @@
                         </label>
                       `).join('')}
                     </div>
+
+                    <div class="flex justify-end pt-2">
+                      <button type="button" class="px-4 py-2 bg-gray-900 hover:bg-gray-800 rounded-lg text-white font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="openGaLayer" data-key="exclusive" ${canOpenExclusive ? '' : 'disabled'}>
+                        Continuar
+                      </button>
+                    </div>
                   ` : (canOpenRanking ? `
                     <div class="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-3">
                       Clique em <strong>Preencher agora</strong> para abrir o ranking.
                     </div>
                   ` : `
                     <div class="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-3">
-                      Preencha a Camada 1 para liberar o ranking.
+                      Preencha a identificação do produto para liberar o ranking.
                     </div>
                   `)}
                 </div>
@@ -2385,13 +2432,13 @@
               <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4" data-ga-layer="exclusive">
                 <div class="flex items-center gap-2 text-gray-900 font-semibold">
                   <i class="fas fa-star text-primary-600"></i>
-                  Camada 4 — Itens exclusivos / colecionáveis
+                  Itens exclusivos / colecionáveis
                 </div>
 
                 <div class="flex items-center justify-between gap-3">
                   <div class="text-xs text-gray-600">Esta camada só abre após a anterior.</div>
                   <button type="button" class="px-3 py-2 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="toggleGaLayer" data-key="exclusive" ${canOpenExclusive ? '' : 'disabled'}>
-                    ${canOpenExclusive ? ((activeKey === 'exclusive' || uiOpen('exclusive')) ? 'Ocultar' : 'Preencher agora') : (isCompetitiveType ? 'Complete o Ranking' : 'Complete a Camada 1')}
+                    ${canOpenExclusive ? ((activeKey === 'exclusive' || uiOpen('exclusive')) ? 'Ocultar' : 'Preencher agora') : (isCompetitiveType ? 'Complete o ranking' : 'Complete a identificação')}
                   </button>
                 </div>
 
@@ -2452,6 +2499,12 @@
                     `).join('')}
                   </div>
                 ` : ''}
+
+                <div class="flex justify-end pt-2">
+                  <button type="button" class="px-4 py-2 bg-gray-900 hover:bg-gray-800 rounded-lg text-white font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="openGaLayer" data-key="specific" ${canOpenSpecific ? '' : 'disabled'}>
+                    Continuar
+                  </button>
+                </div>
                 ` : (canOpenExclusive ? `
                   <div class="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-3">
                     Clique em <strong>Preencher agora</strong> para abrir esta camada.
@@ -2466,13 +2519,13 @@
               <div class="p-4 bg-white border border-gray-200 rounded-xl space-y-4" data-ga-layer="specific">
                 <div class="flex items-center gap-2 text-gray-900 font-semibold">
                   <i class="fas fa-sliders-h text-primary-600"></i>
-                  Camada 5 — Dados específicos por tipo
+                  Dados específicos por tipo
                 </div>
 
                 <div class="flex items-center justify-between gap-3">
                   <div class="text-xs text-gray-600">Libera após itens exclusivos.</div>
                   <button type="button" class="px-3 py-2 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="toggleGaLayer" data-key="specific" ${canOpenSpecific ? '' : 'disabled'}>
-                    ${canOpenSpecific ? ((activeKey === 'specific' || uiOpen('specific')) ? 'Ocultar' : 'Preencher agora') : 'Complete a Camada 4'}
+                    ${canOpenSpecific ? ((activeKey === 'specific' || uiOpen('specific')) ? 'Ocultar' : 'Preencher agora') : 'Complete a etapa anterior'}
                   </button>
                 </div>
 
@@ -2707,13 +2760,19 @@
                 ` : ''}
 
                 ${!gameType ? `<div class="text-sm text-gray-600">Selecione o tipo do jogo para ver os campos específicos.</div>` : ''}
+
+                <div class="flex justify-end pt-2">
+                  <button type="button" class="px-4 py-2 bg-gray-900 hover:bg-gray-800 rounded-lg text-white font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="openGaLayer" data-key="security" ${canOpenSecurity ? '' : 'disabled'}>
+                    Continuar
+                  </button>
+                </div>
                 ` : (canOpenSpecific ? `
                   <div class="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-3">
                     Clique em <strong>Preencher agora</strong> para abrir esta camada.
                   </div>
                 ` : `
                   <div class="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-3">
-                    Complete a Camada 4 para liberar esta.
+                    Complete a etapa anterior para liberar esta.
                   </div>
                 `)}
               </div>
@@ -2722,10 +2781,10 @@
                 <div class="flex items-center justify-between gap-3">
                   <div class="flex items-center gap-2 text-gray-900 font-semibold">
                     <i class="fas fa-shield-alt text-primary-600"></i>
-                    Camada 2 — Segurança da conta (por último)
+                    Segurança da conta
                   </div>
                   <button type="button" class="px-3 py-2 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition disabled:opacity-50 disabled:cursor-not-allowed" data-action="toggleGaLayer" data-key="security" ${canOpenSecurity ? '' : 'disabled'}>
-                    ${canOpenSecurity ? ((activeKey === 'security' || uiOpen('security')) ? 'Ocultar' : 'Preencher agora') : 'Complete a Camada 5'}
+                    ${canOpenSecurity ? ((activeKey === 'security' || uiOpen('security')) ? 'Ocultar' : 'Preencher agora') : 'Complete a etapa anterior'}
                   </button>
                 </div>
 
@@ -2756,26 +2815,41 @@
                     </div>
                   </div>
 
-                  <div>
-                    <div class="text-sm text-gray-700 font-medium mb-2">Conta possui vinculações externas *</div>
-                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      ${[
-                        { id: 'google', label: 'Google' },
-                        { id: 'facebook', label: 'Facebook' },
-                        { id: 'steam', label: 'Steam' },
-                        { id: 'apple', label: 'Apple' },
-                        { id: 'riot', label: 'Riot' },
-                        { id: 'activision', label: 'Activision' },
-                        { id: 'epic', label: 'Epic Games' },
-                        { id: 'none', label: 'Nenhuma' },
-                      ].map((opt) => `
-                        <label class="flex items-center gap-2 p-2 rounded-lg border border-gray-200 bg-gray-50 text-sm text-gray-700">
-                          <input type="checkbox" name="game_account_linked_providers[]" value="${opt.id}" ${linkedProviders.includes(opt.id) ? 'checked' : ''}>
-                          ${opt.label}
-                        </label>
-                      `).join('')}
+                  <div class="space-y-3">
+                    <div class="space-y-2">
+                      <div class="text-sm text-gray-700 font-medium">A conta possui vínculos externos? *</div>
+                      <label class="flex items-center gap-2 text-sm text-gray-700">
+                        <input type="radio" name="game_account_has_linked_providers" value="1" ${hasLinkedProviders === '1' ? 'checked' : ''} data-action="refreshCreateNegDynamicUI">
+                        Sim, possui vínculos
+                      </label>
+                      <label class="flex items-center gap-2 text-sm text-gray-700">
+                        <input type="radio" name="game_account_has_linked_providers" value="0" ${hasLinkedProviders === '0' ? 'checked' : ''} data-action="refreshCreateNegDynamicUI">
+                        Não possui vínculos
+                      </label>
                     </div>
-                    <p class="text-xs text-gray-500 mt-2">Marque pelo menos 1 opção (use “Nenhuma” se não houver).</p>
+
+                    ${hasLinkedProviders === '1' ? `
+                      <div>
+                        <div class="text-sm text-gray-700 font-medium mb-2">Selecione os vínculos *</div>
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          ${[
+                            { id: 'google', label: 'Google' },
+                            { id: 'facebook', label: 'Facebook' },
+                            { id: 'steam', label: 'Steam' },
+                            { id: 'apple', label: 'Apple' },
+                            { id: 'riot', label: 'Riot' },
+                            { id: 'activision', label: 'Activision' },
+                            { id: 'epic', label: 'Epic Games' },
+                          ].map((opt) => `
+                            <label class="flex items-center gap-2 p-2 rounded-lg border border-gray-200 bg-gray-50 text-sm text-gray-700">
+                              <input type="checkbox" name="game_account_linked_providers[]" value="${opt.id}" ${linkedProviders.includes(opt.id) ? 'checked' : ''}>
+                              ${opt.label}
+                            </label>
+                          `).join('')}
+                        </div>
+                        <p class="text-xs text-gray-500 mt-2">Marque pelo menos 1 vínculo.</p>
+                      </div>
+                    ` : ''}
                   </div>
 
                   <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -2804,13 +2878,19 @@
                       </select>
                     </div>
                   </div>
+
+                  <div class="flex justify-end pt-2">
+                    <button type="button" class="px-4 py-2 bg-gray-900 hover:bg-gray-800 rounded-lg text-white font-semibold transition" data-action="scrollCreateNegStep2Next">
+                      Continuar
+                    </button>
+                  </div>
                 ` : (canOpenSecurity ? `
                   <div class="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-3">
                     Clique em <strong>Preencher agora</strong> para abrir a segurança.
                   </div>
                 ` : `
                   <div class="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-3">
-                    Para liberar a segurança da conta, complete a Camada 7 (Entrega).
+                    Para liberar a segurança da conta, complete a entrega.
                   </div>
                 `)}
               </div>
@@ -3203,6 +3283,7 @@
   let pendingNoticesLastFilter = null;
   let presencePollingHandle = null;
   let presenceLastRefreshAt = 0;
+  let presenceLastPingAt = 0;
   let confirmationIntervalHandle = null;
   let toastTimer = null;
   let saoPauloCitiesPromise = null;
@@ -4139,9 +4220,12 @@
           </button>
         </form>
         
-        <div class="flex items-center justify-center mt-6 pt-6 border-t border-gray-200">
+        <div class="flex flex-col items-center justify-center gap-3 mt-6 pt-6 border-t border-gray-200">
           <button class="text-sm text-primary-600 hover:text-primary-700 font-medium transition" data-action="navigate" data-page="forgot-password">
             Esqueci a senha
+          </button>
+          <button class="text-sm text-gray-700 hover:text-gray-900 font-semibold transition" data-action="navigate" data-page="register">
+            Criar conta
           </button>
         </div>
       </section>
@@ -4624,20 +4708,20 @@
                   const isActive = status === opt.key;
                   const count = opt.key === 'all' ? (Number(counts.total) || 0) : (Number(counts.byStatus?.[opt.key]) || 0);
                   const showCount = opt.key === 'all' || count > 0;
+                  const labelWithCount = showCount ? `(${count}) ${opt.label}` : opt.label;
                   return `
                     <button
                       type="button"
-                      class="w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl text-sm transition duration-150 ${isActive
+                      class="w-full flex items-center justify-center gap-3 px-4 py-2.5 rounded-xl text-sm text-center transition duration-150 ${isActive
                         ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white font-semibold shadow-md'
                         : 'bg-white text-gray-700 hover:bg-primary-50 hover:text-primary-600 border border-transparent hover:border-primary-100'}"
                       data-action="dashboardStatusFilter"
                       data-status="${opt.key}"
                     >
-                      <span class="flex items-center gap-3">
+                      <span class="flex items-center justify-center gap-3 w-full">
                         <i class="fas ${opt.icon} ${isActive ? 'text-white' : opt.color}"></i>
-                        <span class="truncate">${escapeHtml(opt.label)}</span>
+                        <span class="leading-tight">${escapeHtml(labelWithCount)}</span>
                       </span>
-                      ${showCount ? `<span class="inline-flex items-center justify-center min-w-6 h-6 px-2 rounded-full text-xs font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'}">${count}</span>` : ''}
                     </button>
                   `;
                 }).join('')}
@@ -4695,20 +4779,20 @@
                   const isActive = status === opt.key;
                   const count = opt.key === 'all' ? (Number(counts.total) || 0) : (Number(counts.byStatus?.[opt.key]) || 0);
                   const showCount = opt.key === 'all' || count > 0;
+                  const labelWithCount = showCount ? `(${count}) ${opt.label}` : opt.label;
                   return `
                     <button
                       type="button"
-                      class="w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl text-sm transition duration-150 ${isActive 
+                      class="w-full flex items-center justify-center gap-3 px-4 py-2.5 rounded-xl text-sm text-center transition duration-150 ${isActive 
                         ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white font-semibold shadow-md ring-2 ring-primary-400 ring-offset-2 ring-offset-white' 
                         : 'bg-white text-gray-700 hover:bg-primary-50 hover:text-primary-600 border border-transparent hover:border-primary-100'}"
                       data-action="dashboardStatusFilter"
                       data-status="${opt.key}"
                     >
-                      <span class="flex items-center gap-3">
+                      <span class="flex items-center justify-center gap-3 w-full">
                         <i class="fas ${opt.icon} ${isActive ? 'text-white' : opt.color}"></i>
-                        <span class="truncate">${escapeHtml(opt.label)}</span>
+                        <span class="leading-tight">${escapeHtml(labelWithCount)}</span>
                       </span>
-                      ${showCount ? `<span class="inline-flex items-center justify-center min-w-6 h-6 px-2 rounded-full text-xs font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'}">${count}</span>` : ''}
                     </button>
                   `;
                 }).join('')}
@@ -6056,6 +6140,10 @@
                 </section>
               ` : ''}
 
+              ${renderProductDetailsPublic(negotiation)}
+
+              ${renderProductDetailsPublic(negotiation)}
+
               ${isServiceCategory ? `
                 <section class="mt-6 pt-4 border-t border-gray-100">
                   <h3 class="text-sm font-medium text-gray-600 mb-2">Agendamento do serviço</h3>
@@ -6304,6 +6392,184 @@
   function renderOnlineBadge(lastSeenAtIso) {
     const s = getOnlineStatus(lastSeenAtIso);
     return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold text-white ${s.className}"><i class="fas fa-circle text-[9px]"></i>${escapeHtml(s.label)}</span>`;
+  }
+
+  function formatPublicFieldValue(value) {
+    if (value === null || value === undefined) return '—';
+    if (Array.isArray(value)) {
+      const items = value.map((v) => String(v ?? '').trim()).filter(Boolean);
+      return items.length ? items.join(' | ') : '—';
+    }
+    if (typeof value === 'object') {
+      try {
+        const text = JSON.stringify(value);
+        return text && text.length ? text : '—';
+      } catch {
+        return '—';
+      }
+    }
+    const text = String(value ?? '').trim();
+    return text ? text : '—';
+  }
+
+  function renderProductDetailsPublic(negotiation) {
+    const category = String(negotiation?.category || '').trim();
+    const isGameAccount = category === CATEGORY_GAME_ACCOUNT;
+    const ga = negotiation?.game_account_public || null;
+
+    if (isGameAccount && ga) {
+      const extras = (ga?.extras && typeof ga.extras === 'object') ? ga.extras : {};
+      const exclusiveItems = Array.isArray(extras?.exclusive_items) ? extras.exclusive_items : [];
+      const extrasEntries = Object.entries(extras)
+        .filter(([k, v]) => {
+          const key = String(k || '');
+          if (!key) return false;
+          if (key === 'exclusive_items') return false;
+          const txt = formatPublicFieldValue(v);
+          return txt !== '—';
+        })
+        .slice(0, 60);
+
+      const prettyKey = (k) => {
+        const key = String(k || '').trim();
+        const stripped = key.replace(/^ga_/, '').replace(/^ts_/, '');
+        return capitalizeFirstPtBr(stripped.replace(/_/g, ' '));
+      };
+
+      const yesNo = (v) => {
+        const s = String(v ?? '').trim();
+        if (s === '1' || s.toLowerCase() === 'true') return 'Sim';
+        if (s === '0' || s.toLowerCase() === 'false') return 'Não';
+        return s || '—';
+      };
+
+      const canChangeLabel = (() => {
+        const raw = String(ga.can_change_credentials ?? '').trim();
+        if (raw === 'yes') return 'Sim';
+        if (raw === 'no') return 'Não';
+        if (raw === 'partial') return 'Parcialmente';
+        return raw || '—';
+      })();
+
+      const punishmentLabel = (() => {
+        const raw = String(ga.punishment_history ?? '').trim();
+        if (raw === 'none') return 'Nenhuma';
+        if (raw === 'warning') return 'Advertência';
+        if (raw === 'temp_suspension') return 'Suspensão temporária';
+        if (raw === 'permanent_ban') return 'Ban permanente';
+        return raw || '—';
+      })();
+
+      const linkedProvidersArr = Array.isArray(ga.linked_providers)
+        ? ga.linked_providers.map((x) => String(x || '').trim()).filter(Boolean)
+        : (typeof ga.linked_providers === 'string' ? ga.linked_providers.split('|').map((x) => x.trim()).filter(Boolean) : []);
+      const hasLinkedProvidersLabel = linkedProvidersArr.length ? 'Sim' : 'Não';
+
+      const renderExclusiveItems = () => {
+        const hasExclusiveFlag = String(extras?.ga_has_exclusive_items ?? '').trim();
+        const shouldShow = exclusiveItems.length > 0 || hasExclusiveFlag === '1';
+        if (!shouldShow) return '';
+
+        const cards = exclusiveItems.map((it, idx) => {
+          const images = Array.isArray(it?.images)
+            ? it.images.map((p) => String(p || '').trim()).filter(Boolean)
+            : (it?.image ? [String(it.image).trim()] : []);
+          const first = images[0] || '';
+          const imgSrc = first ? resolvePhotoUrl(first) : '';
+          const titleParts = [String(it?.name || '').trim(), String(it?.rarity || '').trim()].filter(Boolean);
+          const title = titleParts.join(' • ');
+          const desc = String(it?.description || '').trim();
+          const type = String(it?.type || '').trim();
+
+          return `
+            <div class="p-3 rounded-xl border border-gray-200 bg-gray-50 flex gap-3">
+              <div class="w-16 h-16 rounded-lg bg-white border border-gray-200 overflow-hidden flex items-center justify-center flex-shrink-0">
+                ${imgSrc ? `<img src="${escapeAttr(imgSrc)}" class="w-full h-full object-cover" alt="Item exclusivo ${idx + 1}">` : `<span class="text-xs text-gray-400">Sem imagem</span>`}
+              </div>
+              <div class="min-w-0">
+                <div class="text-sm font-semibold text-gray-900 truncate">${escapeHtml(title || `Item #${idx + 1}`)}</div>
+                ${type ? `<div class="text-xs text-gray-500">${escapeHtml(capitalizeFirstPtBr(type))}</div>` : ''}
+                ${desc ? `<div class="text-xs text-gray-600 mt-1 line-clamp-3">${escapeHtml(desc)}</div>` : ''}
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        return `
+          <div class="mt-4">
+            <div class="text-sm font-medium text-gray-600 mb-2">Itens exclusivos</div>
+            ${exclusiveItems.length ? `
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${cards}</div>
+            ` : `
+              <div class="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-3">
+                Itens exclusivos marcados, mas sem imagens cadastradas.
+              </div>
+            `}
+          </div>
+        `;
+      };
+
+      return `
+        <section class="mt-6 pt-4 border-t border-gray-100">
+          <h3 class="text-sm font-medium text-gray-600 mb-2">Detalhes do produto</h3>
+          <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div><dt class="text-gray-500">Jogo</dt><dd class="text-gray-700">${escapeHtml(String(ga.game || '—'))}</dd></div>
+            <div><dt class="text-gray-500">Plataforma</dt><dd class="text-gray-700">${escapeHtml(String(ga.platform || '—'))}</dd></div>
+            <div><dt class="text-gray-500">Tipo</dt><dd class="text-gray-700">${escapeHtml(String(ga.type || '—'))}</dd></div>
+            <div><dt class="text-gray-500">Região/Servidor</dt><dd class="text-gray-700">${escapeHtml(String(ga.region || '—'))}</dd></div>
+            <div><dt class="text-gray-500">Primeiro dono</dt><dd class="text-gray-700">${escapeHtml(yesNo(ga.first_owner))}</dd></div>
+            <div><dt class="text-gray-500">E-mail original</dt><dd class="text-gray-700">${escapeHtml(yesNo(ga.has_original_email))}</dd></div>
+            <div><dt class="text-gray-500">Possui vínculos</dt><dd class="text-gray-700">${escapeHtml(hasLinkedProvidersLabel)}</dd></div>
+            <div><dt class="text-gray-500">Vínculos</dt><dd class="text-gray-700">${escapeHtml(linkedProvidersArr.length ? linkedProvidersArr.join(' | ') : '—')}</dd></div>
+            <div><dt class="text-gray-500">Troca credenciais</dt><dd class="text-gray-700">${escapeHtml(canChangeLabel)}</dd></div>
+            <div><dt class="text-gray-500">Punições</dt><dd class="text-gray-700">${escapeHtml(punishmentLabel)}</dd></div>
+            <div class="sm:col-span-2"><dt class="text-gray-500">Entrega</dt><dd class="text-gray-700">${escapeHtml(String(ga.delivery_description || negotiation?.what_will_be_delivered || '—'))}</dd></div>
+            ${ga.seller_notes ? `<div class="sm:col-span-2"><dt class="text-gray-500">Observações do vendedor</dt><dd class="text-gray-700">${escapeHtml(String(ga.seller_notes))}</dd></div>` : ''}
+          </dl>
+
+          ${renderExclusiveItems()}
+
+          ${extrasEntries.length ? `
+            <div class="mt-4">
+              <div class="text-sm font-medium text-gray-600 mb-2">Dados específicos</div>
+              <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                ${extrasEntries.map(([k, v]) => `
+                  <div>
+                    <dt class="text-gray-500">${escapeHtml(prettyKey(k))}</dt>
+                    <dd class="text-gray-700">${escapeHtml(formatPublicFieldValue(v))}</dd>
+                  </div>
+                `).join('')}
+              </dl>
+            </div>
+          ` : ''}
+        </section>
+      `;
+    }
+
+    const fields = Array.isArray(negotiation?.public_fields) ? negotiation.public_fields : [];
+    const rows = fields
+      .filter((f) => f && (String(f.label || '').trim() || String(f.field_id || '').trim()))
+      .map((f) => ({
+        label: String(f.label || f.field_id || 'Campo').trim(),
+        value: f.value,
+      }))
+      .filter((f) => f.label);
+
+    if (!rows.length) return '';
+
+    return `
+      <section class="mt-6 pt-4 border-t border-gray-100">
+        <h3 class="text-sm font-medium text-gray-600 mb-2">Detalhes do produto</h3>
+        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          ${rows.map((f) => `
+            <div>
+              <dt class="text-gray-500">${escapeHtml(f.label)}</dt>
+              <dd class="text-gray-700">${escapeHtml(formatPublicFieldValue(f.value))}</dd>
+            </div>
+          `).join('')}
+        </dl>
+      </section>
+    `;
   }
 
   function renderParticipantDropdown({
@@ -9169,19 +9435,19 @@
                   const isActive = opt.key === status;
                   const count = opt.key === 'all' ? (Number(counts.total) || 0) : (Number(counts.byStatus?.[opt.key]) || 0);
                   const showCount = opt.key === 'all' || count > 0;
+                  const labelWithCount = showCount ? `(${count}) ${opt.label}` : opt.label;
                   return `
                     <button
                       type="button"
-                      class="w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl text-sm transition ${isActive
+                      class="w-full flex items-center justify-center gap-3 px-4 py-3 rounded-xl text-sm text-center transition ${isActive
                         ? 'bg-gradient-to-r from-primary-600 to-secondary-500 text-white font-semibold shadow-md'
                         : 'bg-gray-50 border border-gray-200 text-gray-800 hover:border-primary-400'}"
                       data-action="selectDashboardDraftStatus"
                       data-status="${escapeAttr(opt.key)}"
                     >
-                      <span class="flex items-center gap-3 min-w-0">
-                        <span class="truncate">${escapeHtml(opt.label)}</span>
+                      <span class="flex items-center justify-center gap-3 min-w-0 w-full">
+                        <span class="leading-tight">${escapeHtml(labelWithCount)}</span>
                       </span>
-                      ${showCount ? `<span class="inline-flex items-center justify-center min-w-6 h-6 px-2 rounded-full text-xs font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'}">${count}</span>` : ''}
                     </button>
                   `;
                 }).join('')}
@@ -9265,6 +9531,43 @@
     const target = event.target;
     if (!(target instanceof Element)) return;
 
+    // Nova Negociação: Enter deve avançar (não submeter o form antes da hora)
+    const createForm = target.closest('form[data-action="createNegotiation"]');
+    if (createForm && state.showCreateNegotiationModal) {
+      // Não interferir com textarea (quebra de linha) e nem com Enter+Shift
+      if (event.shiftKey) return;
+      if (target instanceof HTMLTextAreaElement) return;
+
+      const step = Math.max(1, Math.min(4, Number(state.createNegStep) || 1));
+
+      // 1) Se estiver dentro de uma camada de conta de jogo aberta, prioriza o Continuar da camada
+      const layerRoot = target.closest('[data-ga-layer]');
+      if (layerRoot) {
+        const btn = layerRoot.querySelector('button[data-action="openGaLayer"]:not([disabled])');
+        if (btn) {
+          event.preventDefault();
+          event.stopPropagation();
+          btn.click();
+          return;
+        }
+      }
+
+      // 2) Caso contrário, avança a etapa (guias) enquanto não for a última
+      if (step < 4) {
+        const modal = target.closest('[data-create-neg-modal]') || document;
+        const nextBtn = modal.querySelector('button[data-action="nextCreateNegStep"]:not([disabled])');
+        if (nextBtn) {
+          event.preventDefault();
+          event.stopPropagation();
+          nextBtn.click();
+          return;
+        }
+      }
+
+      // Se for etapa 4, deixa o comportamento padrão (pode submeter)
+      return;
+    }
+
     // Se estiver dentro de um form, o fluxo nativo já vira submit (e a SPA intercepta)
     if (target.closest('form')) return;
 
@@ -9334,9 +9637,10 @@
     if (actionEl instanceof HTMLFormElement) {
       return;
     }
-    // Inputs/selects devem disparar via input/change, não via click.
-    // Caso contrário, clicar para abrir o dropdown (select) dispara re-render e fecha o menu.
-    if (actionEl instanceof HTMLSelectElement) {
+    // Inputs/selects/textarea devem disparar via input/change, não via click.
+    // Caso contrário, clicar para focar um campo pode disparar re-render e roubar o foco,
+    // criando um ciclo em que não dá para digitar.
+    if (actionEl instanceof HTMLInputElement || actionEl instanceof HTMLTextAreaElement || actionEl instanceof HTMLSelectElement) {
       return;
     }
     const actionName = actionEl.dataset.action;
@@ -9406,6 +9710,14 @@
 
     const actionName = target.dataset.action;
     if (!actionName) return;
+
+    // Safety: never refresh the create-neg dynamic UI on each keystroke.
+    // The refresh action is meant to run on select/radio changes; running it on `input`
+    // re-renders chunks via innerHTML and makes text fields feel like they “don’t accept typing”.
+    if (actionName === 'refreshCreateNegDynamicUI' && event && event.type === 'input') {
+      return;
+    }
+
     const handler = actions[actionName];
     if (typeof handler !== 'function') return;
     const dataset = { ...target.dataset };

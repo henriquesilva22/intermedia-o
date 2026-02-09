@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\BrevoSmsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
@@ -155,6 +156,14 @@ class AuthController extends Controller
         return response()->json([
             'user' => $this->transformUser($request->user()),
         ]);
+    }
+
+    /**
+     * Presence keep-alive (updates last_seen_at via middleware).
+     */
+    public function ping(Request $request): Response
+    {
+        return response()->noContent();
     }
 
     /**

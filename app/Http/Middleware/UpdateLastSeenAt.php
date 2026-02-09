@@ -4,13 +4,12 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 
 class UpdateLastSeenAt
 {
     public function handle(Request $request, Closure $next)
     {
-        $user = Auth::user();
+        $user = $request->user();
         if ($user) {
             try {
                 $now = now();
@@ -19,8 +18,10 @@ class UpdateLastSeenAt
                 // Throttle writes: update at most once per minute.
                 if (!$last || $now->diffInSeconds($last) >= 60) {
                     $user->forceFill(['last_seen_at' => $now])->save();
+                    \Log::debug("UpdateLastSeenAt: Updated user {$user->id} ({$user->name}) last_seen_at to {$now}");
                 }
             } catch (\Throwable $e) {
+                \Log::error("UpdateLastSeenAt: Failed to update user presence: " . $e->getMessage());
                 // Never block requests due to presence tracking.
             }
         }

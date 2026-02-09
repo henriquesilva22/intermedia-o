@@ -363,8 +363,8 @@ class IntermediationController extends Controller
 
         $negotiations = Negotiation::with([
             'payments',
-            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
-            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'seller:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
         ])
             ->where('seller_id', $user->id)
             ->orWhere('buyer_id', $user->id)
@@ -384,8 +384,8 @@ class IntermediationController extends Controller
 
         $negotiation = Negotiation::with([
             'payments',
-            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
-            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'seller:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
             'intermediator:id,name',
         ])
             ->find($id);
@@ -401,6 +401,8 @@ class IntermediationController extends Controller
             && $negotiation->intermediator_id === null
             && in_array((string) $negotiation->status, ['waiting_shipment', 'shipped', 'at_intermediary', 'approved', 'pending_receipt'], true);
         $isIntermediatorObserver = $isIntermediator && ! $isAssignedIntermediator;
+
+        $includePhotos = $negotiation->isParticipant($user) || $isAdmin || $isAssignedIntermediator;
 
         // Allow participant, admin, or intermediator (assigned/available/observer view).
         if (! $negotiation->isParticipant($user) && ! $isAdmin && ! $isIntermediator) {
@@ -429,8 +431,9 @@ class IntermediationController extends Controller
         }
 
         return response()->json(['data' => $this->transform($negotiation, $user, [
-            'include_photos' => $isAssignedIntermediator,
+            'include_photos' => $includePhotos,
             'intermediator_observer' => $isIntermediatorObserver,
+            'include_public_fields' => true,
         ])]);
     }
 
@@ -522,7 +525,10 @@ class IntermediationController extends Controller
             // Itens exclusivos (Camada 4)
             'exclusive_items' => ['nullable', 'string', 'max:20000'],
             'exclusive_item_images' => ['nullable', 'array', 'max:40'],
-            'exclusive_item_images.*' => ['file', 'image', 'max:5120'],
+            // Frontend envia como exclusive_item_images[idx][] (múltiplas por item)
+            // Também aceitamos back-compat: exclusive_item_images[idx] = file (1 por item)
+            'exclusive_item_images.*' => ['nullable'],
+            'exclusive_item_images.*.*' => ['file', 'image', 'max:5120'],
 
             // Campos dinâmicos serão agrupados em game_account_extras
             'game_account_extras' => ['nullable', 'array'],
@@ -871,7 +877,34 @@ class IntermediationController extends Controller
                     }
 
                     $files = $request->file('exclusive_item_images') ?? [];
-                    if (! is_array($files) || count($files) < 1) {
+                    $totalFiles = 0;
+                    if (is_array($files)) {
+                        foreach ($files as $group) {
+                            if ($group instanceof \Illuminate\Http\UploadedFile) {
+                                // Validar o formato legado (1 arquivo por item)
+                                $single = \Illuminate\Support\Facades\Validator::make(
+                                    ['file' => $group],
+                                    ['file' => ['file', 'image', 'max:5120']]
+                                );
+                                if ($single->fails()) {
+                                    $validator->errors()->add('exclusive_item_images', 'Uma ou mais imagens de itens exclusivos é inválida (tipo/tamanho).');
+                                }
+                                $totalFiles += 1;
+                                continue;
+                            }
+                            if (is_array($group)) {
+                                if (count($group) > 8) {
+                                    $validator->errors()->add('exclusive_item_images', 'Cada item exclusivo pode ter no máximo 8 imagens.');
+                                }
+                                foreach ($group as $f) {
+                                    if ($f instanceof \Illuminate\Http\UploadedFile) {
+                                        $totalFiles += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if ($totalFiles < 1) {
                         $validator->errors()->add('exclusive_item_images', 'Envie as imagens dos itens exclusivos.');
                     }
                 }
@@ -1024,10 +1057,21 @@ class IntermediationController extends Controller
                     $stored = [];
                     if (is_array($files)) {
                         foreach ($files as $idx => $file) {
-                            if (! $file instanceof \Illuminate\Http\UploadedFile) {
+                            if ($file instanceof \Illuminate\Http\UploadedFile) {
+                                $stored[(string) $idx] = [$file->store('negotiations/exclusive-items', 'public')];
                                 continue;
                             }
-                            $stored[(string) $idx] = $file->store('negotiations/exclusive-items', 'public');
+                            if (is_array($file)) {
+                                $paths = [];
+                                foreach ($file as $f) {
+                                    if ($f instanceof \Illuminate\Http\UploadedFile) {
+                                        $paths[] = $f->store('negotiations/exclusive-items', 'public');
+                                    }
+                                }
+                                if ($paths) {
+                                    $stored[(string) $idx] = $paths;
+                                }
+                            }
                         }
                     }
 
@@ -1036,13 +1080,16 @@ class IntermediationController extends Controller
                         if (! is_array($it)) {
                             continue;
                         }
-                        $image = $stored[(string) $idx] ?? null;
+                        $images = $stored[(string) $idx] ?? [];
+                        $firstImage = is_array($images) && count($images) ? $images[0] : null;
                         $items[] = [
                             'type' => isset($it['type']) ? (string) $it['type'] : '',
                             'name' => isset($it['name']) ? (string) $it['name'] : '',
                             'rarity' => isset($it['rarity']) ? (string) $it['rarity'] : '',
                             'description' => isset($it['description']) ? (string) $it['description'] : '',
-                            'image' => $image,
+                            // Compat: image (single) + images (multi)
+                            'image' => $firstImage,
+                            'images' => $images,
                         ];
                     }
                     $exclusiveItemsWithImages = $items;
@@ -1417,7 +1464,7 @@ class IntermediationController extends Controller
             }
         }
 
-        $negotiation->load(['seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state']);
+        $negotiation->load(['seller:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state', 'buyer:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state']);
 
         return response()->json(['data' => $this->transform($negotiation, $user)], 201);
     }
@@ -1434,8 +1481,8 @@ class IntermediationController extends Controller
 
         $negotiations = Negotiation::with([
             'payments',
-            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
-            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'seller:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
         ])
             ->orderByDesc('updated_at')
             ->get()
@@ -1456,8 +1503,8 @@ class IntermediationController extends Controller
 
         $query = Negotiation::with([
             'payments',
-            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
-            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'seller:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
         ])
             ->where('status', 'awaiting_admin_approval');
 
@@ -1638,8 +1685,8 @@ class IntermediationController extends Controller
         // Available = negotiations without an intermediator assigned
         $negotiations = Negotiation::with([
             'payments',
-            'seller:id,name,email,phone',
-            'buyer:id,name,email,phone',
+            'seller:id,name,email,phone,last_seen_at',
+            'buyer:id,name,email,phone,last_seen_at',
             'intermediator:id,name',
         ])
             ->whereNull('intermediator_id')
@@ -1663,8 +1710,8 @@ class IntermediationController extends Controller
 
         $negotiations = Negotiation::with([
             'payments',
-            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
-            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'seller:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
             'intermediator:id,name',
         ])
             ->where('intermediator_id', $user->id)
@@ -1687,8 +1734,8 @@ class IntermediationController extends Controller
 
         $negotiations = Negotiation::with([
             'payments',
-            'seller:id,name,email,phone',
-            'buyer:id,name,email,phone',
+            'seller:id,name,email,phone,last_seen_at',
+            'buyer:id,name,email,phone,last_seen_at',
             'intermediator:id,name',
         ])
             ->orderByDesc('updated_at')
@@ -2971,8 +3018,8 @@ class IntermediationController extends Controller
         ]);
 
         $negotiation->load([
-            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
-            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'seller:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
             'intermediator:id,name',
         ]);
 
@@ -3027,8 +3074,8 @@ class IntermediationController extends Controller
         ]);
 
         $negotiation->load([
-            'seller:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
-            'buyer:id,name,email,phone,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'seller:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
+            'buyer:id,name,email,phone,last_seen_at,address_zipcode,address_street,address_number,address_complement,address_neighborhood,address_city,address_state',
             'intermediator:id,name',
         ]);
 
@@ -3168,6 +3215,77 @@ class IntermediationController extends Controller
         $privateDisk = Storage::disk('local');
 
         $includePhotos = $options['include_photos'] ?? true;
+        $includePublicFields = (bool) ($options['include_public_fields'] ?? false);
+
+        $buildPublicFields = function () use ($negotiation): array {
+            try {
+                $schema = config('negotiation_schema', []);
+                $labels = [];
+                foreach (['universal', 'commercial', 'security'] as $group) {
+                    $items = $schema[$group] ?? [];
+                    if (! is_array($items)) continue;
+                    foreach ($items as $id => $def) {
+                        if (! is_string($id) || $id === '') continue;
+                        $label = is_array($def) && isset($def['label']) ? trim((string) $def['label']) : '';
+                        if ($label !== '') {
+                            $labels[$id] = $label;
+                        }
+                    }
+                }
+
+                $rows = $negotiation->relationLoaded('fields')
+                    ? $negotiation->fields
+                    : $negotiation->fields()->get(['field_id', 'field_value']);
+
+                $out = [];
+                foreach ($rows as $row) {
+                    $fieldId = trim((string) ($row->field_id ?? ''));
+                    if ($fieldId === '') continue;
+                    if (str_starts_with($fieldId, 'system.')) continue;
+                    if ($fieldId === 'security.proofs') continue;
+                    $lowerId = strtolower($fieldId);
+                    if (
+                        str_contains($lowerId, 'password') ||
+                        str_contains($lowerId, 'senha') ||
+                        str_contains($lowerId, 'token') ||
+                        str_contains($lowerId, 'secret') ||
+                        str_contains($lowerId, 'pin')
+                    ) {
+                        continue;
+                    }
+
+                    $raw = $row->field_value;
+                    if ($raw === null) continue;
+                    $text = is_string($raw) ? trim($raw) : trim((string) $raw);
+                    if ($text === '') continue;
+
+                    $value = $text;
+                    $decoded = null;
+                    if ((str_starts_with($text, '{') && str_ends_with($text, '}')) || (str_starts_with($text, '[') && str_ends_with($text, ']'))) {
+                        $decoded = json_decode($text, true);
+                        if (json_last_error() === JSON_ERROR_NONE) {
+                            $value = $decoded;
+                        }
+                    }
+
+                    // Friendly boolean rendering for known security/commercial fields.
+                    if (in_array($fieldId, ['security.first_owner', 'security.has_original_email', 'commercial.allows_negotiation'], true)) {
+                        if ($text === '1') $value = 'Sim';
+                        if ($text === '0') $value = 'Não';
+                    }
+
+                    $out[] = [
+                        'field_id' => $fieldId,
+                        'label' => $labels[$fieldId] ?? $fieldId,
+                        'value' => $value,
+                    ];
+                }
+
+                return $out;
+            } catch (\Throwable $exception) {
+                return [];
+            }
+        };
 
         $buildPhotoUrls = static function ($value) use ($publicDisk): array {
             $items = [];
@@ -3472,7 +3590,20 @@ class IntermediationController extends Controller
             'id' => $negotiation->id,
             'title' => $title,
             'description' => $description,
+            'negotiation_type' => $negotiation->negotiation_type,
             'category' => $negotiation->category,
+            // Camada universal (detalhes informados no anúncio)
+            'universal_game' => $negotiation->universal_game,
+            // Alias usado pelo front durante criação (compat)
+            'universal_game_name' => $negotiation->universal_game,
+            'universal_platform' => $negotiation->universal_platform,
+            'universal_region_server' => $negotiation->universal_region_server,
+            'universal_game_type' => $negotiation->universal_game_type,
+            'allows_negotiation' => $negotiation->allows_negotiation,
+            'universal_delivery_method' => $negotiation->universal_delivery_method,
+            'universal_estimated_delivery' => $negotiation->universal_estimated_delivery,
+            'form_completeness' => $negotiation->form_completeness,
+            'risk_assessment' => $negotiation->risk_assessment,
             'service' => $serviceData,
             'delivery_days' => $negotiation->delivery_days,
             'game_title' => $negotiation->game_title,
@@ -3496,7 +3627,20 @@ class IntermediationController extends Controller
                 'level' => $negotiation->game_account_level,
                 'rank' => $negotiation->game_account_rank,
                 'has_ban' => $negotiation->game_account_has_ban,
+                // Campos adicionais do anúncio (não sensíveis)
+                'type' => $negotiation->game_account_type,
+                'region' => $negotiation->game_account_region,
+                'first_owner' => $negotiation->game_account_first_owner,
+                'has_original_email' => $negotiation->game_account_has_original_email,
+                'linked_providers' => $negotiation->game_account_linked_providers,
+                'can_change_credentials' => $negotiation->game_account_can_change_credentials,
+                'punishment_history' => $negotiation->game_account_punishment_history,
+                'delivery_items' => $negotiation->game_account_delivery_items,
+                'delivery_description' => $negotiation->game_account_delivery_description,
+                'extras' => $negotiation->game_account_extras,
+                'seller_notes' => $negotiation->game_account_seller_notes,
             ] : null,
+            'public_fields' => $includePublicFields ? $buildPublicFields() : null,
             'price' => $price,
             'price_formatted' => $this->formatPtBrNumber($price, 2),
             'status' => $negotiation->status,
